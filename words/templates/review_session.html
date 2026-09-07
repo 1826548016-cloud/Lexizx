@@ -119,13 +119,13 @@
 <div class="card text-center" style="padding: 48px 24px;">
   <div style="font-size: 3rem; margin-bottom: 16px;">🎉</div>
   <div style="font-size: var(--font-xl); font-weight: 600; margin-bottom: 8px;">
-    {% if random_mode %}范围内的单词都已复习过{% else %}当前没有需要复习的单词{% endif %}
+    {% if random_mode %}范围内可复习的单词都已复习完{% else %}今天没有到期的复习词{% endif %}
   </div>
   <p class="text-secondary" style="margin-bottom: 24px;">
     {% if random_mode %}
-    这一轮随机复习已经全部完成，可返回重新选择范围开始新一轮。
+    今日到期与可复习的词已全部完成，明天复习栏目会自动更新。
     {% else %}
-    你还没有学习任何单词，快去背一些新词吧！
+    今天学会的单词会在明天自动进入复习栏目；现在可以先去背一些新词。
     {% endif %}
   </p>
   <a href="{% url 'words:review_start' %}" class="btn btn-primary">重新选择复习范围</a>
@@ -237,9 +237,9 @@
     <a href="{% url 'words:dashboard' %}" class="btn btn-primary btn-lg">返回仪表盘</a>
     {% if remaining_due > 0 %}
       {% if random_mode %}
-      <a href="{% url 'words:review_session' %}?random=1&count={{ random_count }}&scope={{ scope }}{% if units_param %}&{{ units_param }}{% endif %}" class="btn btn-secondary btn-lg">继续随机复习（剩 {{ remaining_due }} 个未复习）</a>
+      <a href="{% url 'words:review_session' %}?random=1&count={{ random_count }}&scope={{ scope }}{% if units_param %}&{{ units_param }}{% endif %}" class="btn btn-secondary btn-lg">继续随机复习（剩 {{ remaining_due }} 个待复习）</a>
       {% else %}
-      <a href="{% url 'words:review_start' %}" class="btn btn-secondary btn-lg">继续复习下一批（剩 {{ remaining_due }} 个已学词）</a>
+      <a href="{% url 'words:review_start' %}" class="btn btn-secondary btn-lg">继续复习下一批（剩 {{ remaining_due }} 个待复习词）</a>
       {% endif %}
     {% endif %}
   </div>
@@ -881,7 +881,7 @@
       msg = '复习完成，继续努力！';
     }
     if (remainingDue > 0) {
-      msg += ' 还有 ' + remainingDue + ' 个已学词可在下一批继续复习。';
+      msg += ' 还有 ' + remainingDue + ' 个待复习词可继续复习。';
     }
     els.completionMsg.textContent = msg;
   }
@@ -1036,7 +1036,7 @@
       if (unmasteredInBatch > 0) text += '，未掌握 ' + unmasteredInBatch + ' 个';
       if (masteredInBatch > 0) text += '，已掌握 ' + masteredInBatch + ' 个';
       text += '）';
-      if (remainingDue > 0) text += '，剩余 ' + remainingDue + ' 个已学词可继续复习';
+      if (remainingDue > 0) text += '，剩余 ' + remainingDue + ' 个待复习词可继续复习';
       els.batchInfo.textContent = text;
     }
     renderWord(wordsData[currentIndex]);

@@ -99,8 +99,10 @@ def dashboard(request):
     today_review = StudyProgress.objects.filter(
         last_review__date=today, review_count__gt=0
     ).exclude(learned_date=today).count()
-    # 复习目标：所有已学词汇（status不为new）
-    review_due = StudyProgress.objects.exclude(status='new').count()
+    # 今日待复习：按「每天固定复习」自动调度，只统计今日到期的词；
+    # 历史数据无 next_review 视为今天到期，保证存量已学词不丢失
+    review_due = StudyProgress.objects.exclude(status='new').exclude(is_excluded=True).filter(
+        Q(next_review__isnull=True) | Q(next_review__lte=today)).count()
 
     total_words = Word.objects.count()
     mastered_words = StudyProgress.objects.filter(status='mastered').count()
@@ -292,16 +294,25 @@ def review_start(request):
     ).all()
     settings_obj = UserSettings.get_settings()
     presets = StudyPreset.objects.filter(preset_type='review')
+    # 今日到期总数：供「今日复习」卡片展示（昨天学的今天自动到期）
+    today = timezone.localdate()
+    due_today = StudyProgress.objects.exclude(status='new').exclude(is_excluded=True).filter(
+        Q(next_review__isnull=True) | Q(next_review__lte=today)).count()
     return render(request, 'review_start.html', {
         'units': units, 'batch_size': settings_obj.batch_size,
         'batch_options': [10, 20, 30, 50],
         'daily_review_target': settings_obj.daily_review_target,
+        'due_today': due_today,
         'presets': presets,
     })
 
 
 def review_session(request):
     """复习：从选定范围（单元/掌握状态）的已学词汇中随机抽取。
+    抽取规则（每天固定复习，直到完全掌握）：
+    - 优先「今日到期」：昨天学会/复习过的词今天自动进入队列；历史数据无
+      next_review 的视为今天到期，保证存量已学词不丢失；
+    - 到期词不够本轮数量时，从更早已学但今天尚未安排的词中按最久优先补足；
     - mode=random 开始新一轮随机复习（清空已复习记录）
     - random=1 继续上一轮随机复习（跳过已复习过的词）
     - count=N 指定本轮抽取数量（默认使用每日复习目标）
@@ -345,14 +356,33 @@ def review_session(request):
 
     all_progress = list(query)
 
-    # 随机复习：跳过已复习过的词（session 记录）
+    # —— 自动复习调度（每天固定复习，直到完全掌握）——
+    # 优先「今日到期」：昨天学会/复习过的词今天自动到期；历史数据没设置过
+    # next_review 的也视为今天到期，保证存量已学词不会被漏掉。
+    def _is_due(p):
+        return p.next_review is None or p.next_review <= today
+
+    # 今日真正到期的词数量（不参与补足统计）
+    due_total = sum(1 for p in all_progress if _is_due(p))
+
+    due_list = [p for p in all_progress if _is_due(p)]
+    # 到期词不够本轮数量时：从「昨天及更早已学、但今天尚未安排」的词中，按
+    # 学习日期最久者优先补足；今天刚学会的词安排在明天，不混入今天的复习队列。
+    if len(due_list) < target:
+        fill_pool = [p for p in all_progress if not _is_due(p)
+                     and (p.learned_date is None or p.learned_date < today)]
+        fill_pool.sort(key=lambda p: (p.learned_date or today))
+        due_list.extend(fill_pool)
+
+    # 随机复习：跳过本轮已复习过的词（session 记录）
     done_ids = request.session.get('random_review_done', []) or []
     if random_mode and done_ids:
         done_set = set(done_ids)
-        all_progress = [p for p in all_progress if p.id not in done_set]
+        due_list = [p for p in due_list if p.id not in done_set]
 
-    random.shuffle(all_progress)
-    batch = all_progress[:target]
+    total_candidate = len(due_list)  # 本次能复习的全部词（到期 + 补足）
+    random.shuffle(due_list)
+    batch = due_list[:target]
 
     # 记录本轮已复习的词（随机模式）
     if random_mode and batch:
@@ -399,8 +429,8 @@ def review_session(request):
     return render(request, 'review_session.html', {
         'review_count': len(word_data),
         'words_json': json.dumps(word_data, ensure_ascii=False),
-        'total_due': len(all_progress),  # 范围内可抽取的已学词总数
-        'remaining_due': max(0, len(all_progress) - len(batch)),
+        'total_due': due_total,  # 范围内「今日到期」的已学词数（昨天学的今天自动到期）
+        'remaining_due': max(0, total_candidate - len(batch)),
         'daily_review_target': settings_obj.daily_review_target,
         'batch_size': batch_size,
         'batch_date': today.isoformat(),
@@ -801,6 +831,19 @@ def _track_consecutive(progress, correct):
     return False
 
 
+def _schedule_next_review(progress, today):
+    """按「每天固定复习，直到完全掌握」自动安排下次复习时间：
+    - 已标记「永不忘记/完全掌握」(is_excluded) 的词：不再自动排期（置空），
+      它们不会出现在任何复习队列中；
+    - 其余单词（无论是今天首次学会，还是今天已复习/默写过）：下次复习都安排在
+      「明天」→ 今天学的单词明天就会自动出现在复习栏目里。
+    """
+    if progress.is_excluded:
+        progress.next_review = None
+    else:
+        progress.next_review = today + timedelta(days=1)
+
+
 @csrf_exempt
 @require_http_methods(['POST'])
 def api_mark_word(request, action, word_id):
@@ -829,6 +872,8 @@ def api_mark_word(request, action, word_id):
 
         progress.review_count += 1
         progress.last_review = now
+        # 自动复习调度：今天学会/复习过的词 → 明天自动进入复习栏目
+        _schedule_next_review(progress, today)
         progress.save()
 
         # 更新今日正确率统计
@@ -865,6 +910,7 @@ def api_mark_skip(request, word_id):
         word = get_object_or_404(Word, id=word_id)
         progress, _ = StudyProgress.objects.get_or_create(word=word)
         progress.is_excluded = True
+        progress.next_review = None  # 永不忘记的词不再自动排期
         if progress.status == 'new':
             progress.status = 'mastered'  # 视为已掌握，保证统计口径一致
         progress.save()
@@ -1007,6 +1053,8 @@ def api_spelling_check(request, word_id):
         auto_excluded = _track_consecutive(progress, correct)
         progress.review_count += 1
         progress.last_review = now
+        # 自动复习调度：今天默写过的词 → 明天自动进入复习栏目
+        _schedule_next_review(progress, today)
         progress.save()
 
         checkin, _ = DailyCheckIn.objects.get_or_create(date=today)
@@ -1063,6 +1111,8 @@ def api_meaning_check(request, word_id):
         auto_excluded = _track_consecutive(progress, ok)
         progress.review_count += 1
         progress.last_review = now
+        # 自动复习调度：今天默写过的词 → 明天自动进入复习栏目
+        _schedule_next_review(progress, today)
         progress.save()
 
         checkin, _ = DailyCheckIn.objects.get_or_create(date=today)
@@ -1104,6 +1154,8 @@ def api_toggle_mastery(request, word_id):
             # → 不会
             progress.status = 'learning'
             progress.mastery_level = 0
+            # 标记为不会 → 明天自动回到复习队列再巩固
+            _schedule_next_review(progress, today)
             progress.save()
             checkin.today_wrong += 1
             checkin.save()
@@ -1122,6 +1174,8 @@ def api_toggle_mastery(request, word_id):
             progress.last_review = timezone.now()
             if progress.learned_date is None:
                 progress.learned_date = today
+            # 标记为会 → 明天自动进入复习队列巩固
+            _schedule_next_review(progress, today)
             progress.save()
             checkin.today_correct += 1
             checkin.save()
@@ -1184,11 +1238,20 @@ def api_today(request):
         'meanings_by_pos': w.get_meanings_by_pos(),
     } for w in new_words]
 
-    # 今日需复习：从所有已学词中随机抽取（排除永不忘记的词）
+    # 今日需复习：优先「今日到期」的词（昨天学的今天自动到期），
+    # 不够目标量时从更早已学但今天尚未安排的词中补足；今天刚学的安排在明天。
     all_progress = list(StudyProgress.objects.exclude(status='new')
                         .exclude(is_excluded=True).select_related('word'))
-    random.shuffle(all_progress)
-    review_batch = all_progress[:settings_obj.daily_review_target]
+    due_list = [p for p in all_progress
+                if p.next_review is None or p.next_review <= today]
+    if len(due_list) < settings_obj.daily_review_target:
+        due_ids = {p.id for p in due_list}
+        fill_pool = [p for p in all_progress if p.id not in due_ids
+                     and (p.learned_date is None or p.learned_date < today)]
+        fill_pool.sort(key=lambda p: (p.learned_date or today))
+        due_list.extend(fill_pool)
+    random.shuffle(due_list)
+    review_batch = due_list[:settings_obj.daily_review_target]
 
     review_list = [{
         'id': p.word.id,
@@ -1201,7 +1264,9 @@ def api_today(request):
         'uncommon_pos': parse_uncommon_pos(p.uncommon_pos),
     } for p in review_batch]
 
-    due_count = len(all_progress)  # 总已学词数即为待复习数
+    # 今日到期数：昨天学会/复习过的词今天自动到期（供界面「今日待复习」展示）
+    due_count = len([p for p in all_progress
+                     if p.next_review is None or p.next_review <= today])
 
     return JsonResponse({
         'new_words': new_list,
@@ -2810,6 +2875,8 @@ def api_exam_submit(request):
                     checkin.today_wrong += 1
                 progress.review_count += 1
                 progress.last_review = now
+                # 自动复习调度：今天考过的词 → 明天自动进入复习栏目
+                _schedule_next_review(progress, today)
                 progress.save()
                 results.append({
                     'word_id': qid,

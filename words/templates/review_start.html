@@ -51,7 +51,7 @@
   {% csrf_token %}
 
   <h2 class="setup-title">开始复习</h2>
-  <p class="setup-subtitle" style="margin-bottom: 20px;">点一下就能开始，高级设置可以展开调整。</p>
+  <p class="setup-subtitle" style="margin-bottom: 20px;">自动复习计划：今天学会的单词明天会自动进入复习栏目，只需每天来巩固到期词即可。</p>
 
   <!-- 快速开始 -->
   <div class="card" style="margin-bottom: 20px;">
@@ -60,7 +60,7 @@
       <a href="{% url 'words:review_session' %}?scope=all&mode=random&batch={{ batch_size }}&count={{ daily_review_target|default:50 }}" class="quick-card">
         <div class="quick-icon"><i class="ph ph-arrows-clockwise"></i></div>
         <div class="quick-title">今日复习</div>
-        <div class="quick-desc">从全部已学词中随机抽取 {{ daily_review_target|default:50 }} 个</div>
+        <div class="quick-desc">今日到期 {{ due_today|default:0 }} 个优先复习，不足自动补足旧词</div>
       </a>
       <a href="{% url 'words:review_session' %}?scope=unmastered&mode=random&batch={{ batch_size }}&count=20" class="quick-card">
         <div class="quick-icon"><i class="ph ph-target"></i></div>

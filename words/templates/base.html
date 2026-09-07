@@ -6,8 +6,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}考研单词背诵系统{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'css/style.css' %}">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/fill/style.css">
+  <!-- Phosphor 图标字体（外网 CDN）：非阻塞加载，无外网时页面照常渲染，只是不显示图标 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css" media="print" onload="this.media='all'">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/fill/style.css" media="print" onload="this.media='all'">
+  <noscript>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/fill/style.css">
+  </noscript>
   {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -298,6 +303,35 @@
     });
   }
 
+  // 压缩壁纸图片：限制最长边 1920px、JPEG 0.85，避免超大图拖慢渲染
+  function compressWallpaper(file) {
+    return new Promise(function (resolve) {
+      if (!window.createImageBitmap && !(window.FileReader && document.createElement('canvas').toBlob)) { resolve(file); return; }
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var MAX = 1920;
+        var w = img.width, h = img.height;
+        var scale = Math.min(1, MAX / Math.max(w, h));
+        var nw = Math.round(w * scale), nh = Math.round(h * scale);
+        try {
+          var canvas = document.createElement('canvas');
+          canvas.width = nw; canvas.height = nh;
+          canvas.getContext('2d').drawImage(img, 0, 0, nw, nh);
+          URL.revokeObjectURL(url);
+          canvas.toBlob(function (blob) {
+            resolve(blob && blob.size < file.size ? blob : file);
+          }, 'image/jpeg', 0.85);
+        } catch (e) {
+          URL.revokeObjectURL(url);
+          resolve(file);
+        }
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
   // 上传新壁纸（供设置页调用）
   function uploadThemeWallpaper(file, cb) {
     cb = cb || function () {};
@@ -307,7 +341,10 @@
       cb(false);
       return;
     }
-    WallpaperDB.add(file).then(function (item) {
+    compressWallpaper(file).then(function (blob) {
+      var f = blob && blob !== file ? new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
+      return WallpaperDB.add(f);
+    }).then(function (item) {
       try { localStorage.removeItem(LEGACY_KEY); } catch (e) {}
       _saveCurrentWallpaperId(item.id);
       _setWallpaperBg(URL.createObjectURL(item.blob));
