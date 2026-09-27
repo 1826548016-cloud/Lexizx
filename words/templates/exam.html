@@ -141,6 +141,7 @@
       <div class="exam-stat"><div class="exam-stat-num" id="examWrongCount">0</div><div class="text-sm text-secondary">答错</div></div>
       <div class="exam-stat"><div class="exam-stat-num" id="examTimeUsed">--</div><div class="text-sm text-secondary">用时</div></div>
     </div>
+    <div id="examJudgeStats" class="text-sm" style="margin-top:14px;"></div>
     <div class="flex justify-center gap-3 mt-6">
       <button type="button" class="btn btn-primary" onclick="examRestart()"><i class="ph ph-arrows-clockwise"></i> 再考一次</button>
       <button type="button" class="btn btn-secondary" onclick="examBackToConfig()"><i class="ph ph-sliders-horizontal"></i> 返回配置</button>
@@ -194,15 +195,55 @@
 .exam-stat-num { font-size: 1.5rem; font-weight: 700; }
 .exam-wrong-item { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 12px 16px; }
 .exam-wrong-item .ans-right { color: var(--c-green); }
-.exam-wrong-item .ans-wrong { color: var(--c-red); text-decoration: line-through; }</style>
+.exam-wrong-item .ans-wrong { color: var(--c-red); text-decoration: line-through; }
+/* 逐题 AI 判定状态（释义默写） */
+.exam-dot { position: relative; }
+.exam-dot.j-ing { border-color: var(--c-amber); color: var(--c-amber); }
+.exam-dot.j-ok { border-color: var(--c-green); color: var(--c-green); background: rgba(46,125,80,.10); }
+.exam-dot.j-partial { border-color: var(--c-amber); color: var(--c-amber); background: rgba(180,130,30,.10); }
+.exam-dot.j-wrong { border-color: var(--c-red); color: var(--c-red); background: rgba(200,60,60,.08); }
+.exam-dot.j-err { border-color: var(--c-red); color: var(--c-red); }
+/* 已判定但成绩未公布：中性样式，不暴露对错（交卷后统一显示） */
+.exam-dot.j-done { border-color: var(--c-text-3); color: var(--c-text-3); background: rgba(0,0,0,.04); }
+.judge-mark {
+  position: absolute; top: -6px; right: -6px; width: 16px; height: 16px;
+  border-radius: 50%; font-size: 10px; display: flex; align-items: center; justify-content: center;
+  color: #fff; border: 2px solid var(--c-surface);
+}
+.judge-mark.mk-ing { background: var(--c-amber); }
+.judge-mark.mk-ok { background: var(--c-green); }
+.judge-mark.mk-partial { background: var(--c-amber); }
+.judge-mark.mk-wrong, .judge-mark.mk-err { background: var(--c-red); }
+.judge-mark.mk-done { background: var(--c-text-3); }
+.judge-banner {
+  margin-top: 10px; border-radius: var(--radius-sm); padding: 10px 14px;
+  font-size: .9rem; display: flex; align-items: flex-start; gap: 8px;
+}
+.judge-banner i { font-size: 18px; margin-top: 1px; }
+.judge-banner.jb-ing { background: var(--c-amber-bg); color: var(--c-amber); }
+.judge-banner.jb-ok { background: rgba(46,125,80,.10); color: var(--c-green); }
+.judge-banner.jb-partial { background: var(--c-amber-bg); color: #9a6d10; }
+.judge-banner.jb-wrong { background: rgba(200,60,60,.08); color: var(--c-red); }
+.judge-banner.jb-err { background: rgba(200,60,60,.08); color: var(--c-red); }
+.judge-banner.jb-done { background: var(--c-bg); color: var(--c-text-3); }
+.judge-banner .jb-retry {
+  margin-left: auto; flex: none; background: none; border: none; cursor: pointer;
+  color: inherit; font-size: .85rem; text-decoration: underline; padding: 0;
+}
+.judge-banner .jb-comment { flex: 1; line-height: 1.55; word-break: break-all; }
+.judge-src-tag { font-size: .72rem; opacity: .75; margin-left: 6px; }
+</style>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
 // ===== 状态 =====
 const EXAM_KEY = 'vocab-exam-state';
-var examState = null; // {phase, config, questions, answers, start}
+var examState = null; // {phase, config, questions, answers, judgments, start}
 var examTimerInt = null;
+// 逐题 AI 判定（不持久化）：judgeInFlight[id]=进行中的 Promise；judgeSeq[id]=最新请求序号
+var judgeInFlight = {};
+var judgeSeq = {};
 
 // ===== 单元 =====
 const examUnitWordCounts = {
@@ -322,7 +363,8 @@ function renderQuestion() {
     optsEl.innerHTML = '<div class="flex gap-2">' +
       '<input type="text" id="examTypeInput" class="form-input" style="flex:1; font-size:1rem; padding:12px 14px;" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="' + (dir === 'spelling' ? '输入英文单词' : '输入中文释义') + '" value="' + escapeHtml(String(saved)) + '">' +
       '<button type="button" class="btn btn-primary" id="examTypeSaveBtn" style="min-width:110px;">' + (String(saved).trim() ? '已答 ✓' : '保存答案') + '</button>' +
-      '</div>';
+      '</div>' +
+      (dir === 'meaning' ? '<div id="examJudgeBanner"></div>' : '');
     const input = document.getElementById('examTypeInput');
     const saveBtn = document.getElementById('examTypeSaveBtn');
     saveBtn.onclick = function () { saveTypeAnswer(); };
@@ -330,6 +372,7 @@ function renderQuestion() {
       if (e.key === 'Enter') { e.preventDefault(); saveTypeAnswer(); }
     });
     setTimeout(function () { input.focus(); }, 50);
+    if (dir === 'meaning') renderJudgeBanner(q.id);
   } else {
     const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
     q.options.forEach((opt, i) => {
@@ -350,15 +393,33 @@ function renderQuestion() {
 
 function saveTypeAnswer() {
   const q = examState.questions[examCurrent];
-  if (!q) return;
+  if (!q) return false;
   const input = document.getElementById('examTypeInput');
-  if (!input) return;
+  if (!input) return false;
   const val = input.value.trim();
+  const changed = String(examState.answers[q.id] !== undefined ? examState.answers[q.id] : '') !== val;
   examState.answers[q.id] = val;
-  saveExamState();
+  if (!examState.judgments) examState.judgments = {};
   const saveBtn = document.getElementById('examTypeSaveBtn');
   if (saveBtn) saveBtn.innerHTML = val ? '已答 ✓' : '保存答案';
   renderNavigator();
+  // 释义默写：保存即送 AI 判定；改了答案会重判，以最后一次作答为准
+  if (examState.config.direction === 'meaning') {
+    if (val) {
+      const j = examState.judgments[q.id];
+      if (changed || !j || (j.answer !== val)) judgeMeaning(q.id);
+    } else {
+      delete examState.judgments[q.id];
+      renderJudgeBanner(q.id);
+    }
+  }
+  saveExamState();
+  return true;
+}
+
+// 切换题目 / 交卷前：把当前输入框内容先保存（没点保存按钮也不丢答案、不漏判定）
+function flushCurrentAnswer() {
+  if (document.getElementById('examTypeInput')) saveTypeAnswer();
 }
 
 function selectOption(i) {
@@ -368,11 +429,87 @@ function selectOption(i) {
   renderQuestion();
 }
 
-function examPrev() { if (examCurrent > 0) { examCurrent--; renderQuestion(); } }
+function examPrev() { if (examCurrent > 0) { flushCurrentAnswer(); examCurrent--; renderQuestion(); } }
 function examNext() {
   const total = examState.questions.length;
-  if (examCurrent < total - 1) { examCurrent++; renderQuestion(); }
+  if (examCurrent < total - 1) { flushCurrentAnswer(); examCurrent++; renderQuestion(); }
   else submitExam();
+}
+
+// ===== 逐题 AI 释义判定（答一题判一题，结果缓存到服务端 session；只判定不写库）=====
+function judgeMeaning(id) {
+  if (!examState.judgments) examState.judgments = {};
+  const answer = String(examState.answers[id] !== undefined ? examState.answers[id] : '').trim();
+  if (!answer) { delete examState.judgments[id]; refreshJudgeUI(id); return Promise.resolve(); }
+  const j = examState.judgments[id];
+  if (judgeInFlight[id]) return judgeInFlight[id];
+  if (j && j.status === 'done' && j.answer === answer) return Promise.resolve(); // 同一答案已判定，不重复请求
+  const token = (judgeSeq[id] = (judgeSeq[id] || 0) + 1);
+  examState.judgments[id] = { answer: answer, status: 'judging', verdict: '', comment: '', source: '' };
+  saveExamState();
+  refreshJudgeUI(id);
+  const p = VOCAB_API.post('/api/exam/judge-meaning/', { word_id: id, answer: answer })
+    .then(function (res) {
+      if (judgeSeq[id] !== token) return; // 已被更新的答案取代，丢弃旧结果
+      if (res && res.success) {
+        examState.judgments[id] = {
+          answer: res.answer, status: 'done',
+          verdict: res.verdict, comment: res.comment || '', source: res.source || 'ai',
+        };
+      } else {
+        examState.judgments[id] = { answer: answer, status: 'error', verdict: '', comment: (res && res.error) || '判定失败' };
+      }
+      saveExamState();
+      refreshJudgeUI(id);
+    })
+    .catch(function (e) {
+      if (judgeSeq[id] !== token) return;
+      examState.judgments[id] = { answer: answer, status: 'error', verdict: '', comment: (e && e.error) || '判定请求失败' };
+      saveExamState();
+      refreshJudgeUI(id);
+    })
+    .then(function () { delete judgeInFlight[id]; });
+  judgeInFlight[id] = p;
+  return p;
+}
+
+// 判定失败重试：清掉失败态后重新判定
+function retryJudgeMeaning(id) {
+  if (examState.judgments) delete examState.judgments[id];
+  judgeSeq[id] = (judgeSeq[id] || 0) + 1; // 使任何残留的旧响应失效
+  judgeMeaning(id);
+}
+
+function refreshJudgeUI(id) {
+  renderNavigator();
+  if (examState.questions[examCurrent] && examState.questions[examCurrent].id === id) {
+    renderJudgeBanner(id);
+  }
+}
+
+// 当前题下方的判定进度横幅（不显示判定结果，交卷后统一公布）
+function renderJudgeBanner(id) {
+  const box = document.getElementById('examJudgeBanner');
+  if (!box) return;
+  const j = examState.judgments && examState.judgments[id];
+  if (!j) { box.innerHTML = ''; return; }
+  if (j.status === 'judging') {
+    box.className = 'judge-banner jb-ing';
+    box.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i>' +
+      '<span class="jb-comment">AI 正在判定这道题，你可以先作答下一题…</span>';
+    return;
+  }
+  if (j.status === 'error') {
+    box.className = 'judge-banner jb-err';
+    box.innerHTML = '<i class="ph ph-warning-circle"></i>' +
+      '<span class="jb-comment">判定失败：' + escapeHtml(j.comment || '网络异常') + '（交卷时会自动补判）</span>' +
+      '<button type="button" class="jb-retry" onclick="retryJudgeMeaning(' + id + ')">重试</button>';
+    return;
+  }
+  // 判定已完成，但不公布对错/评语/来源，交卷后在成绩页统一显示
+  box.className = 'judge-banner jb-done';
+  box.innerHTML = '<i class="ph ph-check-circle"></i>' +
+    '<span class="jb-comment">已完成判定，<strong>成绩将在交卷后统一公布</strong></span>';
 }
 
 function renderNavigator() {
@@ -381,6 +518,7 @@ function renderNavigator() {
   const total = examState.questions.length;
   const isType = examState.config.direction === 'spelling' || examState.config.direction === 'meaning';
   let answered = 0;
+  const meaningMode = examState.config.direction === 'meaning';
   examState.questions.forEach((q, i) => {
     const has = isType
       ? (examState.answers[q.id] !== undefined && String(examState.answers[q.id]).trim() !== '')
@@ -389,7 +527,23 @@ function renderNavigator() {
     const d = document.createElement('div');
     d.className = 'exam-dot' + (has ? ' answered' : '') + (i === examCurrent ? ' current' : '');
     d.textContent = i + 1;
-    d.onclick = function () { examCurrent = i; renderQuestion(); };
+    // 释义默写：点位右上角只显示判定进度（判定中转圈 / 已判定中性勾 / 失败 !），不暴露对错，交卷后统一公布
+    if (meaningMode) {
+      const j = examState.judgments && examState.judgments[q.id];
+      if (j) {
+        const cls = j.status === 'judging' ? 'j-ing'
+          : j.status === 'error' ? 'j-err' : 'j-done';
+        d.classList.add(cls);
+        const mark = document.createElement('span');
+        mark.className = 'judge-mark mk-' + cls.substring(2);
+        mark.innerHTML = j.status === 'judging'
+          ? '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite; font-size:10px; color:#fff;"></i>'
+          : (j.status === 'error' ? '!'
+            : '<i class="ph ph-check" style="font-size:10px; color:#fff;"></i>');
+        d.appendChild(mark);
+      }
+    }
+    d.onclick = function () { flushCurrentAnswer(); examCurrent = i; renderQuestion(); };
     nav.appendChild(d);
   });
   document.getElementById('examAnsweredCount').textContent = answered;
@@ -412,10 +566,11 @@ function formatTime(sec) {
 
 // ===== 交卷 =====
 async function submitExam() {
+  flushCurrentAnswer(); // 顶部「交卷」按钮直接触发时，先保存当前输入框内容
   const total = examState.questions.length;
   const answered = Object.keys(examState.answers).length;
   if (answered < total) {
-    if (!confirm('还有 ' + (total - answered) + ' 题未作答，确定交卷？未作答的题按错误计分。')) return;
+    if (!confirm('还有 ' + (total - answered) + ' 题未作答，确定交卷？未作答的题按错误计分，但不会改变单词的掌握状态。')) return;
   } else {
     if (!confirm('确定交卷吗？交卷后将自动更新单词掌握状态。')) return;
   }
@@ -432,8 +587,17 @@ async function submitExam() {
 
   const btn = document.querySelector('#examAnswer .btn-danger');
   btn.disabled = true;
-  btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 评分中…';
   try {
+    // 等待在途的逐题判定完成（最多 25 秒；超时未完成的题，服务端交卷时会批量补判）
+    const pending = Object.values(judgeInFlight);
+    if (pending.length) {
+      btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 等待 ' + pending.length + ' 题判定完成…';
+      await Promise.race([
+        Promise.all(pending),
+        new Promise(function (resolve) { setTimeout(resolve, 25000); }),
+      ]);
+    }
+    btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 正在汇总评分，请勿关闭…';
     const res = await VOCAB_API.post('/api/exam/submit/', { answers, duration });
     if (!res.success) { showToast(res.error || '交卷失败', 'error'); return; }
     if (res.auto_checked) showToast('今日已背诵 30 词，自动打卡成功！', 'success');
@@ -463,6 +627,24 @@ function renderResult(res) {
   document.getElementById('examWrongCount').textContent = res.wrong_count;
   document.getElementById('examTimeUsed').textContent = formatTime(res.duration);
 
+  // 释义判定来源统计（AI 批量/逐题判定、本地精确匹配、AI 不可用时的本地兜底）
+  const statsEl = document.getElementById('examJudgeStats');
+  if (statsEl) {
+    const st = res.meaning_judge_stats;
+    if (st && st.total > 0) {
+      let html = '<div style="color: var(--c-text-3);">释义判定：AI 判定 <strong style="color: var(--c-green);">' + st.ai + '</strong> 题' +
+        ' · 本地精确匹配 <strong>' + st.local_exact + '</strong> 题' +
+        (st.blank ? ' · 未作答 <strong>' + st.blank + '</strong> 题' : '') + '</div>';
+      if (st.local_fallback > 0) {
+        html += '<div style="color: var(--c-amber); margin-top:4px;"><i class="ph ph-warning-circle"></i> ' +
+          st.local_fallback + ' 题因 AI 服务不可用使用本地兜底判定（标准偏严），可在设置页测试 API 连接后重考</div>';
+      }
+      statsEl.innerHTML = html;
+    } else {
+      statsEl.innerHTML = '';
+    }
+  }
+
   const wrong = res.results.filter(r => !r.correct);
   const list = document.getElementById('examWrongList');
   list.innerHTML = '';
@@ -491,7 +673,7 @@ function renderResult(res) {
     item.innerHTML =
       '<div class="flex justify-between items-center mb-2">' +
         '<strong>' + escapeHtml(r.word) + '</strong>' +
-        '<span class="text-sm text-secondary">已标记为「不会」</span>' +
+        '<span class="text-sm text-secondary">' + escapeHtml(r.progress_note || '已标记为「不会」') + '</span>' +
       '</div>' +
       '<div class="text-sm">' + correctHtml + '</div>' +
       '<div class="text-sm">你的答案：<span class="ans-wrong">' + escapeHtml(String(your)) + '</span></div>' +
@@ -530,7 +712,9 @@ async function startExamFromConfig(cfg) {
   try {
     const res = await VOCAB_API.get('/api/exam/words/?' + params.toString());
     if (!res.questions || !res.questions.length) { showToast('该条件下没有可考试的单词', 'error'); return; }
-    examState = { phase: 'answer', config: cfg, questions: res.questions, answers: {}, start: Date.now() };
+    judgeInFlight = {};
+    judgeSeq = {};
+    examState = { phase: 'answer', config: cfg, questions: res.questions, answers: {}, judgments: {}, start: Date.now() };
     saveExamState();
     renderAnswer();
   } catch (e) {
@@ -558,7 +742,33 @@ function restoreExamState() {
     // 答题/结果阶段恢复
     if (st.phase === 'answer' && st.questions && st.questions.length) {
       examState = st;
+      if (!examState.judgments) examState.judgments = {};
+      judgeInFlight = {};
+      judgeSeq = {};
+      // 刷新会中断在途请求：把"判定中"复位为待判定
+      Object.keys(examState.judgments).forEach(function (id) {
+        if (examState.judgments[id].status === 'judging') delete examState.judgments[id];
+      });
       renderAnswer();
+      // 与服务端 session 里的判定缓存对账（服务端为准），恢复点位/横幅状态
+      if (examState.config.direction === 'meaning') {
+        VOCAB_API.get('/api/exam/judgments/').then(function (res) {
+          const server = (res && res.judgments) || {};
+          let changed = false;
+          Object.keys(server).forEach(function (id) {
+            const cj = server[id];
+            const curAns = String(examState.answers[id] !== undefined ? examState.answers[id] : '').trim();
+            if (curAns && (cj.answer || '') === curAns) {
+              examState.judgments[id] = {
+                answer: cj.answer, status: 'done',
+                verdict: cj.verdict, comment: cj.comment || '', source: cj.source || 'ai',
+              };
+              changed = true;
+            }
+          });
+          if (changed) { saveExamState(); renderNavigator(); renderJudgeBanner(examState.questions[examCurrent].id); }
+        }).catch(function () {});
+      }
       return;
     }
     if (st.phase === 'result' && st.result) {

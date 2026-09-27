@@ -26,14 +26,19 @@
     var card = cardEl();
     if (card) card.classList.add('word-card-expanded');
     toggleHidden('wordExtPanel', false);
+    var noteBtn = $('noteBtn'), qmBtn = $('quickMemoryBtn');
     if (type === 'note') {
       toggleHidden('notePanel', false);
       toggleHidden('qmPanel', true);
       loadNoteForPanel(word);
+      if (noteBtn) { noteBtn.classList.add('active-note'); noteBtn.classList.remove('active-quick'); }
+      if (qmBtn) qmBtn.classList.remove('active-quick');
     } else {
       toggleHidden('qmPanel', false);
       toggleHidden('notePanel', true);
       loadQuickMemoryForPanel(word);
+      if (qmBtn) { qmBtn.classList.add('active-quick'); qmBtn.classList.remove('active-note'); }
+      if (noteBtn) noteBtn.classList.remove('active-note');
     }
     var panel = $('wordExtPanel');
     if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -45,6 +50,9 @@
     toggleHidden('wordExtPanel', true);
     toggleHidden('notePanel', true);
     toggleHidden('qmPanel', true);
+    var noteBtn = $('noteBtn'), qmBtn = $('quickMemoryBtn');
+    if (noteBtn) noteBtn.classList.remove('active-note');
+    if (qmBtn) qmBtn.classList.remove('active-quick');
   }
 
   function isOpen() {
@@ -210,6 +218,8 @@
     var oldHtml = btn.innerHTML;
     btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> AI 生成中…';
     $('qmMeta').textContent = 'AI 正在创作速记，请稍候…';
+    var deck = $('qmDeck');
+    if (deck) deck.classList.add('ai-generating');
 
     // 模型配置由设置页统一管理（数据库），后端自动读取启用模型；未配置时后端返回提示
     VOCAB_API.post('/api/word/' + qmWordId + '/quick-memory/generate/', {
@@ -242,6 +252,7 @@
       .then(function () {
         btn.disabled = false;
         btn.innerHTML = oldHtml;
+        if (deck) deck.classList.remove('ai-generating');
       });
   }
 

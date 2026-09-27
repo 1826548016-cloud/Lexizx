@@ -126,8 +126,8 @@ function toggleAMKeyVisible() {
   }
 }
 
-// 提交添加/编辑模型：先测试连接，成功后保存到数据库，再刷新当前页面的模型列表/选择框
-async function submitAddModel() {
+// 读取弹窗表单并组装为测试/保存所需参数；校验失败返回 null
+function readAMForm() {
   var editId = document.getElementById('amEditId').value;
   var provider = document.getElementById('amProvider').value;
   var preset = document.getElementById('amModelPreset').value;
@@ -138,7 +138,7 @@ async function submitAddModel() {
   var displayName = document.getElementById('amDisplayName').value.trim();
   var context = document.getElementById('amContext').value;
 
-  if (!modelId) { showToast('请填写模型 ID', 'error'); return; }
+  if (!modelId) { showToast('请填写模型 ID', 'error'); return null; }
 
   // 视觉能力判断：预置模型按标记，自定义默认支持；非视觉模型可通过文本/文件方式导入
   var vision = true;
@@ -153,44 +153,90 @@ async function submitAddModel() {
   var baseUrl = p.base;              // 基础地址（关闭开关时）
   if (fullUrl) {
     endpoint = customUrl;
-    if (!endpoint) { showToast('请填写完整的请求地址，如 http://localhost:4096/v1/chat/completions', 'error'); return; }
+    if (!endpoint) { showToast('请填写完整的请求地址，如 http://localhost:4096/v1/chat/completions', 'error'); return null; }
     baseUrl = '';
   } else if (customUrl) {
     baseUrl = customUrl;
   }
 
-  var btn = document.getElementById('amSubmitBtn');
-  var box = document.getElementById('amTestResult');
-  btn.disabled = true;
-  btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 验证连接中…';
-  box.className = 'ai-test-result';
-  box.innerHTML = '<span class="ai-test-loading"><i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 正在验证连接…</span>';
+  return {
+    editId: editId, provider: provider, modelId: modelId, apiKey: apiKey,
+    baseUrl: baseUrl, endpoint: endpoint, displayName: displayName,
+    context: context, vision: vision,
+  };
+}
 
+// 调用后端测试接口，把结果渲染到 amTestResult；返回是否成功
+async function runAMConnectionTest(f) {
+  var box = document.getElementById('amTestResult');
+  box.className = 'ai-test-result ai-test-loading';
+  box.innerHTML = '<span class="ai-test-loading"><i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 正在验证连接…</span>';
   try {
     var res = await VOCAB_API.post('/api/ai/test/', {
-      api_key: apiKey,
-      base_url: baseUrl,
-      endpoint: endpoint,
-      model: modelId,
+      api_key: f.apiKey,
+      base_url: f.baseUrl,
+      endpoint: f.endpoint,
+      model: f.modelId,
     });
-    if (!res.success) {
-      box.className = 'ai-test-result ai-test-fail';
-      var hint = res.key_invalid ? '（密钥无效，请检查后重试）' : (res.model_invalid ? '（模型或接口地址错误）' : '');
-      box.innerHTML = '<i class="ph ph-x-circle"></i> ' + (res.error || '验证失败') + hint;
-      return;
+    if (res && res.success) {
+      box.className = 'ai-test-result ai-test-ok';
+      box.innerHTML = '<i class="ph ph-check-circle"></i> 连接成功，密钥有效，模型可正常调用';
+      return true;
     }
+    box.className = 'ai-test-result ai-test-fail';
+    var hint = res && res.key_invalid ? '（密钥无效，请检查后重试）'
+      : (res && res.model_invalid ? '（模型或接口地址错误）' : '');
+    box.innerHTML = '<i class="ph ph-x-circle"></i> ' + ((res && res.error) || '验证失败') + hint;
+    return false;
+  } catch (e) {
+    box.className = 'ai-test-result ai-test-fail';
+    box.innerHTML = '<i class="ph ph-x-circle"></i> ' + ((e && e.error) || '验证请求失败，请检查网络或接口地址');
+    return false;
+  }
+}
+
+// 独立「测试连接」：只验证当前填写的内容，不保存
+async function testAMConnection() {
+  var f = readAMForm();
+  if (!f) return;
+  var btn = document.getElementById('amTestOnlyBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 测试中…';
+  try {
+    await runAMConnectionTest(f);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ph ph-plugs-connected"></i> 测试连接';
+  }
+}
+
+// 提交添加/编辑模型：先测试连接，成功后保存到数据库，再刷新当前页面的模型列表/选择框
+async function submitAddModel() {
+  var f = readAMForm();
+  if (!f) return;
+
+  var editId = f.editId;
+  var btn = document.getElementById('amSubmitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 验证连接中…';
+
+  try {
+    var ok = await runAMConnectionTest(f);
+    if (!ok) return;
+
     var saveRes = await VOCAB_API.post('/api/ai-models/', {
       id: editId || undefined,
-      provider: provider,
-      model_id: modelId,
-      display_name: displayName,
-      base_url: baseUrl,
-      endpoint: endpoint,
-      api_key: apiKey,
-      context: context,
-      vision: vision,
+      provider: f.provider,
+      model_id: f.modelId,
+      display_name: f.displayName,
+      base_url: f.baseUrl,
+      endpoint: f.endpoint,
+      api_key: f.apiKey,
+      context: f.context,
+      vision: f.vision,
       enabled: true,
     });
+    var box = document.getElementById('amTestResult');
     if (!saveRes.success) {
       box.className = 'ai-test-result ai-test-fail';
       box.innerHTML = '<i class="ph ph-x-circle"></i> ' + (saveRes.error || '保存失败');
@@ -203,9 +249,6 @@ async function submitAddModel() {
       try { await window.aiModelModalOnSaved(); } catch (e) {}
     }
     setTimeout(function () { closeAddModel(); }, 700);
-  } catch (e) {
-    box.className = 'ai-test-result ai-test-fail';
-    box.innerHTML = '<i class="ph ph-x-circle"></i> ' + ((e && e.error) || '验证请求失败');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="ph ph-check"></i> ' + (editId ? '保存模型' : '添加模型');

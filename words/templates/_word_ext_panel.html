@@ -1,45 +1,192 @@
 <style>
   /* 展开笔记/速记时卡片放大（背诵/复习通用） */
   .word-card-expanded { max-width: 780px; }
+
+  /* —— 面板容器：渐变彩条 + 柔和底色 + 圆角 —— */
   .word-ext-panel {
-    margin-top: 22px; padding-top: 16px;
-    border-top: 1px dashed var(--c-border);
+    margin-top: 20px;
+    border-radius: var(--radius);
+    overflow: hidden;
     text-align: left;
+    border: 1px solid var(--c-border);
+    background: var(--c-surface-2);
+    box-shadow: var(--shadow);
+    animation: extPanelSlideIn .28s ease;
   }
+  @keyframes extPanelSlideIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* 顶部彩条（笔记=绿，速记=琥珀） */
+  .ext-bar-note  { height: 3px; background: linear-gradient(90deg, var(--c-green), var(--c-green-bg)); }
+  .ext-bar-quick { height: 3px; background: linear-gradient(90deg, var(--c-amber), var(--c-amber-bg)); }
+
+  /* 面板头：图标 + 标题 + 收起 */
+  .ext-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 18px 10px;
+  }
+  .ext-header-title { font-weight: 700; font-size: var(--fs-base); display: flex; align-items: center; gap: 8px; }
+  .ext-header-title i { font-size: 20px; }
+  .ext-header-title .ext-word { font-weight: 400; font-size: var(--fs-xs); color: var(--c-text-3); margin-left: 4px; }
+  .ext-close-btn {
+    width: 30px; height: 30px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: none; background: transparent; color: var(--c-text-3);
+    cursor: pointer; transition: all .15s;
+  }
+  .ext-close-btn:hover { background: var(--c-border); color: var(--c-text); }
+
+  /* 面板体 */
+  .ext-body { padding: 0 18px 16px; }
+
+  /* 元信息行 */
+  .ext-meta { font-size: var(--fs-xs); color: var(--c-text-3); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+
+  /* —— 笔记便签纸 —— */
+  .note-paper {
+    background: var(--c-amber-bg);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-sm);
+    padding: 14px 16px;
+    position: relative;
+  }
+  .note-paper::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--c-amber), transparent);
+    opacity: .4;
+  }
+  .note-paper textarea {
+    width: 100%; border: none; background: transparent;
+    font-family: var(--font-sans); font-size: var(--fs-base);
+    line-height: 1.8; color: var(--c-text); resize: vertical;
+    min-height: 90px; padding: 0;
+  }
+  .note-paper textarea:focus { outline: none; }
+  .note-paper textarea::placeholder { color: var(--c-text-3); font-style: italic; }
+
+  /* —— 速记深色区 —— */
+  .qm-deck {
+    background: var(--c-sidebar);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    position: relative;
+  }
+  .qm-deck::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--c-amber), transparent);
+    opacity: .5;
+  }
+  .qm-deck textarea {
+    width: 100%; border: none; background: transparent;
+    font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: var(--fs-sm); line-height: 1.8; color: #e9e1d0;
+    resize: vertical; min-height: 140px; padding: 0;
+  }
+  .qm-deck textarea:focus { outline: none; }
+  .qm-deck textarea::placeholder { color: #8a8170; }
+
+  /* AI 生成时发光 */
+  .qm-deck.ai-generating {
+    animation: aiGlow 1.2s ease-in-out infinite alternate;
+  }
+  @keyframes aiGlow {
+    from { box-shadow: 0 0 4px var(--c-amber); }
+    to   { box-shadow: 0 0 16px var(--c-amber); }
+  }
+
+  /* —— 胶囊按钮组 —— */
+  .ext-actions {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .ext-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 6px 14px; border-radius: 99px;
+    font-size: var(--fs-sm); font-weight: 600; cursor: pointer;
+    border: 1px solid var(--c-border); background: var(--c-surface);
+    color: var(--c-text-2); transition: all .15s;
+  }
+  .ext-pill:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+  .ext-pill i { font-size: 16px; }
+  .ext-pill-primary  { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .ext-pill-primary:hover { background: var(--c-green-h); }
+  .ext-pill-amber    { background: var(--c-amber); color: #fff; border-color: var(--c-amber); }
+  .ext-pill-amber:hover { filter: brightness(1.1); }
+  .ext-pill-danger   { color: var(--c-red); border-color: var(--c-red-bg); }
+  .ext-pill-danger:hover { background: var(--c-red-bg); }
+  .ext-pill-ghost    { border-color: transparent; background: transparent; }
+  .ext-pill-ghost:hover { background: var(--c-surface-2); }
+
+  /* 页码输入 */
+  .ext-page-input {
+    width: 90px; padding: 5px 10px; border-radius: 99px;
+    border: 1px solid var(--c-border); background: var(--c-surface);
+    font-size: var(--fs-sm); text-align: center;
+  }
+  .ext-page-input:focus { border-color: var(--c-green); outline: none; }
+
+  /* —— 工具栏按钮（发音/笔记/速记） —— */
+  .study-tool-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 6px 14px; border-radius: 99px;
+    border: 1px solid var(--c-border); background: var(--c-surface);
+    color: var(--c-text-2); font-size: var(--fs-sm); font-weight: 500;
+    cursor: pointer; transition: all .18s;
+  }
+  .study-tool-btn i { font-size: 16px; transition: transform .2s; }
+  .study-tool-btn:hover { border-color: var(--c-text-3); box-shadow: var(--shadow); }
+  .study-tool-btn:hover i { transform: scale(1.15); }
+  /* 活跃态：面板打开时高亮 */
+  .study-tool-btn.active-note { background: var(--c-green-bg); border-color: var(--c-green); color: var(--c-green); }
+  .study-tool-btn.active-note i { color: var(--c-green); }
+  .study-tool-btn.active-quick { background: var(--c-amber-bg); border-color: var(--c-amber); color: var(--c-amber); }
+  .study-tool-btn.active-quick i { color: var(--c-amber); }
 </style>
 
 <!-- 笔记 / 速记 展开区（不弹窗，直接显示在卡片下方，卡片自动放大） -->
 <div id="wordExtPanel" class="word-ext-panel hidden">
   <!-- 笔记面板 -->
   <div id="notePanel" class="hidden">
-    <div class="flex justify-between items-center" style="margin-bottom: 8px;">
-      <div style="font-weight: 600; font-size: var(--fs-sm);"><i class="ph ph-note-pencil" style="color: var(--c-green);"></i> 笔记 <span id="noteWordTitle" class="text-secondary" style="font-weight: normal; font-size: var(--fs-xs);"></span></div>
-      <button class="btn btn-ghost btn-sm" onclick="WordExtPanel.closeExtPanel()">收起 <i class="ph ph-x"></i></button>
+    <div class="ext-bar-note"></div>
+    <div class="ext-header">
+      <div class="ext-header-title"><i class="ph ph-note-pencil" style="color: var(--c-green);"></i> 笔记<span id="noteWordTitle" class="ext-word"></span></div>
+      <button class="ext-close-btn" onclick="WordExtPanel.closeExtPanel()" title="收起"><i class="ph ph-x" style="font-size: 18px;"></i></button>
     </div>
-    <div id="noteMeta" class="text-sm text-secondary" style="margin-bottom: 6px;">加载中…</div>
-    <textarea id="noteContent" class="form-input" rows="4" style="resize: vertical;" placeholder="记录这个单词的记忆方法、例句、易错点…"></textarea>
-    <div class="flex gap-2" style="margin-top: 8px; align-items: center;">
-      <input id="notePage" class="form-input" type="number" placeholder="页码（可选）" style="width: 130px;">
-      <button id="noteDeleteBtn" class="btn btn-danger btn-sm hidden" onclick="WordExtPanel.deleteNote()"><i class="ph ph-trash"></i> 删除</button>
-      <span style="flex: 1;"></span>
-      <button class="btn btn-primary btn-sm" onclick="WordExtPanel.saveNote()"><i class="ph ph-check"></i> 保存笔记</button>
+    <div class="ext-body">
+      <div id="noteMeta" class="ext-meta"><i class="ph ph-spinner gap" style="font-size: 14px;"></i> 加载中…</div>
+      <div class="note-paper">
+        <textarea id="noteContent" rows="4" placeholder="记录这个单词的记忆方法、例句、易错点…"></textarea>
+      </div>
+      <div class="ext-actions">
+        <input id="notePage" class="ext-page-input" type="number" placeholder="页码" style="width: 90px;">
+        <button id="noteDeleteBtn" class="ext-pill ext-pill-danger hidden" onclick="WordExtPanel.deleteNote()"><i class="ph ph-trash"></i> 删除</button>
+        <span style="flex: 1;"></span>
+        <button class="ext-pill ext-pill-primary" onclick="WordExtPanel.saveNote()"><i class="ph ph-check"></i> 保存笔记</button>
+      </div>
     </div>
   </div>
 
   <!-- 速记面板 -->
   <div id="qmPanel" class="hidden">
-    <div class="flex justify-between items-center" style="margin-bottom: 8px;">
-      <div style="font-weight: 600; font-size: var(--fs-sm);"><i class="ph ph-lightning" style="color: var(--c-amber);"></i> 速记 <span id="qmWordTitle" class="text-secondary" style="font-weight: normal; font-size: var(--fs-xs);"></span></div>
-      <button class="btn btn-ghost btn-sm" onclick="WordExtPanel.closeExtPanel()">收起 <i class="ph ph-x"></i></button>
+    <div class="ext-bar-quick"></div>
+    <div class="ext-header">
+      <div class="ext-header-title"><i class="ph ph-lightning" style="color: var(--c-amber);"></i> 速记<span id="qmWordTitle" class="ext-word"></span></div>
+      <button class="ext-close-btn" onclick="WordExtPanel.closeExtPanel()" title="收起"><i class="ph ph-x" style="font-size: 18px;"></i></button>
     </div>
-    <div id="qmMeta" class="text-sm text-secondary" style="margin-bottom: 6px;">加载中…</div>
-    <textarea id="qmContent" class="form-input" rows="10" style="resize: vertical; font-family: monospace; line-height: 1.7;" placeholder="点击「生成速记」让 AI 为你创作，或直接手动输入。"></textarea>
-    <div class="flex gap-2" style="margin-top: 8px; align-items: center; flex-wrap: wrap;">
-      <button id="qmGenerateBtn" class="btn btn-primary btn-sm hidden" onclick="WordExtPanel.generateQuickMemory(false)"><i class="ph ph-magic-wand"></i> 生成速记</button>
-      <button id="qmRegenBtn" class="btn btn-secondary btn-sm hidden" onclick="WordExtPanel.generateQuickMemory(true)" title="重新调用 AI 生成（会覆盖当前内容）"><i class="ph ph-arrows-clockwise"></i> 重新生成</button>
-      <button id="qmDeleteBtn" class="btn btn-danger btn-sm hidden" onclick="WordExtPanel.deleteQuickMemory()"><i class="ph ph-trash"></i> 删除</button>
-      <span style="flex: 1;"></span>
-      <button class="btn btn-primary btn-sm" onclick="WordExtPanel.saveQuickMemory()"><i class="ph ph-check"></i> 保存</button>
+    <div class="ext-body">
+      <div id="qmMeta" class="ext-meta"><i class="ph ph-spinner gap" style="font-size: 14px;"></i> 加载中…</div>
+      <div id="qmDeck" class="qm-deck">
+        <textarea id="qmContent" rows="10" placeholder="点击「生成速记」让 AI 为你创作，或直接手动输入。"></textarea>
+      </div>
+      <div class="ext-actions">
+        <button id="qmGenerateBtn" class="ext-pill ext-pill-amber hidden" onclick="WordExtPanel.generateQuickMemory(false)"><i class="ph ph-magic-wand"></i> 生成速记</button>
+        <button id="qmRegenBtn" class="ext-pill ext-pill-amber hidden" onclick="WordExtPanel.generateQuickMemory(true)" title="重新调用 AI 生成（会覆盖当前内容）"><i class="ph ph-arrows-clockwise"></i> 重新生成</button>
+        <button id="qmDeleteBtn" class="ext-pill ext-pill-danger hidden" onclick="WordExtPanel.deleteQuickMemory()"><i class="ph ph-trash"></i> 删除</button>
+        <span style="flex: 1;"></span>
+        <button class="ext-pill ext-pill-primary" onclick="WordExtPanel.saveQuickMemory()"><i class="ph ph-check"></i> 保存</button>
+      </div>
     </div>
   </div>
 </div>

@@ -212,6 +212,8 @@ def learn_start(request):
         plan_today = _get_plan_today_data(active_plan, today)
     settings_obj = UserSettings.get_settings()
     presets = StudyPreset.objects.filter(preset_type='learn')
+    for p in presets:
+        p.params_json = json.dumps(p.params or {}, ensure_ascii=False)
     return render(request, 'learn_start.html', {
         'units': units, 'plan_today': plan_today, 'batch_size': settings_obj.batch_size,
         'batch_options': [10, 20, 30, 50], 'presets': presets,
@@ -226,9 +228,20 @@ def learn_session(request):
 
     settings_obj = UserSettings.get_settings()
     try:
-        batch_size = max(1, min(int(request.GET.get('batch') or settings_obj.batch_size), 100))
+        batch_size = max(1, min(int(request.GET.get('batch') or settings_obj.batch_size), 1000))
     except (TypeError, ValueError):
         batch_size = settings_obj.batch_size
+
+    # 高效背诵 v3 参数：每个词连续背几遍 + 完成后随机穿插重现几次
+    def _gate_int(name, default, lo, hi):
+        try:
+            v = int(request.GET.get(name, default))
+        except (TypeError, ValueError):
+            return default
+        return max(lo, min(v, hi))
+
+    gate_repeats = _gate_int('repeats', 3, 1, 10)
+    gate_interleave = _gate_int('interleave', 1, 0, 5)
 
     query = Word.objects.all()
     if unit_ids:
@@ -240,6 +253,9 @@ def learn_session(request):
     if scope == 'mastered':
         # 会的词：已掌握
         query = query.filter(progress__status='mastered')
+    elif scope == 'all':
+        # 所有的词：不会 + 会全部出现（永不忘记的词已在上面排除）
+        pass
     else:
         # 不会的词：未掌握（默认）
         query = query.exclude(progress__status='mastered')
@@ -283,6 +299,8 @@ def learn_session(request):
         'check': check,
         'batch_size': batch_size,
         'gate_answer_show': settings_obj.gate_answer_show,
+        'gate_repeats': gate_repeats,
+        'gate_interleave': gate_interleave,
         'words_json': json.dumps(word_data, ensure_ascii=False),
     })
 
@@ -294,25 +312,37 @@ def review_start(request):
     ).all()
     settings_obj = UserSettings.get_settings()
     presets = StudyPreset.objects.filter(preset_type='review')
+    for p in presets:
+        p.params_json = json.dumps(p.params or {}, ensure_ascii=False)
     # 今日到期总数：供「今日复习」卡片展示（昨天学的今天自动到期）
     today = timezone.localdate()
-    due_today = StudyProgress.objects.exclude(status='new').exclude(is_excluded=True).filter(
+    yesterday = today - timedelta(days=1)
+    base_progress = StudyProgress.objects.exclude(status='new').exclude(is_excluded=True)
+    due_today = base_progress.filter(
         Q(next_review__isnull=True) | Q(next_review__lte=today)).count()
+    # 每日新学记录：昨天新学的词今天可专项复习；今天新学的明天可复习
+    new_yesterday = base_progress.filter(learned_date=yesterday).count()
+    new_today = base_progress.filter(learned_date=today).count()
     return render(request, 'review_start.html', {
         'units': units, 'batch_size': settings_obj.batch_size,
         'batch_options': [10, 20, 30, 50],
         'daily_review_target': settings_obj.daily_review_target,
         'due_today': due_today,
+        'new_yesterday': new_yesterday,
+        'new_today': new_today,
         'presets': presets,
     })
 
 
 def review_session(request):
-    """复习：从选定范围（单元/掌握状态）的已学词汇中随机抽取。
-    抽取规则（每天固定复习，直到完全掌握）：
-    - 优先「今日到期」：昨天学会/复习过的词今天自动进入队列；历史数据无
+    """复习：从选定范围（单元/掌握状态）的已学词汇中抽取。
+    抽取优先级（每天固定复习，直到完全掌握）：
+    - ① 昨天背错的词：最优先重练；
+    - ② 昨天新学的词：第二天必须巩固；
+    - ③ 今日到期词：昨天学会/复习过的词今天自动进入队列；历史数据无
       next_review 的视为今天到期，保证存量已学词不丢失；
-    - 到期词不够本轮数量时，从更早已学但今天尚未安排的词中按最久优先补足；
+    - ④ 其余已学词：按学习日期最久优先补足（今天刚学的词排在最后）；
+    - 高优先级组内乱序，保证每次复习顺序不同；
     - mode=random 开始新一轮随机复习（清空已复习记录）
     - random=1 继续上一轮随机复习（跳过已复习过的词）
     - count=N 指定本轮抽取数量（默认使用每日复习目标）
@@ -353,36 +383,49 @@ def review_session(request):
         query = query.exclude(status='mastered')
     elif scope == 'mastered':
         query = query.filter(status='mastered')
+    elif scope == 'yesterday':
+        # 专项复习：只复习昨天新学的词（第二天巩固）
+        query = query.filter(learned_date=today - timedelta(days=1))
 
     all_progress = list(query)
 
     # —— 自动复习调度（每天固定复习，直到完全掌握）——
-    # 优先「今日到期」：昨天学会/复习过的词今天自动到期；历史数据没设置过
-    # next_review 的也视为今天到期，保证存量已学词不会被漏掉。
+    # 优先级：① 昨天背错 → ② 昨天新学 → ③ 今日到期 → ④ 更早已学按最久优先。
+    # 今天刚学会的词安排在明天，不混入今天的复习队列。
     def _is_due(p):
         return p.next_review is None or p.next_review <= today
 
+    yesterday = today - timedelta(days=1)
+
+    def _priority(p):
+        if p.learned_date == yesterday and p.error_count > 0:
+            return 0
+        if p.learned_date == yesterday:
+            return 1
+        if _is_due(p):
+            return 2
+        return 3
+
     # 今日真正到期的词数量（不参与补足统计）
     due_total = sum(1 for p in all_progress if _is_due(p))
-
-    due_list = [p for p in all_progress if _is_due(p)]
-    # 到期词不够本轮数量时：从「昨天及更早已学、但今天尚未安排」的词中，按
-    # 学习日期最久者优先补足；今天刚学会的词安排在明天，不混入今天的复习队列。
-    if len(due_list) < target:
-        fill_pool = [p for p in all_progress if not _is_due(p)
-                     and (p.learned_date is None or p.learned_date < today)]
-        fill_pool.sort(key=lambda p: (p.learned_date or today))
-        due_list.extend(fill_pool)
 
     # 随机复习：跳过本轮已复习过的词（session 记录）
     done_ids = request.session.get('random_review_done', []) or []
     if random_mode and done_ids:
         done_set = set(done_ids)
-        due_list = [p for p in due_list if p.id not in done_set]
+        all_progress = [p for p in all_progress if p.id not in done_set]
 
-    total_candidate = len(due_list)  # 本次能复习的全部词（到期 + 补足）
-    random.shuffle(due_list)
-    batch = due_list[:target]
+    # 分组调度：高优先级在前；①②③组内乱序，④按学习日期最久优先
+    buckets = ([], [], [], [])
+    for p in all_progress:
+        buckets[_priority(p)].append(p)
+    for i in (0, 1, 2):
+        random.shuffle(buckets[i])
+    buckets[3].sort(key=lambda p: (p.learned_date or today))
+    ordered = buckets[0] + buckets[1] + buckets[2] + buckets[3]
+
+    total_candidate = len(ordered)  # 本次能复习的全部词
+    batch = ordered[:target]
 
     # 记录本轮已复习的词（随机模式）
     if random_mode and batch:
@@ -406,6 +449,7 @@ def review_session(request):
             'review_count': p.review_count,
             'status': p.status,
             'uncommon_pos': parse_uncommon_pos(p.uncommon_pos),
+            'yesterday': p.learned_date == yesterday,
         })
 
     mastered_count = len([p for p in batch if p.status == 'mastered'])
@@ -812,7 +856,7 @@ def _record_study(word, action, data=None, mode=''):
         pass
 
 
-CONSECUTIVE_THRESHOLD = 10
+CONSECUTIVE_THRESHOLD = 20
 
 
 def _track_consecutive(progress, correct):
@@ -964,63 +1008,158 @@ MEANING_JUDGE_PROMPT = '''你是考研英语词汇老师，负责判定学生默
 '''
 
 
+# 模拟考试交卷残留题的批量判定：同一次请求内统一标准，消除逐题独立调用的判定漂移
+MEANING_BATCH_JUDGE_PROMPT = '''你是考研英语词汇老师，需要一次性判定 {n} 个单词的中文释义默写。
+重要：所有题目必须使用**完全相同、宽松一致**的标准——同质量的答案在任何一题下结论都必须相同，不得前松后严。
+
+判定标准：
+1. 答案大致表达核心含义（同义词、近义表达、简洁概括、个别用词不准）即「correct」，不要苛求字面一致。
+2. 义项一致性：若答案中出现与该单词严重不符、明显是另一个意思的义项，必须判「wrong」。
+3. 沾边但没写到核心含义的判「partial」。
+4. 完全不对、答非所问、空答案判「wrong」。
+
+待判定题目（JSON 数组）：
+{items}
+
+只输出 JSON 数组，不要输出任何其他内容，元素与输入一一对应、id 必须原样返回：
+[{{"id": 题号, "verdict": "correct 或 partial 或 wrong", "comment": "一句话中文点评"}}]
+'''
+
+
 def _normalize_spelling(text):
     """拼写判定归一化：小写、去首尾空格、去掉非字母数字字符（容错连字符/撇号/空格）"""
     return re.sub(r'[^a-z0-9]', '', (text or '').lower().strip())
 
 
-def _judge_meaning_answer(word, answer, data):
-    """判定释义默写答案：AI 优先（跟随设置里选的模型），失败退回本地比对。
-    返回 (verdict, comment, used_ai)。"""
-    if not (answer or '').strip():
-        return 'wrong', '未作答', False
-
+def _local_meaning_match(word, answer):
+    """本地释义比对：去标点空白后，答案与任一标准释义互相包含即命中"""
     meanings = word.get_meanings()
     by_pos = word.get_meanings_by_pos()
     meaning_parts = list(meanings)
     for pos, ms in by_pos.items():
         if ms:
             meaning_parts.append('%s：%s' % (pos, '；'.join(ms)))
-    meaning_text = '；'.join(meaning_parts)
+    norm_answer = re.sub(r'[\s，。、；：,.!?；、（）()\[\]【】""\'\']', '', answer or '')
+    if not norm_answer:
+        return False, meaning_parts
+    for m in meaning_parts:
+        norm_m = re.sub(r'[\s，。、；：,.!?；、（）()\[\]【】""\'\']', '', m)
+        if not norm_m:
+            continue
+        if norm_m in norm_answer or norm_answer in norm_m:
+            return True, meaning_parts
+    return False, meaning_parts
 
-    verdict = 'wrong'
-    comment = ''
-    used_ai = False
+
+def _judge_meaning_core(word, answer, data):
+    """判定释义默写答案：AI 优先（跟随设置里选的模型），失败退回本地比对。
+    返回 (verdict, comment, source)，source ∈ ai / local-exact / local-fallback。
+    只判定、不写库——模拟考试逐题判定与交卷汇总共用。"""
+    answer = (answer or '').strip()
+    if not answer:
+        return 'wrong', '未作答', 'local-blank'
+
     settings_obj = UserSettings.get_settings()
-
     if settings_obj.meaning_check_model and not data.get('model_id'):
         data['model_id'] = settings_obj.meaning_check_model_id
 
-    if settings_obj.use_ai_meaning_check and answer:
+    # 本地强匹配先筛：明显一致的直接判对，省一次 AI 调用
+    hit, meaning_parts = _local_meaning_match(word, answer)
+    if hit:
+        return 'correct', '本地判定：与标准释义一致', 'local-exact'
+
+    if settings_obj.use_ai_meaning_check:
+        meaning_text = '；'.join(meaning_parts)
         try:
             cfg = resolve_ai_model(data)
             prompt = MEANING_JUDGE_PROMPT.format(
                 word=word.word, meanings=meaning_text, answer=answer)
-            content = _ai_chat_once(cfg, prompt, max_tokens=500)
+            content = _ai_chat_once(cfg, prompt, max_tokens=500, temperature=0.1)
             parsed = _extract_json_object(content)
             v = parsed.get('verdict')
             if v in ('correct', 'partial', 'wrong'):
-                verdict = v
-            comment = (parsed.get('comment') or '').strip()
-            used_ai = True
+                comment = (parsed.get('comment') or '').strip()
+                return v, comment, 'ai'
         except Exception:
-            used_ai = False
+            pass
 
-    if not used_ai:
-        # 本地比对兜底：去掉标点空白后看答案与任一标准释义是否互相包含
-        norm_answer = re.sub(r'[\s，。、；：,.!?；、]', '', answer)
-        hit = False
-        for m in meaning_parts:
-            norm_m = re.sub(r'[\s，。、；：,.!?；、]', '', m)
-            if not norm_m:
-                continue
-            if norm_m in norm_answer or norm_answer in norm_m:
-                hit = True
-                break
-        verdict = 'correct' if hit else 'wrong'
-        comment = '本地判定：%s' % ('与标准释义一致' if hit else '与标准释义不符')
+    # AI 不可用 / 判定异常 → 本地兜底（标准偏严，需明确告知用户）
+    return 'wrong', '本地判定：与标准释义不符', 'local-fallback'
 
-    return verdict, comment, used_ai
+
+def _judge_meaning_answer(word, answer, data):
+    """判定释义默写答案：AI 优先（跟随设置里选的模型），失败退回本地比对。
+    返回 (verdict, comment, used_ai)。"""
+    verdict, comment, source = _judge_meaning_core(word, answer, data)
+    return verdict, comment, source == 'ai'
+
+
+def _judge_meaning_batch(pairs, data, chunk_size=10):
+    """批量判定多道释义默写题，pairs=[(word, answer), ...]。
+    本地强匹配先筛 → 其余按 chunk_size 分组，每组一次 AI 调用统一标准 →
+    失败组重试 1 次 → 仍失败的逐题补判（单次 AI + 本地兜底）。
+    返回 {word_id: (verdict, comment, source)}。"""
+    results = {}
+    pending = []  # (word, answer) 待 AI 判定
+    for word, answer in pairs:
+        answer = (answer or '').strip()
+        if not answer:
+            results[word.id] = ('wrong', '未作答', 'local-blank')
+            continue
+        hit, _ = _local_meaning_match(word, answer)
+        if hit:
+            results[word.id] = ('correct', '本地判定：与标准释义一致', 'local-exact')
+        else:
+            pending.append((word, answer))
+
+    if not pending:
+        return results
+
+    settings_obj = UserSettings.get_settings()
+    use_ai = settings_obj.use_ai_meaning_check
+
+    for start in range(0, len(pending), chunk_size):
+        group = pending[start:start + chunk_size]
+        judged = {}
+        if use_ai:
+            if settings_obj.meaning_check_model and not data.get('model_id'):
+                data['model_id'] = settings_obj.meaning_check_model_id
+            items = [
+                {'id': w.id, 'word': w.word,
+                 'meanings': '；'.join(_local_meaning_match(w, a)[1]),
+                 'answer': a}
+                for w, a in group
+            ]
+            for attempt in range(2):  # 首调 + 失败重试 1 次
+                try:
+                    cfg = resolve_ai_model(data)
+                    prompt = MEANING_BATCH_JUDGE_PROMPT.format(
+                        n=len(items), items=json.dumps(items, ensure_ascii=False))
+                    content = _ai_chat_once(
+                        cfg, prompt, max_tokens=400 * len(items), temperature=0.1)
+                    arr = _extract_json_array(content)
+                    got = {}
+                    for el in arr:
+                        if not isinstance(el, dict):
+                            continue
+                        vid = el.get('id')
+                        v = el.get('verdict')
+                        if vid is not None and v in ('correct', 'partial', 'wrong'):
+                            got[int(vid)] = (v, (el.get('comment') or '').strip())
+                    # 必须整组 ID 齐全且合法才算成功，避免漏判悄悄混入
+                    if all(w.id in got for w, _ in group):
+                        judged = got
+                        break
+                except Exception:
+                    judged = {}
+
+        for w, a in group:
+            if w.id in judged:
+                results[w.id] = (judged[w.id][0], judged[w.id][1], 'ai')
+            else:
+                # 批量失败/缺项 → 逐题补判（内部还会尝试单次 AI，再失败才本地兜底）
+                results[w.id] = _judge_meaning_core(w, a, data)[:3]
+    return results
 
 
 @csrf_exempt
@@ -1383,6 +1522,32 @@ def api_preset_create(request):
             'id': preset.id,
             'name': preset.name,
             'message': f'已保存预设 "{preset.name}"',
+        })
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_http_methods(['POST'])
+def api_preset_update(request, preset_id):
+    """更新预设（重命名 / 修改参数）"""
+    try:
+        preset = get_object_or_404(StudyPreset, id=preset_id)
+        data = json.loads(request.body or '{}')
+        name = (data.get('name') or '').strip()
+        if not name:
+            return JsonResponse({'success': False, 'error': '请输入预设名称'}, status=400)
+        params = data.get('params')
+        if params is not None:
+            if not isinstance(params, dict):
+                return JsonResponse({'success': False, 'error': '参数格式错误'}, status=400)
+            preset.params = params
+        preset.name = name
+        preset.save()
+        return JsonResponse({
+            'success': True,
+            'id': preset.id,
+            'name': preset.name,
+            'message': f'已更新预设 "{preset.name}"',
         })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -2793,12 +2958,56 @@ def api_exam_words(request):
         {'id': q['id'], 'options': q['options'], 'correct_index': q['correct_index'], 'type': q.get('type', 'choice')}
         for q in questions
     ]
+    # 新开考试：清掉上一场的逐题判定缓存
+    request.session['exam_judgments'] = {}
 
     # 返回前移除答案字段
     for q in questions:
         q.pop('correct_index', None)
 
     return JsonResponse({'questions': questions, 'direction': direction, 'total': len(questions)})
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def api_exam_judge_meaning(request):
+    """模拟考试中逐题判定释义默写：只判定、不写库。
+    结果缓存到 session，学生改答案后重判会覆盖旧结果——以最后一次作答为准。"""
+    try:
+        data = json.loads(request.body)
+        word_id = data.get('word_id')
+        answer = (data.get('answer') or '').strip()
+        stored = request.session.get('exam_questions', [])
+        if not stored:
+            return JsonResponse({'error': '考试已过期，请重新开始'}, status=400)
+        sq = next((q for q in stored
+                   if q['id'] == word_id and q.get('type') == 'meaning'), None)
+        if not sq:
+            return JsonResponse({'error': '该题不在本场考试中'}, status=400)
+        word = Word.objects.filter(id=word_id).first()
+        if not word:
+            return JsonResponse({'error': '单词不存在'}, status=404)
+
+        verdict, comment, source = _judge_meaning_core(word, answer, data)
+        cache = request.session.get('exam_judgments') or {}
+        cache[str(word_id)] = {
+            'answer': answer, 'verdict': verdict,
+            'comment': comment, 'source': source,
+        }
+        request.session['exam_judgments'] = cache
+        return JsonResponse({
+            'success': True, 'word_id': word_id, 'answer': answer,
+            'verdict': verdict, 'comment': comment, 'source': source,
+        })
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(['GET'])
+def api_exam_judgments(request):
+    """回填本场考试已缓存的逐题判定（刷新页面后恢复判定状态）"""
+    return JsonResponse({'judgments': request.session.get('exam_judgments') or {}})
 
 
 @csrf_exempt
@@ -2818,39 +3027,104 @@ def api_exam_submit(request):
             return JsonResponse({'error': '考试已过期，请重新开始'}, status=400)
 
         answer_map = {a['word_id']: a for a in answers}
+        cached_judgments = request.session.get('exam_judgments') or {}
 
+        # ===== 阶段一：全部题先在内存里判定完，此阶段不写库 =====
+        # 释义题优先使用答题过程中逐题判定的缓存（答案必须与缓存一致，改了答案则重判），
+        # 未缓存/已变更的残留释义题收集起来走批量判定（10 题/组、统一标准）。
+        word_objs = {w.id: w for w in Word.objects.filter(id__in=[sq['id'] for sq in stored])}
+        residual_pairs = []          # (word, answer) 需批量判定
+        graded = []                  # [{sq, ans, word, is_correct, comment, source}]
+        for sq in stored:
+            qid = sq['id']
+            qtype = sq.get('type', 'choice')
+            ans = answer_map.get(qid) or {}
+            word = word_objs.get(qid)
+            is_correct = False
+            comment = ''
+            source = 'local'
+
+            if qtype == 'spelling':
+                text = (ans.get('answer') or '').strip()
+                answered = bool(text)
+                is_correct = bool(word) and answered and _normalize_spelling(text) == _normalize_spelling(word.word)
+            elif qtype == 'meaning':
+                text = (ans.get('answer') or '').strip()
+                answered = bool(text)
+                cj = cached_judgments.get(str(qid))
+                if word and cj and (cj.get('answer') or '') == text:
+                    # 缓存命中：以最后一次保存并判定过的答案为准
+                    is_correct = cj.get('verdict') == 'correct'
+                    comment = cj.get('comment') or ''
+                    source = cj.get('source') or 'ai'
+                elif word and answered:
+                    # 已作答但无缓存/答案已变更 → 批量判定；未作答的题不浪费 AI 调用
+                    residual_pairs.append((word, text))
+                elif word:
+                    source = 'local-blank'
+                    comment = '未作答'
+            else:
+                selected = ans.get('selected')
+                answered = selected is not None
+                is_correct = answered and (selected == sq['correct_index'])
+
+            graded.append({'sq': sq, 'ans': ans, 'word': word,
+                           'is_correct': is_correct, 'answered': answered,
+                           'comment': comment,
+                           'source': source, 'need_batch': qtype == 'meaning' and answered and not (
+                               word and cached_judgments.get(str(qid))
+                               and (cached_judgments[str(qid)].get('answer') or '') == (ans.get('answer') or '').strip())})
+
+        # 残留释义题一次批量判定（同组统一标准，失败自动逐题兜底）
+        batch_results = _judge_meaning_batch(residual_pairs, data) if residual_pairs else {}
+        for g in graded:
+            if g['need_batch'] and g['word']:
+                verdict, comment, source = batch_results.get(
+                    g['word'].id, ('wrong', '未作答', 'local-blank'))
+                g['is_correct'] = verdict == 'correct'
+                g['comment'] = comment
+                g['source'] = source
+            g.pop('need_batch', None)
+
+        # ===== 阶段二：判定全部完成后，统一写库（中途失败则零写入，可安全重新交卷）=====
         today = timezone.localdate()
         now = timezone.now()
         checkin, _ = DailyCheckIn.objects.get_or_create(date=today)
 
         results = []
         correct_count = 0
-        for sq in stored:
-            qid = sq['id']
-            qtype = sq.get('type', 'choice')
-            ans = answer_map.get(qid) or {}
-            word = Word.objects.filter(id=qid).first()
-            is_correct = False
-            comment = ''
-
-            if qtype == 'spelling':
-                text = (ans.get('answer') or '').strip()
-                is_correct = bool(word) and bool(text) and _normalize_spelling(text) == _normalize_spelling(word.word)
-            elif qtype == 'meaning':
-                text = (ans.get('answer') or '').strip()
-                if word:
-                    verdict, comment, _used = _judge_meaning_answer(word, text, data)
-                    is_correct = verdict == 'correct'
-            else:
-                correct_index = sq['correct_index']
-                selected = ans.get('selected')
-                is_correct = (selected == correct_index)
-
+        source_stats = {'ai': 0, 'local-exact': 0, 'local-fallback': 0, 'local-blank': 0}
+        for g in graded:
+            sq, ans, word = g['sq'], g['ans'], g['word']
+            qid, qtype = sq['id'], sq.get('type', 'choice')
+            is_correct = g['is_correct']
+            answered = g['answered']
             if is_correct:
                 correct_count += 1
+            if qtype == 'meaning':
+                source_stats[g['source'] if g['source'] in source_stats else 'local-fallback'] += 1
+
+            if word and not answered:
+                # 未作答：考试成绩按错题计分，但不改动任何学习进度
+                # （避免空交一场考试就把已掌握的词批量打成「不会」）
+                results.append({
+                    'word_id': qid,
+                    'word': word.word,
+                    'meanings': word.get_meanings(),
+                    'correct': False,
+                    'selected_index': ans.get('selected'),
+                    'correct_index': sq.get('correct_index'),
+                    'type': qtype,
+                    'comment': g['comment'],
+                    'source': g['source'],
+                    'answer': ans.get('answer') or '',
+                    'progress_note': '未作答，未影响掌握状态',
+                })
+                continue
 
             if word:
                 progress, _ = StudyProgress.objects.get_or_create(word=word)
+                progress_note = ''
                 if progress.status == 'new':
                     progress.learned_date = today
                     progress.is_today_new = True
@@ -2868,11 +3142,17 @@ def api_exam_submit(request):
                     progress.status = 'mastered'
                     checkin.today_correct += 1
                 else:
-                    # 答错（含未作答）→ 不会
-                    progress.mastery_level = 0
-                    progress.status = 'learning'
-                    progress.error_count += 1
+                    # 真实答错：记错因一次；但已掌握的词不因一次考试失误清零降级
                     checkin.today_wrong += 1
+                    progress.error_count += 1
+                    if progress.status == 'mastered':
+                        # 保持「会」，连续答对计数重新积累，并安排明天复习巩固
+                        progress.consecutive_correct = 0
+                        progress_note = '已掌握的词答错一次：保持「会」，已安排明天复习巩固'
+                    else:
+                        progress.mastery_level = 0
+                        progress.status = 'learning'
+                        progress_note = '已标记为「不会」'
                 progress.review_count += 1
                 progress.last_review = now
                 # 自动复习调度：今天考过的词 → 明天自动进入复习栏目
@@ -2886,8 +3166,10 @@ def api_exam_submit(request):
                     'selected_index': ans.get('selected'),
                     'correct_index': sq.get('correct_index'),
                     'type': qtype,
-                    'comment': comment,
+                    'comment': g['comment'],
+                    'source': g['source'],
                     'answer': ans.get('answer') or '',
+                    'progress_note': progress_note,
                 })
             else:
                 results.append({
@@ -2896,6 +3178,7 @@ def api_exam_submit(request):
                     'correct_index': sq.get('correct_index'),
                     'type': qtype,
                     'answer': ans.get('answer') or '',
+                    'progress_note': '',
                 })
 
         checkin.save()
@@ -2910,10 +3193,13 @@ def api_exam_submit(request):
             correct_count=correct_count,
         )
 
-        # 清除本次考试数据
+        # 清除本次考试数据（含逐题判定缓存）
         request.session.pop('exam_direction', None)
         request.session.pop('exam_questions', None)
+        request.session.pop('exam_judgments', None)
 
+        meaning_total = (source_stats['ai'] + source_stats['local-exact']
+                         + source_stats['local-fallback'] + source_stats['local-blank'])
         return JsonResponse({
             'success': True,
             'total': total,
@@ -2923,6 +3209,13 @@ def api_exam_submit(request):
             'duration': duration,
             'results': results,
             'auto_checked': auto_checked,
+            'meaning_judge_stats': {
+                'total': meaning_total,
+                'ai': source_stats['ai'],
+                'local_exact': source_stats['local-exact'],
+                'local_fallback': source_stats['local-fallback'],
+                'blank': source_stats['local-blank'],
+            },
         })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
@@ -3473,11 +3766,11 @@ def normalize_ai_words(words):
     return clean
 
 
-def _ai_chat_once(cfg, prompt, max_tokens=4000):
+def _ai_chat_once(cfg, prompt, max_tokens=4000, temperature=0.5):
     """单次调用 AI（OpenAI 兼容），返回纯文本内容"""
     payload = {
         'model': cfg['model_id'],
-        'temperature': 0.5,
+        'temperature': temperature,
         'max_tokens': max_tokens,
         'messages': [{'role': 'user', 'content': prompt}],
     }
@@ -3505,6 +3798,19 @@ def _extract_json_object(content):
         return json.loads(content[s:e + 1])
     except Exception:
         return {}
+
+
+def _extract_json_array(content):
+    """从 AI 响应中提取 JSON 数组（兼容 ```json 包裹）"""
+    s = content.find('[')
+    e = content.rfind(']')
+    if s == -1 or e == -1 or e <= s:
+        return []
+    try:
+        val = json.loads(content[s:e + 1])
+        return val if isinstance(val, list) else []
+    except Exception:
+        return []
 
 
 def ai_complete_words(word_objs):

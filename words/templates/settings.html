@@ -290,7 +290,7 @@
           <span class="stat-icon stat-icon--red"><i class="ph ph-tag"></i></span>
           <span class="card-header" style="margin:0; font-size: 0.85rem;">版本</span>
         </div>
-        <div class="stat-value">v3.1.2</div>
+        <div class="stat-value">v3.2.0</div>
         <div class="stat-label">考研单词背诵系统</div>
       </div>
       <div class="stat-card">
@@ -306,7 +306,7 @@
           <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
           <span class="card-header" style="margin:0; font-size: 0.85rem;">最后更新</span>
         </div>
-        <div class="stat-value">2026-09-07</div>
+        <div class="stat-value">2026-09-27</div>
         <div class="stat-label">最近一次发布</div>
       </div>
     </div>
@@ -710,10 +710,12 @@ function renderModelList() {
         '<div class="flex items-center gap-2">' +
           '<span class="text-sm" style="color: ' + (m.enabled ? 'var(--c-green)' : 'var(--c-text-3)') + ';">' + (m.enabled ? '已启用' : '已禁用') + '</span>' +
           '<label class="switch"><input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' onchange="toggleAIModel(' + m.id + ')"><span class="slider"></span></label>' +
+          '<button class="btn btn-sm btn-secondary" id="testModelBtn' + m.id + '" onclick="testSavedModel(' + m.id + ')" title="测试该模型的 API 连接"><i class="ph ph-plugs-connected"></i></button>' +
           '<button class="btn btn-sm btn-secondary" onclick="editAIModel(' + m.id + ')" title="编辑模型"><i class="ph ph-pencil-simple"></i></button>' +
           '<button class="btn btn-sm btn-danger" onclick="deleteAIModel(' + m.id + ')" title="删除模型"><i class="ph ph-trash"></i></button>' +
         '</div>' +
       '</div>' +
+      '<div id="testModelStatus' + m.id + '" class="text-sm" style="margin-top: 6px; display: none;"></div>' +
     '</div>';
   }).join('');
 }
@@ -756,6 +758,49 @@ function editAIModel(id) {
   var m = aiModels.find(function (x) { return x.id === id; });
   if (!m) return;
   openAddModel(m);
+}
+
+// 测试已保存模型的 API 连接（直接用库里的配置，无需打开编辑弹窗）
+async function testSavedModel(id) {
+  var m = aiModels.find(function (x) { return x.id === id; });
+  if (!m) return;
+  var btn = document.getElementById('testModelBtn' + id);
+  var status = document.getElementById('testModelStatus' + id);
+  if (!btn || !status) return;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i>';
+  status.style.display = 'block';
+  status.style.color = 'var(--c-text-3)';
+  status.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 正在连接 ' + escapeHtml(m.model_id) + ' …';
+  var now = new Date();
+  var ts = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) + ':' + ('0' + now.getSeconds()).slice(-2);
+  try {
+    var res = await VOCAB_API.post('/api/ai/test/', {
+      api_key: m.api_key || '',
+      base_url: m.base_url || '',
+      endpoint: m.endpoint || '',
+      model: m.model_id,
+    });
+    if (res && res.success) {
+      btn.innerHTML = '<i class="ph ph-check-circle" style="color: var(--c-green);"></i>';
+      status.style.color = 'var(--c-green)';
+      status.innerHTML = '<i class="ph ph-check-circle"></i> 连接成功（' + ts + '）：密钥有效，模型可正常调用';
+      showToast('「' + (m.display_name || m.model_id) + '」连接成功', 'success');
+    } else {
+      btn.innerHTML = '<i class="ph ph-x-circle" style="color: var(--c-red);"></i>';
+      status.style.color = 'var(--c-red)';
+      var hint = res && res.key_invalid ? '（密钥无效）' : (res && res.model_invalid ? '（模型或地址错误）' : '');
+      status.innerHTML = '<i class="ph ph-x-circle"></i> 连接失败（' + ts + '）：' + escapeHtml((res && res.error) || '未知错误') + hint;
+      showToast('连接失败：' + ((res && res.error) || '未知错误'), 'error');
+    }
+  } catch (e) {
+    btn.innerHTML = '<i class="ph ph-x-circle" style="color: var(--c-red);"></i>';
+    status.style.color = 'var(--c-red)';
+    status.innerHTML = '<i class="ph ph-x-circle"></i> 连接失败（' + ts + '）：' + escapeHtml((e && e.error) || '网络或接口异常');
+    showToast((e && e.error) || '连接请求失败', 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 </script>

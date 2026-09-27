@@ -51,17 +51,31 @@
   {% csrf_token %}
 
   <h2 class="setup-title">开始复习</h2>
-  <p class="setup-subtitle" style="margin-bottom: 20px;">自动复习计划：今天学会的单词明天会自动进入复习栏目，只需每天来巩固到期词即可。</p>
+  <p class="setup-subtitle" style="margin-bottom: 20px;">自动复习计划：昨天背错的词最优先出现，其次巩固昨天新学的词，再复习今日到期词。</p>
 
   <!-- 快速开始 -->
   <div class="card" style="margin-bottom: 20px;">
     <div class="card-header">快速开始</div>
     <div class="quick-start-grid">
       <a href="{% url 'words:review_session' %}?scope=all&mode=random&batch={{ batch_size }}&count={{ daily_review_target|default:50 }}" class="quick-card">
-        <div class="quick-icon"><i class="ph ph-arrows-clockwise"></i></div>
+        <div class="quick-icon"><i class="ph ph-calendar-check"></i></div>
         <div class="quick-title">今日复习</div>
         <div class="quick-desc">今日到期 {{ due_today|default:0 }} 个优先复习，不足自动补足旧词</div>
       </a>
+
+      {% if new_yesterday > 0 %}
+      <a href="{% url 'words:review_session' %}?scope=yesterday&mode=normal&batch={{ batch_size }}&count={{ new_yesterday }}" class="quick-card">
+        <div class="quick-icon"><i class="ph ph-sun-horizon"></i></div>
+        <div class="quick-title">昨日新学</div>
+        <div class="quick-desc">昨天新学 {{ new_yesterday }} 个词，今天专项巩固（今天新学 {{ new_today }} 个，明天可复习）</div>
+      </a>
+      {% else %}
+      <div class="quick-card" style="opacity: .55; cursor: default;">
+        <div class="quick-icon"><i class="ph ph-sun-horizon"></i></div>
+        <div class="quick-title">昨日新学</div>
+        <div class="quick-desc">昨天没有新学单词（今天新学 {{ new_today }} 个，明天出现在这里）</div>
+      </div>
+      {% endif %}
       <a href="{% url 'words:review_session' %}?scope=unmastered&mode=random&batch={{ batch_size }}&count=20" class="quick-card">
         <div class="quick-icon"><i class="ph ph-target"></i></div>
         <div class="quick-title">复习未掌握</div>
@@ -78,10 +92,13 @@
         <div class="quick-desc">复习已掌握的单词，防止遗忘</div>
       </a>
       {% for preset in presets %}
-      <div class="quick-card preset-card" data-url="{% url 'words:review_session' %}?scope={{ preset.params.scope|default:'all' }}&mode={{ preset.params.mode|default:'random' }}&batch={{ preset.params.batch|default:batch_size }}&count={{ preset.params.count|default:daily_review_target|default:50 }}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" onclick="startPreset(this)">
+      <div class="quick-card preset-card" data-url="{% url 'words:review_session' %}?scope={{ preset.params.scope|default:'all' }}&mode={{ preset.params.mode|default:'random' }}&batch={{ preset.params.batch|default:batch_size }}&count={{ preset.params.count|default:daily_review_target|default:50 }}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
         <div class="flex justify-between items-start">
           <div class="quick-icon"><i class="ph ph-lightning"></i></div>
-          <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
+          <div class="flex gap-1">
+            <button type="button" class="btn btn-ghost btn-sm preset-edit" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="编辑（载入到配置面板修改）" onclick="event.stopPropagation(); editPreset(this)"><i class="ph ph-note-pencil"></i></button>
+            <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
+          </div>
         </div>
         <div class="quick-title">{{ preset.name }}</div>
         <div class="quick-desc">{{ preset.params.scope|default:'全部' }} · {{ preset.params.count|default:daily_review_target|default:50 }} 个</div>
@@ -100,7 +117,8 @@
     <div class="card custom-setup">
       <div class="preset-save-row" style="display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap;">
         <input type="text" id="presetName" class="form-input" placeholder="给这套配置起个名字" style="flex: 1; min-width: 160px;">
-        <button type="button" class="btn btn-secondary" onclick="saveReviewPreset()"><i class="ph ph-bookmark"></i> 保存为预设</button>
+        <button type="button" class="btn btn-secondary" data-role="preset-save" onclick="saveReviewPreset()"><i class="ph ph-bookmark"></i> 保存为预设</button>
+        <button type="button" class="btn btn-ghost hidden" id="cancelEditBtn" onclick="cancelPresetEdit()"><i class="ph ph-x"></i> 取消编辑</button>
       </div>
     <div class="setup-row">
       <div class="choice-group">
@@ -276,7 +294,8 @@ async function saveReviewPreset() {
     }
   });
   try {
-    const res = await VOCAB_API.post('/api/preset/create/', { name: name, preset_type: 'review', params: params });
+    const url = editingPresetId ? '/api/preset/update/' + editingPresetId + '/' : '/api/preset/create/';
+    const res = await VOCAB_API.post(url, { name: name, preset_type: 'review', params: params });
     if (res.success) {
       showToast(res.message, 'success');
       setTimeout(function () { window.location.reload(); }, 500);
@@ -286,6 +305,59 @@ async function saveReviewPreset() {
   } catch (e) {
     showToast('请求失败', 'error');
   }
+}
+
+// —— 预设编辑：载入参数到配置面板，保存时走更新接口 ——
+var editingPresetId = null;
+
+function applyParamsToForm(params) {
+  if (params.scope) {
+    var sr = document.querySelector('input[name="scope"][value="' + params.scope + '"]');
+    if (sr) sr.checked = true;
+  }
+  ['batch', 'count'].forEach(function (k) {
+    if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
+      var el = document.querySelector('input[name="' + k + '"]');
+      if (el) el.value = params[k];
+    }
+  });
+  var units = params.units || [];
+  document.querySelectorAll('.unit-checkbox').forEach(function (cb) {
+    cb.checked = units.indexOf(cb.value) !== -1 || units.indexOf(parseInt(cb.value, 10)) !== -1;
+  });
+  if (typeof updateSelectedCount === 'function') updateSelectedCount();
+}
+
+function setPresetSaveMode(editing) {
+  var saveBtn = document.querySelector('[data-role="preset-save"]');
+  if (saveBtn) saveBtn.innerHTML = editing ? '<i class="ph ph-floppy-disk"></i> 更新预设' : '<i class="ph ph-bookmark"></i> 保存为预设';
+  var cancelBtn = document.getElementById('cancelEditBtn');
+  if (cancelBtn) cancelBtn.classList.toggle('hidden', !editing);
+}
+
+function editPreset(btn) {
+  var card = btn.closest('.preset-card');
+  editingPresetId = btn.getAttribute('data-id');
+  var name = btn.getAttribute('data-name') || '';
+  var params = {};
+  try { params = JSON.parse(card.getAttribute('data-params') || '{}') || {}; } catch (e) {}
+  applyParamsToForm(params);
+  var nameInput = document.getElementById('presetName');
+  if (nameInput) nameInput.value = name;
+  setPresetSaveMode(true);
+  var details = document.getElementById('customReviewDetails');
+  if (details) {
+    details.open = true;
+    details.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  showToast('已载入预设「' + name + '」，修改后点「更新预设」保存', 'success');
+}
+
+function cancelPresetEdit() {
+  editingPresetId = null;
+  var nameInput = document.getElementById('presetName');
+  if (nameInput) nameInput.value = '';
+  setPresetSaveMode(false);
 }
 
 function startPreset(card) {
