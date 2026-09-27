@@ -73,6 +73,20 @@
   </div>
   {% endif %}
 
+  <!-- 断点续背：上次背诵未完成时显示 -->
+  <div id="resumeCard" class="card hidden" style="margin-bottom: 20px;">
+    <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 12px;">
+      <div>
+        <div style="font-weight: 700; font-size: var(--fs-lg); margin-bottom: 4px;"><i class="ph ph-hourglass-medium" style="color: var(--c-green);"></i> 继续上次背诵</div>
+        <div class="text-sm text-secondary" id="resumeDesc"></div>
+      </div>
+      <div class="flex gap-2">
+        <button type="button" class="btn btn-ghost" onclick="discardResume()"><i class="ph ph-x"></i> 丢弃</button>
+        <button type="button" class="btn btn-primary btn-lg" onclick="resumeLearn()"><i class="ph ph-play"></i> 继续背诵</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 快速开始 -->
   <div class="card" style="margin-bottom: 20px;">
     <div class="card-header">快速开始</div>
@@ -98,7 +112,7 @@
         <div class="quick-desc">每个词连续背 3 遍拼写+释义默写，再随机穿插重现 1 次</div>
       </a>
       {% for preset in presets %}
-      <div class="quick-card preset-card" data-url="{% url 'words:learn_session' %}?scope={{ preset.params.scope|default:'unknown' }}&mode={{ preset.params.mode|default:'sequential' }}&batch={{ preset.params.batch|default:batch_size }}&check={{ preset.params.check|default:'none' }}{% if preset.params.check == 'gates' %}&repeats={{ preset.params.repeats|default:3 }}&interleave={{ preset.params.interleave|default:1 }}{% endif %}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
+      <div class="quick-card preset-card" data-url="{% url 'words:learn_session' %}?scope={{ preset.params.scope|default:'unknown' }}&mode={{ preset.params.mode|default:'sequential' }}&batch={{ preset.params.batch|default:batch_size }}&check={{ preset.params.check|default:'none' }}{% if preset.params.check == 'gates' %}&repeats={{ preset.params.repeats|default:3 }}&interleave={{ preset.params.interleave|default:1 }}{% endif %}{% if preset.params.count %}&count={{ preset.params.count }}{% endif %}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
         <div class="flex justify-between items-start">
           <div class="quick-icon"><i class="ph ph-lightning"></i></div>
           <div class="flex gap-1">
@@ -150,12 +164,21 @@
     <div class="choice-group">
       <span class="choice-group-title">每批数量</span>
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <input type="number" name="batch" value="10" min="1" max="1000" step="1" class="form-input" style="width: 110px;"
-               onchange="var v=parseInt(this.value,10); if(!v||v<1){this.value=10;}">
+        <input type="number" name="batch" value="{{ batch_size }}" min="1" max="1000" step="1" class="form-input" style="width: 110px;"
+               onchange="var v=parseInt(this.value,10); if(!v||v<1){this.value=10;} syncCountHint();">
         <span class="text-secondary text-sm">个 / 批（自由设置，背完一批后可选择继续下一批或退出）</span>
       </div>
     </div>
     <div class="choice-group">
+      <span class="choice-group-title">背诵数量</span>
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <input type="number" name="count" id="countInput" value="" min="1" max="5000" step="1" class="form-input" style="width: 110px;" placeholder="不限"
+               onchange="var v=parseInt(this.value,10); if(this.value!==''&&(!v||v<1)){this.value='';} syncCountHint();">
+        <span class="text-secondary text-sm">个（留空 = 背诵范围内全部单词）</span>
+      </div>
+      <p class="text-secondary text-sm" style="margin: 8px 0 0;" id="countHint">范围内全部单词，按每批 <strong id="hintBatch">{{ batch_size }}</strong> 个分批背诵</p>
+    </div>
+    <div class="choice-group" style="grid-column: 1 / -1;">
       <span class="choice-group-title">检测方式</span>
       <label class="choice-option">
         <input type="radio" name="check" value="none" checked>
@@ -288,6 +311,24 @@ function showToast(message, type) {
   }, 2500);
 }
 
+// —— 背诵数量提示：按「背诵数量 ÷ 每批数量」实时计算批数 ——
+function syncCountHint() {
+  var batchInput = document.querySelector('input[name="batch"]');
+  var countInput = document.getElementById('countInput');
+  var batch = parseInt((batchInput && batchInput.value) || '', 10) || 10;
+  var count = parseInt((countInput && countInput.value) || '', 10);
+  var hintBatch = document.getElementById('hintBatch');
+  if (hintBatch) hintBatch.textContent = batch;
+  var hint = document.getElementById('countHint');
+  if (!hint) return;
+  if (count >= 1) {
+    hint.innerHTML = '共 <strong>' + count + '</strong> 个，按每批 <strong>' + batch + '</strong> 个分 <strong>' + Math.max(1, Math.ceil(count / batch)) + '</strong> 批背诵';
+  } else {
+    hint.innerHTML = '范围内全部单词，按每批 <strong>' + batch + '</strong> 个分批背诵';
+  }
+}
+window.syncCountHint = syncCountHint;
+
 // 顺序/乱序背新词卡片：点开配置面板并预选背诵模式（原「自定义」已迁移至此）
 function openLearnConfig(mode) {
   const panel = document.getElementById('learnConfigPanel');
@@ -348,8 +389,13 @@ function applyParamsToForm(params) {
     if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
       var el = document.querySelector('input[name="' + k + '"]');
       if (el) el.value = params[k];
+    } else if (k === 'count') {
+      // 预设未保存数量 → 清空，恢复「不限」
+      var el = document.querySelector('input[name="count"]');
+      if (el) el.value = '';
     }
   });
+  if (typeof syncCountHint === 'function') syncCountHint();
   var units = params.units || [];
   document.querySelectorAll('.unit-checkbox').forEach(function (cb) {
     cb.checked = units.indexOf(cb.value) !== -1 || units.indexOf(parseInt(cb.value, 10)) !== -1;
@@ -410,6 +456,49 @@ async function deletePreset(btn) {
   }
 }
 
+// —— 断点续背：读取 localStorage 快照（由背诵页 persistResume 写入）——
+var RESUME_KEY = 'vocab-learn-resume';
+var resumeData = null;
+try { resumeData = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch (e) { resumeData = null; }
+(function initResumeCard() {
+  if (!resumeData || !Array.isArray(resumeData.words) || !resumeData.words.length) return;
+  var total = resumeData.words.length;
+  var done = Math.min(parseInt(resumeData.index, 10) || 0, total);
+  if (done >= total) { try { localStorage.removeItem(RESUME_KEY); } catch (e) {} resumeData = null; return; }
+  var modeText = ({ sequential: '顺序', random: '乱序', cover_en: '遮英文', cover_zh: '遮中文' })[resumeData.mode] || '背诵';
+  var checkText = ({ none: '纯背诵', spelling: '拼写检测', meaning: '释义默写', gates: '高效背诵' })[resumeData.checkMode] || '';
+  var timeText = '';
+  if (resumeData.ts) {
+    var mins = Math.max(1, Math.round((Date.now() - resumeData.ts) / 60000));
+    timeText = mins < 60 ? mins + ' 分钟前' : Math.round(mins / 60) + ' 小时前';
+  }
+  var desc = document.getElementById('resumeDesc');
+  if (desc) desc.textContent = modeText + (checkText ? ' · ' + checkText : '') + ' · 已背 ' + done + ' / ' + total + ' 个' + (timeText ? ' · ' + timeText : '');
+  var card = document.getElementById('resumeCard');
+  if (card) card.classList.remove('hidden');
+})();
+
+function resumeLearn() {
+  if (!resumeData) return;
+  var url = '{% url "words:learn_session" %}?resume=1'
+    + '&mode=' + encodeURIComponent(resumeData.mode || 'sequential')
+    + '&check=' + encodeURIComponent(resumeData.checkMode || 'none')
+    + '&batch=' + encodeURIComponent(resumeData.batchSize || 10)
+    + '&count=' + resumeData.words.length;
+  if (resumeData.checkMode === 'gates') {
+    url += '&repeats=' + (resumeData.gateRepeats || 3) + '&interleave=' + (resumeData.gateInterleave || 1);
+  }
+  window.location.href = url;
+}
+
+function discardResume() {
+  try { localStorage.removeItem(RESUME_KEY); } catch (e) {}
+  resumeData = null;
+  var card = document.getElementById('resumeCard');
+  if (card) card.classList.add('hidden');
+  showToast('已丢弃上次背诵进度', 'success');
+}
+
 // 一键开始今日学习：按计划单元范围自动跳转
 function quickStartToday(type) {
   var unitCheckboxes = document.querySelectorAll('.unit-checkbox');
@@ -423,6 +512,13 @@ function quickStartToday(type) {
     if (checked.length === 0) {
       // 没有选单元时自动全选
       unitCheckboxes.forEach(function(cb) { cb.checked = true; });
+    }
+    // 按今日计划自动补量：剩余 = 今日目标 − 已学（无计划或已完成则不限量）
+    var remaining = {{ plan_today.daily_new_target|default:0 }} - {{ plan_today.today_new_done|default:0 }};
+    var countInput = document.getElementById('countInput');
+    if (countInput) {
+      countInput.value = remaining > 0 ? remaining : '';
+      if (typeof syncCountHint === 'function') syncCountHint();
     }
     document.getElementById('learnForm').submit();
   }

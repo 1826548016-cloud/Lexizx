@@ -56,6 +56,7 @@ urlpatterns = [
     path('api/restore/', views.api_restore, name='api_restore'),
     path('api/settings/', views.api_settings, name='api_settings'),
     path('api/note/<int:word_id>/', views.api_note, name='api_note'),
+    path('api/example/<int:word_id>/', views.api_word_example, name='api_word_example'),
     path('api/word/<int:word_id>/quick-memory/', views.api_quick_memory, name='api_quick_memory'),
     path('api/word/<int:word_id>/quick-memory/generate/', views.api_quick_memory_generate, name='api_quick_memory_generate'),
     path('api/favorite/<int:word_id>/', views.api_favorite, name='api_favorite'),

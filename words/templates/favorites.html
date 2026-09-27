@@ -48,16 +48,6 @@
       {{ fav.word.meanings_display|truncatechars:60 }}
     </div>
 
-    {% if fav.word.example_en %}
-    <div class="text-sm text-secondary" style="font-style: italic; margin-bottom: 4px;">
-      {{ fav.word.example_en|truncatechars:100 }}
-    </div>
-    {% if fav.word.example_zh %}
-    <div class="text-sm text-secondary">
-      {{ fav.word.example_zh|truncatechars:80 }}
-    </div>
-    {% endif %}
-    {% endif %}
 
     <!-- Progress -->
     {% with progress=fav.word.progress %}

@@ -481,7 +481,7 @@
 
     els.wordPos.textContent = word.pos || '';
     els.wordMeaning.innerHTML = '';
-    els.wordExample.textContent = (word.example_en || '') + '\n' + (word.example_zh || '');
+    els.wordExample.textContent = '';
 
     els.levelBadge.textContent = '当前状态：' + (status === 'mastered' ? '已掌握' : '学习中');
     els.errorBadge.textContent = '历史错误：' + err;
@@ -638,7 +638,6 @@
       els.revealBtn.textContent = '已显示答案';
       els.revealBtn.disabled = true;
       els.wordMeaning.classList.remove('hidden');
-      els.wordExample.classList.remove('hidden');
       return;
     }
     var groups = getPosGroups(currentWord);
@@ -673,7 +672,6 @@
       els.wordMeaning.innerHTML = html;
     }
     els.wordMeaning.classList.remove('hidden');
-    els.wordExample.classList.remove('hidden');
     els.revealBtn.textContent = '已显示';
     els.revealBtn.disabled = true;
   }

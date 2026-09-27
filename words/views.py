@@ -243,6 +243,16 @@ def learn_session(request):
     gate_repeats = _gate_int('repeats', 3, 1, 10)
     gate_interleave = _gate_int('interleave', 1, 0, 5)
 
+    # 本轮背诵总数量（留空或非法 = 范围内全部），按每批 batch_size 分批进行
+    count_limit = None
+    if request.GET.get('count'):
+        try:
+            v = int(request.GET.get('count'))
+            if v >= 1:
+                count_limit = min(v, 5000)
+        except (TypeError, ValueError):
+            count_limit = None
+
     query = Word.objects.all()
     if unit_ids:
         query = query.filter(unit__number__in=unit_ids)
@@ -266,6 +276,10 @@ def learn_session(request):
         random.shuffle(words)
     else:
         words = sorted(words, key=lambda w: (w.unit.number, w.list_number))
+
+    # 乱序模式下先洗牌再截取（相当于随机抽 N 个）；顺序模式取前 N 个
+    if count_limit:
+        words = words[:count_limit]
 
     # 批量预取进度，避免 N+1
     word_ids = [w.id for w in words]
@@ -2300,6 +2314,29 @@ def api_settings(request):
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def api_word_example(request, word_id):
+    """例句增删改查（仅背诵页使用）：POST {action: 'save'|'delete', en, zh}"""
+    word = get_object_or_404(Word, id=word_id)
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except (ValueError, TypeError):
+        data = {}
+    if data.get('action') == 'delete':
+        word.example_en = ''
+        word.example_zh = ''
+    else:
+        en = (data.get('en') or '').strip()
+        zh = (data.get('zh') or '').strip()
+        if not en:
+            return JsonResponse({'success': False, 'error': '英文例句不能为空'})
+        word.example_en = en
+        word.example_zh = zh
+    word.save(update_fields=['example_en', 'example_zh'])
+    return JsonResponse({'success': True, 'example_en': word.example_en, 'example_zh': word.example_zh})
 
 
 @csrf_exempt

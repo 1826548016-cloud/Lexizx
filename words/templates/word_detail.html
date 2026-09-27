@@ -105,17 +105,6 @@
 {% endif %}
 {% endwith %}
 
-{% if word.example_en or word.example_zh %}
-<div class="card mt-6">
-  <div class="card-header">例句</div>
-  {% if word.example_en %}
-  <p class="mb-4">{{ word.example_en }}</p>
-  {% endif %}
-  {% if word.example_zh %}
-  <p class="text-secondary">{{ word.example_zh }}</p>
-  {% endif %}
-</div>
-{% endif %}
 
 <div class="card mt-6">
   <div class="card-header">笔记</div>

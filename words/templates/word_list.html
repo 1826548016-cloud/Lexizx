@@ -230,17 +230,6 @@
 
     <div class="grid grid-2">
       <div class="form-group">
-        <label class="form-label">英文例句</label>
-        <textarea id="wmExampleEn" class="form-input" rows="2"></textarea>
-      </div>
-      <div class="form-group">
-        <label class="form-label">中文翻译</label>
-        <textarea id="wmExampleZh" class="form-input" rows="2"></textarea>
-      </div>
-    </div>
-
-    <div class="grid grid-2">
-      <div class="form-group">
         <label class="form-label">所属单元</label>
         <div style="display: flex; gap: 8px;">
         <select id="wmUnit" class="form-input" style="flex: 1; min-width: 0;" onchange="toggleNewUnitFields('wm')">
@@ -669,8 +658,6 @@
     loadPosData(d);
     document.getElementById('wmUncommon').value = (d.uncommon_meanings || []).join('\n');
     document.getElementById('wmCollocations').value = (d.collocations || []).join('\n');
-    document.getElementById('wmExampleEn').value = d.example_en || '';
-    document.getElementById('wmExampleZh').value = d.example_zh || '';
     var unitSel = document.getElementById('wmUnit');
     if (d.unit_number && Array.prototype.some.call(unitSel.options, function (o) { return o.value == d.unit_number; })) {
       unitSel.value = d.unit_number;
@@ -962,8 +949,6 @@
       meanings_by_pos: meaningsByPos,
       uncommon_meanings: splitLines(document.getElementById('wmUncommon').value),
       collocations: splitLines(document.getElementById('wmCollocations').value),
-      example_en: document.getElementById('wmExampleEn').value.trim(),
-      example_zh: document.getElementById('wmExampleZh').value.trim(),
       category: document.getElementById('wmCategory').value,
       unit_number: resolveUnitSelection('wm').number,
       unit_name: resolveUnitSelection('wm').name,

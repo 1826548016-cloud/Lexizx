@@ -69,6 +69,19 @@
   .gate-badge { display: inline-block; padding: 2px 10px; border-radius: 99px; background: var(--c-purple, #8a6f9e); color: #fff; font-size: var(--fs-xs); font-weight: 600; margin-right: 6px; vertical-align: 1px; }
   .gate-badge-alt { background: var(--c-amber, #d99a3d); }
   .study-card .word-example { width: min(100%, 600px); margin-top: 12px; text-align: left; color: var(--c-text-2); font-style: italic; }
+  /* 例句增删改查（仅背诵页） */
+  .ex-en { white-space: pre-wrap; font-style: normal; color: var(--c-text-1); }
+  .ex-zh { color: var(--c-text-2); font-size: 0.92em; margin-top: 4px; white-space: pre-wrap; font-style: normal; }
+  .ex-actions { display: inline-flex; gap: 8px; margin-top: 8px; }
+  .ex-btn { border: 1px solid var(--c-border); background: var(--c-surface); color: var(--c-text-1); border-radius: var(--radius-sm); padding: 3px 10px; font-size: var(--fs-sm); cursor: pointer; font-style: normal; }
+  .ex-btn:hover { border-color: var(--c-green); color: var(--c-green); }
+  .ex-btn.ex-primary { background: var(--c-green); border-color: var(--c-green); color: #fff; }
+  .ex-btn.ex-danger { color: var(--c-red); }
+  .ex-btn.ex-danger:hover { border-color: var(--c-red); color: var(--c-red); }
+  .ex-empty { color: var(--c-text-3); font-size: var(--fs-sm); margin-bottom: 6px; font-style: normal; }
+  .ex-form { display: flex; flex-direction: column; gap: 8px; font-style: normal; }
+  .ex-input { width: 100%; border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 6px 9px; font: inherit; background: var(--c-surface); color: var(--c-text-1); resize: vertical; }
+  .ex-msg { color: var(--c-red); font-size: var(--fs-sm); min-height: 1em; font-style: normal; }
 
   /* ===== 检测输入区 ===== */
   .check-panel { width: min(100%, 600px); margin: 22px 0 0; }
@@ -292,6 +305,38 @@
     if (savedBatchStart) batchStartCounts = savedBatchStart;
   } catch (e) {}
 
+  // —— 跨会话断点续背：?resume=1 时用 localStorage 快照覆盖本次会话（词列表/配置/进度）——
+  var RESUME_KEY = 'vocab-learn-resume';
+  var resumeSnap = null;
+  if (/[?&]resume=1/.test(location.search)) {
+    try { resumeSnap = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch (e) { resumeSnap = null; }
+  }
+  if (resumeSnap && Array.isArray(resumeSnap.words) && resumeSnap.words.length) {
+    wordsData = resumeSnap.words;
+    wordCount = wordsData.length;
+    if (resumeSnap.mode) mode = resumeSnap.mode;
+    if (resumeSnap.checkMode) checkMode = resumeSnap.checkMode;
+    if (resumeSnap.batchSize) batchSize = parseInt(resumeSnap.batchSize, 10) || batchSize;
+    if (resumeSnap.gateRepeats) gateRepeatTotal = parseInt(resumeSnap.gateRepeats, 10) || gateRepeatTotal;
+    if (resumeSnap.gateInterleave !== undefined) gateInterleaveTotal = parseInt(resumeSnap.gateInterleave, 10) || 0;
+    var snapIdx = parseInt(resumeSnap.index, 10);
+    currentIndex = (snapIdx >= 0 && snapIdx < wordCount) ? snapIdx : 0;
+    if (resumeSnap.counts) {
+      counts.mastered = resumeSnap.counts.mastered || 0;
+      counts.unknown = resumeSnap.counts.unknown || 0;
+    }
+    (resumeSnap.gateDoneIds || []).forEach(function (id) { gateDoneIds[id] = true; });
+    batchStartCounts = { mastered: counts.mastered, unknown: counts.unknown };
+    totalBatches = Math.max(1, Math.ceil(wordCount / batchSize));
+    // 同步回 sessionStorage，保证续背后页内刷新不丢
+    sessionStorage.setItem('vocab-learn-idx', String(currentIndex));
+    sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
+    persistResume();
+    sessionStorage.setItem('vocab-learn-batch-start', JSON.stringify(batchStartCounts));
+    sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
+        persistResume();
+  }
+
   var els = {
     progressText: document.getElementById('progressText'),
     progressFill: document.getElementById('progressFill'),
@@ -323,6 +368,27 @@
 
   function saveProgress() {
     sessionStorage.setItem('vocab-learn-idx', currentIndex);
+    persistResume();
+  }
+
+  // 断点快照：写入 localStorage 供跨会话「继续上次背诵」（超过 800 词的场次跳过，避免超限）
+  function persistResume() {
+    try {
+      if (wordCount === 0 || wordCount > 800 || wordCount === undefined) { localStorage.removeItem(RESUME_KEY); return; }
+      localStorage.setItem(RESUME_KEY, JSON.stringify({
+        v: 1,
+        ts: Date.now(),
+        mode: mode,
+        checkMode: checkMode,
+        batchSize: batchSize,
+        gateRepeats: gateRepeatTotal,
+        gateInterleave: gateInterleaveTotal,
+        words: wordsData,
+        index: currentIndex,
+        counts: counts,
+        gateDoneIds: Object.keys(gateDoneIds)
+      }));
+    } catch (e) {}
   }
 
   function updateProgress() {
@@ -366,6 +432,92 @@
     return meanings ? String(meanings) : '';
   }
 
+  // —— 例句展示与增删改查（仅背诵页可见可编辑）——
+  function renderExample() {
+    var w = currentWord;
+    if (!w) return;
+    if (!w.example_en && !w.example_zh) {
+      els.wordExample.innerHTML =
+        '<div class="ex-empty">暂无例句</div>' +
+        '<button type="button" class="ex-btn ex-primary" onclick="learnExampleEditor.open()">+ 添加例句</button>';
+      return;
+    }
+    var html = '';
+    if (w.example_en) html += '<div class="ex-en">' + escapeHtml(w.example_en) + '</div>';
+    if (w.example_zh) html += '<div class="ex-zh">' + escapeHtml(w.example_zh) + '</div>';
+    html +=
+      '<span class="ex-actions">' +
+        '<button type="button" class="ex-btn" onclick="learnExampleEditor.open()"><i class="ph ph-note-pencil"></i> 编辑</button>' +
+        '<button type="button" class="ex-btn ex-danger" onclick="learnExampleEditor.remove()"><i class="ph ph-trash"></i> 删除</button>' +
+      '</span>';
+    els.wordExample.innerHTML = html;
+  }
+
+  window.learnExampleEditor = {
+    open: function () {
+      var w = currentWord;
+      if (!w) return;
+      els.wordExample.innerHTML =
+        '<div class="ex-form">' +
+          '<textarea id="exEn" class="ex-input" rows="2" placeholder="英文例句（必填）">' + escapeHtml(w.example_en || '') + '</textarea>' +
+          '<textarea id="exZh" class="ex-input" rows="1" placeholder="中文翻译（可留空）">' + escapeHtml(w.example_zh || '') + '</textarea>' +
+          '<div class="ex-actions">' +
+            '<button type="button" class="ex-btn" onclick="learnExampleEditor.cancel()">取消</button>' +
+            '<button type="button" class="ex-btn ex-primary" id="exSaveBtn" onclick="learnExampleEditor.save()">保存</button>' +
+          '</div>' +
+          '<div class="ex-msg" id="exMsg"></div>' +
+        '</div>';
+      var en = document.getElementById('exEn');
+      if (en) en.focus();
+    },
+    save: function () {
+      var w = currentWord;
+      if (!w) return;
+      var en = (document.getElementById('exEn').value || '').trim();
+      var zh = (document.getElementById('exZh').value || '').trim();
+      var msg = document.getElementById('exMsg');
+      var btn = document.getElementById('exSaveBtn');
+      if (!en) { if (msg) msg.textContent = '英文例句不能为空'; return; }
+      if (btn) btn.disabled = true;
+      VOCAB_API.post('/api/example/' + w.id + '/', { action: 'save', en: en, zh: zh })
+        .then(function (res) {
+          if (res && res.success) {
+            w.example_en = res.example_en;
+            w.example_zh = res.example_zh;
+            if (typeof persistResume === 'function') persistResume();
+            renderExample();
+            if (typeof showToast === 'function') showToast('例句已保存', 'success');
+          } else {
+            if (btn) btn.disabled = false;
+            if (msg) msg.textContent = (res && res.error) || '保存失败';
+          }
+        })
+        .catch(function () {
+          if (btn) btn.disabled = false;
+          if (msg) msg.textContent = '请求失败，请重试';
+        });
+    },
+    remove: function () {
+      var w = currentWord;
+      if (!w) return;
+      if (!confirm('确定删除「' + w.word + '」的例句？')) return;
+      VOCAB_API.post('/api/example/' + w.id + '/', { action: 'delete' })
+        .then(function (res) {
+          if (res && res.success) {
+            w.example_en = '';
+            w.example_zh = '';
+            if (typeof persistResume === 'function') persistResume();
+            renderExample();
+            if (typeof showToast === 'function') showToast('例句已删除', 'success');
+          } else if (typeof showToast === 'function') {
+            showToast((res && res.error) || '删除失败', 'error');
+          }
+        })
+        .catch(function () { if (typeof showToast === 'function') showToast('请求失败', 'error'); });
+    },
+    cancel: function () { renderExample(); }
+  };
+
   function renderWord() {
     if (gateAutoTimer) { clearTimeout(gateAutoTimer); gateAutoTimer = null; } // 切换单词时取消自动跳转
     if (currentIndex >= wordCount) {
@@ -399,7 +551,7 @@
     els.wordPos.textContent = currentWord.pos || '';
     els.wordMeaning.innerHTML = '';
     els.wordMeaning.classList.add('hidden');
-    els.wordExample.textContent = (currentWord.example_en || '') + '\n' + (currentWord.example_zh || '');
+    renderExample();
     els.wordExample.classList.add('hidden');
     els.checkResult.className = 'check-result';
     els.checkResult.innerHTML = '';
@@ -557,6 +709,7 @@
     if (!currentWord || checked) return;
     counts[action] = (counts[action] || 0) + 1;
     sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
+    persistResume();
 
     VOCAB_API.post('/api/mark/' + action + '/' + currentWord.id + '/', { source: 'learn', mode: checkMode })
       .then(function (res) {
@@ -645,6 +798,7 @@
       var ok = checkMode === 'spelling' ? res.correct : (res.verdict === 'correct' || res.verdict === 'partial');
       counts[ok ? 'mastered' : 'unknown'] = (counts[ok ? 'mastered' : 'unknown'] || 0) + 1;
       sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
+    persistResume();
       renderCheckResult(res);
       setMarkButtonsEnabled(false);
       els.checkSubmitBtn.textContent = '下一词';
@@ -716,6 +870,7 @@
         counts.mastered = Math.max(0, (counts.mastered || 0) - 1);
         counts.unknown = (counts.unknown || 0) + 1;
         sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
+    persistResume();
         flipNote = '<div>（穿插出现有答错，本词改记「不会」）</div>';
       }
       if (k < gateInterleaveTotal) {
@@ -724,6 +879,7 @@
       } else {
         gateDoneIds[pid] = true;
         sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
+        persistResume();
         els.checkResult.className = 'check-result result-correct';
         els.checkResult.innerHTML = '<div class="check-result-title">本词全部完成：连续 ' + gateRepeatTotal + ' 遍 + ' + gateInterleaveTotal + ' 次穿插 ✓' + ((gateAnyWrong[pid] || gateFlipped[pid]) ? '（最终记入「不会」）' : '') + '</div>';
       }
@@ -752,6 +908,7 @@
     gateCountedAs[pid] = verdict;
     counts[verdict] = (counts[verdict] || 0) + 1;
     sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
+    persistResume();
     var gateNextBtn2 = document.getElementById('nextBtn');
     if (gateNextBtn2) gateNextBtn2.disabled = false;
     if (gateInterleaveTotal > 0) {
@@ -761,6 +918,7 @@
     } else {
       gateDoneIds[pid] = true;
       sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
+        persistResume();
       if (res && gateAllCorrect) {
         renderCheckResult(res);
       } else {
@@ -901,6 +1059,7 @@
     sessionStorage.removeItem('vocab-learn-batch-start');
     sessionStorage.removeItem('vocab-learn-gate-pass');
     sessionStorage.removeItem('vocab-learn-gate-ids');
+    try { localStorage.removeItem('vocab-learn-resume'); } catch (e) {} // 背完清除断点
   }
 
   // 继续下一批
