@@ -2129,73 +2129,123 @@ def api_export_pdf(request):
 
 
 def api_backup(request):
+    """全量备份：设置、学习进度、背词记录、打卡、收藏、笔记、速记、计划、预设、
+    AI 模型、会话与消息、写作练习、写作好句、导入记录、学习周报。"""
     from django.core.serializers.json import DjangoJSONEncoder
 
     settings_obj = UserSettings.get_settings()
     data = {
-        'version': '1.0',
+        'version': '2.0',
         'exported_at': timezone.localtime().isoformat(),
-        'settings': {
-            'font_size': settings_obj.font_size,
-            'dark_mode': settings_obj.dark_mode,
-            'pronunciation_on': settings_obj.pronunciation_on,
-            'auto_read': settings_obj.auto_read,
-            'speech_rate': settings_obj.speech_rate,
-            'voice_type': settings_obj.voice_type,
-            'daily_new_target': settings_obj.daily_new_target,
-            'daily_review_target': settings_obj.daily_review_target,
-        },
-        'progress': [
+        'settings': _backup_settings(settings_obj),
+        'progress': [_backup_progress(p) for p in StudyProgress.objects.all()],
+        'study_records': [
             {
-                'word_id': p.word_id,
-                'status': p.status,
-                'mastery_level': p.mastery_level,
-                'review_count': p.review_count,
-                'error_count': p.error_count,
-                'last_review': p.last_review.isoformat() if p.last_review else None,
-                'next_review': p.next_review.isoformat() if p.next_review else None,
-                'is_today_new': p.is_today_new,
-                'learned_date': p.learned_date.isoformat() if p.learned_date else None,
+                'word_id': r.word_id,
+                'word': r.word.word if r.word else None,
+                'action': r.action, 'source': r.source,
+                'mode': r.mode, 'created_at': r.created_at.isoformat(),
             }
-            for p in StudyProgress.objects.all()
+            for r in StudyRecord.objects.all()
         ],
         'plans': [
             {
-                'name': p.name,
-                'daily_new_words': p.daily_new_words,
+                'name': p.name, 'daily_new_words': p.daily_new_words,
                 'daily_review_count': p.daily_review_count,
                 'target_date': p.target_date.isoformat() if p.target_date else None,
-                'unit_range': p.unit_range,
-                'is_active': p.is_active,
-                'start_date': p.start_date.isoformat(),
+                'unit_range': p.unit_range, 'is_active': p.is_active,
+                'start_date': p.start_date.isoformat() if p.start_date else None,
             }
             for p in StudyPlan.objects.all()
         ],
         'checkins': [
             {
-                'date': c.date.isoformat(),
-                'new_words_learned': c.new_words_learned,
-                'words_reviewed': c.words_reviewed,
-                'study_duration': c.study_duration,
-                'correct_rate': c.correct_rate,
-                'is_checked': c.is_checked,
+                'date': c.date.isoformat(), 'new_words_learned': c.new_words_learned,
+                'words_reviewed': c.words_reviewed, 'study_duration': c.study_duration,
+                'correct_rate': c.correct_rate, 'today_correct': c.today_correct,
+                'today_wrong': c.today_wrong, 'is_checked': c.is_checked,
             }
             for c in DailyCheckIn.objects.all()
         ],
         'favorites': [
-            {
-                'word_id': f.word_id,
-                'created_at': timezone.localtime(f.created_at).isoformat(),
-            }
+            {'word_id': f.word_id,
+             'word': f.word.word if f.word else None,
+             'created_at': timezone.localtime(f.created_at).isoformat()}
             for f in Favorite.objects.all()
         ],
         'notes': [
-            {
-                'word_id': n.word_id,
-                'content': n.content,
-                'page_number': n.page_number,
-            }
+            {'word_id': n.word_id,
+             'word': n.word.word if n.word else None,
+             'content': n.content, 'page_number': n.page_number}
             for n in Note.objects.all()
+        ],
+        'quick_memories': [
+            {'word_id': qm.word_id,
+             'word': qm.word.word if qm.word else None,
+             'content': qm.content,
+             'created_at': qm.created_at.isoformat()}
+            for qm in QuickMemory.objects.all()
+        ],
+        'presets': [
+            {'name': p.name, 'preset_type': p.preset_type, 'params': p.params,
+             'created_at': p.created_at.isoformat()}
+            for p in StudyPreset.objects.all()
+        ],
+        'ai_models': [
+            {
+                'id': m.id, 'provider': m.provider, 'model_id': m.model_id,
+                'display_name': m.display_name, 'base_url': m.base_url,
+                'endpoint': m.endpoint, 'api_key': m.api_key, 'context': m.context,
+                'vision': m.vision, 'enabled': m.enabled,
+            }
+            for m in AIModel.objects.all()
+        ],
+        'conversations': [
+            {'id': c.id, 'title': c.title, 'created_at': c.created_at.isoformat()}
+            for c in Conversation.objects.all()
+        ],
+        'chat_messages': [
+            {
+                'id': m.id, 'role': m.role, 'content': m.content,
+                'word_id': m.word_id,
+                'word': Word.objects.filter(id=m.word_id).values_list('word', flat=True).first() if m.word_id else None,
+                'conversation_id': m.conversation_id,
+                'attachments': m.attachments, 'created_at': m.created_at.isoformat(),
+            }
+            for m in ChatMessage.objects.all()
+        ],
+        'writing_practices': [
+            {
+                'id': w.id, 'question_id': w.question_id, 'mode': w.mode,
+                'source': w.source, 'user_input': w.user_input,
+                'ai_output': w.ai_output, 'score_json': w.score_json,
+                'feedback': w.feedback, 'created_at': w.created_at.isoformat(),
+            }
+            for w in WritingPractice.objects.all()
+        ],
+        'writing_phrases': [
+            {
+                'id': p.id, 'practice_id': p.practice_id, 'phrase': p.phrase,
+                'meaning': p.meaning, 'created_at': p.created_at.isoformat(),
+            }
+            for p in WritingPhrase.objects.all()
+        ],
+        'import_logs': [
+            {
+                'source': lg.source, 'unit_number': lg.unit_number,
+                'unit_name': lg.unit_name, 'imported_count': lg.imported_count,
+                'skipped_count': lg.skipped_count, 'words_list': lg.words_list,
+                'created_at': lg.created_at.isoformat(),
+            }
+            for lg in ImportLog.objects.all()
+        ],
+        'learning_reports': [
+            {
+                'week_start': lr.week_start.isoformat(), 'week_end': lr.week_end.isoformat(),
+                'summary_json': lr.summary_json, 'ai_comment': lr.ai_comment,
+                'created_at': lr.created_at.isoformat(),
+            }
+            for lr in LearningReport.objects.all()
         ],
     }
 
@@ -2214,68 +2264,324 @@ def api_backup(request):
     return response
 
 
+def _backup_settings(s):
+    """备份 UserSettings 全字段（含所有 FK id）"""
+    return {
+        'font_size': s.font_size, 'dark_mode': s.dark_mode, 'theme': s.theme,
+        'pronunciation_on': s.pronunciation_on, 'auto_read': s.auto_read,
+        'speech_rate': s.speech_rate, 'voice_type': s.voice_type,
+        'daily_new_target': s.daily_new_target,
+        'daily_review_target': s.daily_review_target,
+        'batch_size': s.batch_size, 'gate_answer_show': s.gate_answer_show,
+        'use_ai_meaning_check': s.use_ai_meaning_check,
+        'assistant_model_id': s.assistant_model_id,
+        'recognize_model_id': s.recognize_model_id,
+        'review_model_id': s.review_model_id,
+        'quick_memory_model_id': s.quick_memory_model_id,
+        'meaning_check_model_id': s.meaning_check_model_id,
+        'exam_model_id': s.exam_model_id,
+    }
+
+
+def _backup_progress(p):
+    """备份 StudyProgress 全字段（含 word 字符串用于跨库 id 映射）"""
+    return {
+        'word_id': p.word_id, 'word': p.word.word if p.word else None,  # word 字符串用于跨库恢复
+        'status': p.status, 'mastery_level': p.mastery_level,
+        'review_count': p.review_count, 'error_count': p.error_count,
+        'last_review': p.last_review.isoformat() if p.last_review else None,
+        'next_review': p.next_review.isoformat() if p.next_review else None,
+        'is_today_new': p.is_today_new,
+        'learned_date': p.learned_date.isoformat() if p.learned_date else None,
+        'uncommon_pos': p.uncommon_pos, 'spelling_attempts': p.spelling_attempts,
+        'spelling_correct': p.spelling_correct, 'meaning_attempts': p.meaning_attempts,
+        'meaning_correct': p.meaning_correct,
+        'consecutive_correct': p.consecutive_correct, 'is_excluded': p.is_excluded,
+        'manual_level': p.manual_level,
+    }
+
+
 @csrf_exempt
 @require_http_methods(['POST'])
 def api_restore(request):
+    """全量恢复：兼容 v1.0 旧备份和 v2.0 新备份。
+    - v2.0 备份自带 word 字符串，可跨不同数据库的 Word.id 正常恢复
+    - v1.0 旧备份只有 word_id，若两边词库 id 不一致会跳过引用 Word 的表
+    - AIModel / Conversation / WritingPractice 内部 id 做映射
+    - 事务级关闭 FK 约束，恢复完恢复
+    """
+    from django.db import connection, transaction
     try:
-        # 支持直接上传 JSON 文件或通过 body 发送 JSON
         if request.FILES.get('file'):
             content = request.FILES['file'].read().decode('utf-8')
         else:
             content = request.body.decode('utf-8')
         data = json.loads(content)
 
-        # 恢复设置
-        if 'settings' in data:
-            s = data['settings']
-            settings_obj = UserSettings.get_settings()
-            for k, v in s.items():
-                setattr(settings_obj, k, v)
-            settings_obj.save()
+        # 预先从当前库（exe）建 word → id 映射，供跨库恢复用
+        from words.models import Word
+        exe_word_map = dict(Word.objects.values_list('word', 'id'))  # {'abandon': 217, ...}
 
-        # 恢复进度
-        if 'progress' in data:
-            # 先清空
-            StudyProgress.objects.all().delete()
-            for p in data['progress']:
-                StudyProgress.objects.create(
-                    word_id=p['word_id'],
-                    status=p.get('status', 'new'),
-                    mastery_level=p.get('mastery_level', 0),
-                    review_count=p.get('review_count', 0),
-                    error_count=p.get('error_count', 0),
-                    is_today_new=p.get('is_today_new', False),
-                    learned_date=p.get('learned_date'),
-                )
+        skipped = {}  # 跳过计数（{表名: 条数}）
 
-        # 恢复打卡
-        if 'checkins' in data:
-            DailyCheckIn.objects.all().delete()
-            for c in data['checkins']:
-                DailyCheckIn.objects.create(**c)
+        def _resolve_word_id(row, table):
+            """把备份里的 word_id 转成当前库的 word_id。找不到返回 None（应跳过）"""
+            w = row.get('word')
+            if w and w in exe_word_map:
+                return exe_word_map[w]  # v2.0 备份：word 字符串命中
+            # 旧备份或 word 不匹配：直接用 word_id（两边 id 相同的情况也能工作）
+            wid = row.get('word_id')
+            if wid and Word.objects.filter(id=wid).exists():
+                return wid
+            skipped[table] = skipped.get(table, 0) + 1
+            return None
 
-        # 恢复收藏
-        if 'favorites' in data:
-            Favorite.objects.all().delete()
-            for f in data['favorites']:
-                Favorite.objects.create(word_id=f['word_id'])
+        with transaction.atomic():
+            with connection.cursor() as cur:
+                cur.execute('PRAGMA foreign_keys = OFF')
+            try:
+                # --- 1) AI 模型（必须先恢复，其他表 FK 引用模型 id）---
+                id_map = {}
+                if data.get('ai_models'):
+                    AIModel.objects.all().delete()
+                    for m in data['ai_models']:
+                        old_id = m.get('id')
+                        m2 = AIModel.objects.create(
+                            provider=m.get('provider', 'openai'),
+                            model_id=m['model_id'],
+                            display_name=m.get('display_name', ''),
+                            base_url=m.get('base_url', 'https://api.openai.com/v1'),
+                            endpoint=m.get('endpoint', ''),
+                            api_key=m.get('api_key', ''),
+                            context=m.get('context', '128K'),
+                            vision=m.get('vision', True),
+                            enabled=m.get('enabled', True),
+                        )
+                        if old_id:
+                            id_map[old_id] = m2.id
 
-        # 恢复笔记
-        if 'notes' in data:
-            Note.objects.all().delete()
-            for n in data['notes']:
-                Note.objects.create(word_id=n['word_id'], content=n.get('content', ''),
-                                    page_number=n.get('page_number'))
+                # --- 2) 用户设置（含模型 FK 映射）---
+                if 'settings' in data:
+                    s = data['settings']
+                    settings_obj = UserSettings.get_settings()
+                    settings_obj.font_size = s.get('font_size', 'medium')
+                    settings_obj.dark_mode = s.get('dark_mode', False)
+                    settings_obj.theme = s.get('theme', 'light')
+                    settings_obj.pronunciation_on = s.get('pronunciation_on', True)
+                    settings_obj.auto_read = s.get('auto_read', True)
+                    settings_obj.speech_rate = s.get('speech_rate', 1.0)
+                    settings_obj.voice_type = s.get('voice_type', 'us')
+                    settings_obj.daily_new_target = s.get('daily_new_target', 30)
+                    settings_obj.daily_review_target = s.get('daily_review_target', 50)
+                    settings_obj.batch_size = s.get('batch_size', 10)
+                    settings_obj.gate_answer_show = s.get('gate_answer_show', True)
+                    settings_obj.use_ai_meaning_check = s.get('use_ai_meaning_check', True)
+                    def _map_fk(key):
+                        old = s.get(key)
+                        return id_map.get(old) if old else None
+                    settings_obj.assistant_model_id = _map_fk('assistant_model_id')
+                    settings_obj.recognize_model_id = _map_fk('recognize_model_id')
+                    settings_obj.review_model_id = _map_fk('review_model_id')
+                    settings_obj.quick_memory_model_id = _map_fk('quick_memory_model_id')
+                    settings_obj.meaning_check_model_id = _map_fk('meaning_check_model_id')
+                    settings_obj.exam_model_id = _map_fk('exam_model_id')
+                    settings_obj.save()
 
-        # 恢复计划
-        if 'plans' in data:
-            StudyPlan.objects.all().delete()
-            for p in data['plans']:
-                StudyPlan.objects.create(**p)
+                # --- 3) 学习进度（用 word 字符串跨库映射 word_id）---
+                if 'progress' in data:
+                    StudyProgress.objects.all().delete()
+                    for p in data['progress']:
+                        new_wid = _resolve_word_id(p, 'progress')
+                        if new_wid is None:
+                            continue
+                        StudyProgress.objects.create(
+                            word_id=new_wid,
+                            status=p.get('status', 'new'),
+                            mastery_level=p.get('mastery_level', 0),
+                            review_count=p.get('review_count', 0),
+                            error_count=p.get('error_count', 0),
+                            last_review=p.get('last_review'),
+                            next_review=p.get('next_review'),
+                            is_today_new=p.get('is_today_new', False),
+                            learned_date=p.get('learned_date'),
+                            uncommon_pos=p.get('uncommon_pos', '[]'),
+                            spelling_attempts=p.get('spelling_attempts', 0),
+                            spelling_correct=p.get('spelling_correct', 0),
+                            meaning_attempts=p.get('meaning_attempts', 0),
+                            meaning_correct=p.get('meaning_correct', 0),
+                            consecutive_correct=p.get('consecutive_correct', 0),
+                            is_excluded=p.get('is_excluded', False),
+                            manual_level=p.get('manual_level', 3),
+                        )
 
-        return JsonResponse({'success': True, 'message': '恢复完成'})
+                # --- 4) 背词记录 ---
+                if data.get('study_records'):
+                    StudyRecord.objects.all().delete()
+                    for r in data['study_records']:
+                        new_wid = _resolve_word_id(r, 'study_records')
+                        if new_wid is None:
+                            continue
+                        StudyRecord.objects.create(
+                            word_id=new_wid, action=r['action'],
+                            source=r.get('source', 'learn'), mode=r.get('mode', ''),
+                        )
+
+                # --- 5) 打卡 ---
+                if 'checkins' in data:
+                    DailyCheckIn.objects.all().delete()
+                    for c in data['checkins']:
+                        DailyCheckIn.objects.create(
+                            date=c['date'],
+                            new_words_learned=c.get('new_words_learned', 0),
+                            words_reviewed=c.get('words_reviewed', 0),
+                            study_duration=c.get('study_duration', 0),
+                            correct_rate=c.get('correct_rate', 0),
+                            today_correct=c.get('today_correct', 0),
+                            today_wrong=c.get('today_wrong', 0),
+                            is_checked=c.get('is_checked', False),
+                        )
+
+                # --- 6) 收藏 ---
+                if 'favorites' in data:
+                    Favorite.objects.all().delete()
+                    for f in data['favorites']:
+                        new_wid = _resolve_word_id(f, 'favorites')
+                        if new_wid is None:
+                            continue
+                        Favorite.objects.create(word_id=new_wid)
+
+                # --- 7) 笔记 ---
+                if 'notes' in data:
+                    Note.objects.all().delete()
+                    for n in data['notes']:
+                        new_wid = _resolve_word_id(n, 'notes')
+                        if new_wid is None:
+                            continue
+                        Note.objects.create(
+                            word_id=new_wid, content=n.get('content', ''),
+                            page_number=n.get('page_number'),
+                        )
+
+                # --- 8) 速记 ---
+                if data.get('quick_memories'):
+                    QuickMemory.objects.all().delete()
+                    for qm in data['quick_memories']:
+                        new_wid = _resolve_word_id(qm, 'quick_memories')
+                        if new_wid is None:
+                            continue
+                        QuickMemory.objects.create(
+                            word_id=new_wid, content=qm.get('content', ''),
+                        )
+
+                # --- 9) 计划（无 Word 引用）---
+                if 'plans' in data:
+                    StudyPlan.objects.all().delete()
+                    for p in data['plans']:
+                        StudyPlan.objects.create(
+                            name=p['name'],
+                            daily_new_words=p.get('daily_new_words', 30),
+                            daily_review_count=p.get('daily_review_count', 50),
+                            target_date=p.get('target_date'),
+                            unit_range=p.get('unit_range', '[]'),
+                            is_active=p.get('is_active', False),
+                        )
+
+                # --- 10) 预设 ---
+                if data.get('presets'):
+                    StudyPreset.objects.all().delete()
+                    for p in data['presets']:
+                        StudyPreset.objects.create(
+                            name=p['name'], preset_type=p['preset_type'],
+                            params=p.get('params', {}),
+                        )
+
+                # --- 11) AI 会话与消息 ---
+                conv_id_map = {}
+                if data.get('conversations'):
+                    Conversation.objects.all().delete()
+                    for c in data['conversations']:
+                        old_id = c.get('id')
+                        new_c = Conversation.objects.create(title=c.get('title', '新对话'))
+                        if old_id:
+                            conv_id_map[old_id] = new_c.id
+                # 消息：conversation_id 映射 + word_id 跨库映射
+                msg_list = data.get('chat_messages')
+                if msg_list:
+                    ChatMessage.objects.all().delete()
+                    for m in msg_list:
+                        new_cid = conv_id_map.get(m.get('conversation_id')) if conv_id_map else m.get('conversation_id')
+                        new_wid = _resolve_word_id(m, 'chat_messages')
+                        ChatMessage.objects.create(
+                            role=m['role'], content=m['content'],
+                            word_id=new_wid,  # None 也 OK（word_id 可空）
+                            conversation_id=new_cid,
+                            attachments=m.get('attachments', []),
+                        )
+
+                # --- 12) 写作练习与好句 ---
+                wp_id_map = {}
+                if data.get('writing_practices'):
+                    WritingPractice.objects.all().delete()
+                    for w in data['writing_practices']:
+                        old_id = w.get('id')
+                        new_w = WritingPractice.objects.create(
+                            question_id=w.get('question_id'),
+                            mode=w.get('mode', 'essay'),
+                            source=w.get('source', 'ai'),
+                            user_input=w.get('user_input', ''),
+                            ai_output=w.get('ai_output', ''),
+                            score_json=w.get('score_json', '{}'),
+                            feedback=w.get('feedback', ''),
+                        )
+                        if old_id:
+                            wp_id_map[old_id] = new_w.id
+                    if data.get('writing_phrases'):
+                        WritingPhrase.objects.all().delete()
+                        for p in data['writing_phrases']:
+                            old_pid = p.get('practice_id')
+                            new_pid = wp_id_map.get(old_pid) if old_pid else None
+                            WritingPhrase.objects.create(
+                                practice_id=new_pid,
+                                phrase=p['phrase'],
+                                meaning=p.get('meaning', ''),
+                            )
+
+                # --- 13) 导入记录 ---
+                if data.get('import_logs'):
+                    ImportLog.objects.all().delete()
+                    for lg in data['import_logs']:
+                        ImportLog.objects.create(
+                            source=lg.get('source', 'text'),
+                            unit_number=lg.get('unit_number', 99),
+                            unit_name=lg.get('unit_name', ''),
+                            imported_count=lg.get('imported_count', 0),
+                            skipped_count=lg.get('skipped_count', 0),
+                            words_list=lg.get('words_list', '[]'),
+                        )
+
+                # --- 14) 学习周报 ---
+                if data.get('learning_reports'):
+                    LearningReport.objects.all().delete()
+                    for lr in data['learning_reports']:
+                        LearningReport.objects.create(
+                            week_start=lr['week_start'],
+                            week_end=lr['week_end'],
+                            summary_json=lr.get('summary_json', '{}'),
+                            ai_comment=lr.get('ai_comment', ''),
+                        )
+            finally:
+                with connection.cursor() as cur2:
+                    cur2.execute('PRAGMA foreign_keys = ON')
+
+        msg = '恢复完成'
+        if skipped:
+            total_skipped = sum(skipped.values())
+            msg += f'（跳过 {total_skipped} 条词库 id 不匹配的数据：'
+            msg += ', '.join(f'{k} {v}条' for k, v in skipped.items()) + '）'
+        return JsonResponse({'success': True, 'message': msg})
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=400)
+        import traceback
+        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()[:2000]}, status=400)
 
 
 @csrf_exempt

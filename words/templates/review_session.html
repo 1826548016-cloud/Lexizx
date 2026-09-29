@@ -297,6 +297,16 @@
   }
   sessionStorage.setItem('vocab-review-date', batchDate);
 
+  // 复习配置变化（范围/数量/方式不同）时重置上次进度，避免旧索引错位套到新一轮词表
+  if (sessionStorage.getItem('vocab-review-sig') !== location.search) {
+    sessionStorage.removeItem('vocab-review-idx');
+    sessionStorage.removeItem('vocab-review-counts');
+    sessionStorage.removeItem('vocab-review-batch-start');
+    sessionStorage.removeItem('vocab-review-gate-done');
+    sessionStorage.removeItem('vocab-review-wrong');
+  }
+  sessionStorage.setItem('vocab-review-sig', location.search);
+
   // Restore index from sessionStorage (survives page refresh)
   var savedIndex = sessionStorage.getItem('vocab-review-idx');
   var currentIndex = (savedIndex !== null) ? parseInt(savedIndex) : 0;
@@ -457,6 +467,8 @@
     setMarkButtonsEnabled(true);
     var skipBtnEl = document.getElementById('skipBtn');
     if (skipBtnEl) skipBtnEl.disabled = false;
+    var nextBtnEl = document.getElementById('nextBtn');
+    if (nextBtnEl) nextBtnEl.disabled = false; // 修复：高效背诵禁用过「下一词」后切回其他模式按钮永远禁用
     sessionStorage.setItem('vocab-review-idx', currentIndex);
 
     // 切换单词时收起笔记/速记展开区
