@@ -440,9 +440,9 @@
   }
 
   // ---- 批量完成人工审核 ----
-  function batchHumanReview() {
+  async function batchHumanReview() {
     if (!aiWords.length) { showToast('没有可审核的单词', 'error'); return; }
-    if (!confirm('确定将全部 ' + aiWords.length + ' 个单词一次性标记为人工审核通过？\n可先「导出 TXT / PDF」离线核对后再回来确认。')) return;
+    if (!await appConfirm('确定将全部 ' + aiWords.length + ' 个单词一次性标记为人工审核通过？\n可先「导出 TXT / PDF」离线核对后再回来确认。')) return;
     aiWords.forEach(function (w) { w.humanChecked = true; });
     aiReviewState.human = true;
     aiReviewQueue = [];

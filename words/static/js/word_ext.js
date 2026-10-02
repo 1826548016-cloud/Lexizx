@@ -107,9 +107,9 @@
       });
   }
 
-  function deleteNote() {
+  async function deleteNote() {
     if (!noteWordId) return;
-    if (!confirm('确定删除这条笔记吗？')) return;
+    if (!await appConfirm('确定删除这条笔记吗？')) return;
     VOCAB_API.del('/api/note/' + noteWordId + '/')
       .then(function (res) {
         if (res && res.success) {
@@ -192,9 +192,9 @@
       });
   }
 
-  function deleteQuickMemory() {
+  async function deleteQuickMemory() {
     if (!qmWordId) return;
-    if (!confirm('确定删除这条速记吗？')) return;
+    if (!await appConfirm('确定删除这条速记吗？')) return;
     VOCAB_API.del('/api/word/' + qmWordId + '/quick-memory/')
       .then(function (res) {
         if (res && res.success) {

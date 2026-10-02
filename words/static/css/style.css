@@ -235,6 +235,71 @@
   --shadow-lg: 0 10px 28px rgba(0,0,0,.5);
 }
 
+[data-theme="pureblue"] {
+  /* Pure Blue — 纯蓝白（白底 + 蓝色点缀，极简清爽） */
+  --c-bg: #f4f8fe;
+  --c-surface: #ffffff;
+  --c-surface-2: #edf3fc;
+  --c-sidebar: #ffffff;
+  --c-text: #1b2a44;
+  --c-text-2: #586a8c;
+  --c-text-3: #94a5c2;
+  --c-border: #dce7f6;
+  --c-border-light: #e9f0fa;
+
+  --c-green: #159a63;
+  --c-green-h: #107e51;
+  --c-green-bg: #dcf4e9;
+  --c-green-bg-h: #cbeedd;
+  --c-red: #e04848;
+  --c-red-h: #c93a3a;
+  --c-red-deep: #b02e2e;
+  --c-red-bg: #fdeaea;
+  --c-blue: #2563eb;
+  --c-blue-h: #1d4fd7;
+  --c-blue-bg: #e3edfe;
+  --c-purple: #6d63d6;
+  --c-purple-bg: #e9e7fb;
+  --c-amber: #d08a12;
+  --c-amber-bg: #fbf1dc;
+  --accent: #2563eb;
+  --c-accent: var(--c-blue);
+
+  --heat-empty: #e6eef9;
+  --heat-l1: #cfe0fb;
+  --heat-l2: #93b8f6;
+  --heat-l3: #4f83ef;
+  --heat-l4: #2563eb;
+
+  --shadow: 0 1px 2px rgba(30,70,140,.05), 0 2px 8px rgba(30,70,140,.06);
+  --shadow-md: 0 4px 14px rgba(30,70,140,.09);
+  --shadow-lg: 0 10px 28px rgba(30,70,140,.16);
+}
+
+/* 纯蓝白：白色侧栏（其余主题侧栏为深色，需单独覆盖文字与选中态） */
+[data-theme="pureblue"] .sidebar {
+  border-right: 1px solid var(--c-border);
+}
+[data-theme="pureblue"] .sidebar-logo {
+  color: var(--c-text);
+  border-bottom-color: var(--c-border-light);
+}
+[data-theme="pureblue"] .sidebar-logo i.ph { color: var(--c-blue); }
+[data-theme="pureblue"] .nav-group-label { color: var(--c-text-3); }
+[data-theme="pureblue"] .nav-group + .nav-group { border-top-color: var(--c-border-light); }
+[data-theme="pureblue"] .sidebar-nav a { color: var(--c-text-2); }
+[data-theme="pureblue"] .sidebar-nav a:hover {
+  background: var(--c-surface-2); color: var(--c-text);
+}
+[data-theme="pureblue"] .sidebar-nav a.active {
+  background: var(--c-blue); color: #fff; font-weight: 600;
+}
+[data-theme="pureblue"] .sidebar-nav a.active i.ph { color: #fff; }
+[data-theme="pureblue"] .top-bar {
+  background: rgba(255,255,255,.85);
+  border-bottom-color: var(--c-border-light);
+}
+
 /* ===== Phosphor icons base ===== */
 i.ph { font-size: 1.2em; vertical-align: middle; line-height: 0; }
 i.ph.ph-sm { font-size: 1em; }
@@ -425,7 +490,7 @@ h1, h2, h3, h4,
 
 .main-content {
   margin-left: var(--sidebar-w);
-  flex: 1; min-height: 100dvh;
+  flex: 1; min-height: 100dvh; min-width: 0;
   display: flex; flex-direction: column;
 }
 
@@ -462,7 +527,7 @@ h1, h2, h3, h4,
 .page-content {
   padding: 28px 32px 48px;
   max-width: 1120px;
-  width: 100%; flex: 1;
+  width: 100%; flex: 1; min-width: 0;
 }
 
 /* ===== Card System ===== */

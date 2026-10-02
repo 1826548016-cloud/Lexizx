@@ -184,7 +184,7 @@
       // 重复上传：提示并引导跳转到已有文件
       if (resp.status === 409 && result.duplicate) {
         showToast('该文件已存在：' + (result.existing_title || ''), 'error');
-        if (confirm('资料库中已存在相同内容的文件：「' + (result.existing_title || '') + '」\n是否打开已有文件？')) {
+        if (await appConfirm('资料库中已存在相同内容的文件：「' + (result.existing_title || '') + '」\n是否打开已有文件？')) {
           window.location.href = '/library/view/' + result.existing_id + '/';
         }
         btn.disabled = false;
@@ -204,7 +204,7 @@
   }
 
   async function deletePdf(id, title) {
-    if (!confirm('确定删除「' + title + '」？\n删除后文件无法恢复。')) return;
+    if (!await appConfirm('确定删除「' + title + '」？\n删除后文件无法恢复。')) return;
     try {
       var csrf = document.querySelector('[name=csrfmiddlewaretoken]');
       var resp = await fetch('/api/library/delete/' + id + '/', {
@@ -303,7 +303,7 @@
 
       if (resp.status === 409 && result.duplicate) {
         showToast('替换失败：该文件已存在于资料库中', 'error');
-        if (confirm('已存在同名内容的文件：「' + (result.existing_title || '') + '」\n是否打开已有文件？')) {
+        if (await appConfirm('已存在同名内容的文件：「' + (result.existing_title || '') + '」\n是否打开已有文件？')) {
           window.location.href = '/library/view/' + result.existing_id + '/';
         }
         throw new Error('duplicate');

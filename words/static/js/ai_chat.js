@@ -102,13 +102,13 @@ window.AIChat = (function () {
     loadData(id);
   }
 
-  function deleteConversation(id) {
+  async function deleteConversation(id) {
     var conv = null;
     for (var i = 0; i < conversations.length; i++) {
       if (conversations[i].id === id) { conv = conversations[i]; break; }
     }
     var title = conv ? conv.title : '该会话';
-    if (!confirm('确定要删除会话「' + title + '」及其全部消息记录吗？')) return;
+    if (!await appConfirm('确定要删除会话「' + title + '」及其全部消息记录吗？')) return;
     VOCAB_API.del('/api/ai/chat/conversation/' + id + '/').then(function (res) {
       if (res.success) {
         loadData();
@@ -119,9 +119,9 @@ window.AIChat = (function () {
     }).catch(function () { showToast('请求失败', 'error'); });
   }
 
-  function clearHistory() {
+  async function clearHistory() {
     if (!currentConvId) { showToast('当前没有会话', 'error'); return; }
-    if (!confirm('确定要清空当前会话的全部聊天记录吗？')) return;
+    if (!await appConfirm('确定要清空当前会话的全部聊天记录吗？')) return;
     VOCAB_API.del('/api/ai/chat/?conversation_id=' + currentConvId).then(function (res) {
       if (res.success) {
         showEmpty();

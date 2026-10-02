@@ -177,7 +177,7 @@ async function activatePlan(planId) {
 }
 
 async function deletePlan(planId, planName) {
-  if (!confirm('确定要删除计划"' + planName + '"吗？\n\n此操作不可恢复。')) {
+  if (!(await appConfirm('确定要删除计划"' + planName + '"吗？\n\n此操作不可恢复。'))) {
     return;
   }
 

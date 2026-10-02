@@ -27,7 +27,7 @@ from .models import (Unit, Word, StudyProgress, StudyPlan,
                      DailyCheckIn, Favorite, Note, QuickMemory, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, PdfDocument, Music, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog)
 from .ai_prompts import (
     quick_memory_prompt, ASSISTANT_SYSTEM_PROMPT, assistant_word_context,
-    pos_grouping_prompt, examples_prompt,
+    pos_grouping_prompt, examples_prompt, phonetics_prompt,
     RECOGNIZE_JSON_SCHEMA, RECOGNIZE_COMMON_RULES,
     recognize_image_prompt, recognize_text_prompt, recognize_file_prompt,
     ai_review_prompt, weekly_report_prompt,
@@ -639,7 +639,11 @@ def plan_create(request):
 def settings_page(request):
     settings_obj = UserSettings.get_settings()
     ai_models = AIModel.objects.all().order_by('-enabled', 'id')
-    return render(request, 'settings.html', {'settings': settings_obj, 'ai_models': ai_models})
+    return render(request, 'settings.html', {
+        'settings': settings_obj,
+        'ai_models': ai_models,
+        'app_version': 'v' + settings.APP_VERSION,
+    })
 
 
 def favorites_list(request):
@@ -2128,16 +2132,123 @@ def api_export_pdf(request):
                         filename=filename, as_attachment=True)
 
 
+def api_backup_dir(request):
+    """返回服务器端备份保存目录（每次备份都会在此目录留一份副本），供前端提示用户。"""
+    backup_dir = settings.BACKUP_DIR
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+    except Exception:
+        pass
+    return JsonResponse({'success': True, 'path': str(backup_dir)})
+
+
+GITHUB_LATEST_RELEASE_API = (
+    'https://api.github.com/repos/'
+    '1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/releases/latest'
+)
+# 作者官网版本清单（国内可达；发布新版时在官网放此 JSON 即可，无需改动程序）
+# 格式：{"latest_version":"v3.4.0","release_notes":"...","download_url":"...","published_at":"2026-10-05"}
+OFFICIAL_VERSION_JSON = 'http://english.qzx1028.space/version.json'
+RELEASE_PAGE = ('https://github.com/1826548016-cloud/'
+                'Postgraduate-Vocabulary-Memorization-System/releases/latest')
+
+
+def _parse_version(text):
+    """'v3.4.0' / '3.4.0-beta' -> (3, 4, 0)；解析失败返回 None"""
+    m = re.search(r'(\d+)\.(\d+)\.(\d+)', str(text or ''))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _http_get_json(url, timeout=6):
+    req = urllib.request.Request(
+        url,
+        headers={
+            'Accept': 'application/json',
+            'User-Agent': 'Postgraduate-Vocabulary-App',
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def api_check_update(request):
+    """检查是否有新版本。依次尝试：官网清单（国内快）→ GitHub API。
+    均不可达时友好返回，不抛错。"""
+    current = settings.APP_VERSION
+    cur_tuple = _parse_version(current)
+    payload = None
+
+    # 1) 官网版本清单（404/超时立即跳过，不影响后续）
+    try:
+        data = _http_get_json(OFFICIAL_VERSION_JSON, timeout=5)
+        if isinstance(data, dict) and _parse_version(data.get('latest_version')):
+            payload = {
+                'latest': str(data['latest_version']).strip(),
+                'release_title': data.get('release_title', ''),
+                'release_notes': data.get('release_notes', ''),
+                'html_url': data.get('download_url') or RELEASE_PAGE,
+                'published_at': str(data.get('published_at', ''))[:10],
+            }
+    except Exception:
+        payload = None
+
+    # 2) GitHub Release API
+    if payload is None:
+        try:
+            data = _http_get_json(GITHUB_LATEST_RELEASE_API, timeout=7)
+            latest_tag = data.get('tag_name') or ''
+            if not _parse_version(latest_tag):
+                raise ValueError('bad tag')
+            payload = {
+                'latest': latest_tag,
+                'release_title': data.get('name') or '',
+                'release_notes': data.get('body') or '',
+                'html_url': data.get('html_url') or RELEASE_PAGE,
+                'published_at': (data.get('published_at') or '')[:10],
+            }
+        except Exception:
+            return JsonResponse({
+                'success': False,
+                'current': 'v' + current,
+                'error': '无法连接更新服务器，请检查网络后重试',
+            })
+
+    new_tuple = _parse_version(payload['latest'])
+    payload.update({
+        'success': True,
+        'current': 'v' + current,
+        'has_update': bool(new_tuple and cur_tuple and new_tuple > cur_tuple),
+    })
+    return JsonResponse(payload)
+
+
 def api_backup(request):
-    """全量备份：设置、学习进度、背词记录、打卡、收藏、笔记、速记、计划、预设、
-    AI 模型、会话与消息、写作练习、写作好句、导入记录、学习周报。"""
+    """全量备份：词库（单元+单词）、设置、学习进度、背词记录、打卡、收藏、笔记、
+    速记、计划、预设、AI 模型、会话与消息、写作练习、写作好句、导入记录、学习周报。"""
     from django.core.serializers.json import DjangoJSONEncoder
 
     settings_obj = UserSettings.get_settings()
     data = {
-        'version': '2.0',
+        'version': '2.1',
         'exported_at': timezone.localtime().isoformat(),
         'settings': _backup_settings(settings_obj),
+        # 词库本体（v2.1 起携带，用于跨端恢复时自动补齐缺失的单元/词条）
+        'units': [
+            {'number': u.number, 'name': u.name,
+             'category': u.category, 'word_count': u.word_count}
+            for u in Unit.objects.all()
+        ],
+        'words': [
+            {
+                'word': w.word, 'phonetic_us': w.phonetic_us, 'phonetic_uk': w.phonetic_uk,
+                'pos': w.pos, 'meanings': w.meanings, 'meanings_by_pos': w.meanings_by_pos,
+                'uncommon_meanings': w.uncommon_meanings, 'collocations': w.collocations,
+                'word_forms': w.word_forms, 'example_en': w.example_en, 'example_zh': w.example_zh,
+                'category': w.category, 'unit_number': w.unit.number,
+                'list_number': w.list_number,
+            }
+            for w in Word.objects.select_related('unit').all()
+        ],
         'progress': [_backup_progress(p) for p in StudyProgress.objects.all()],
         'study_records': [
             {
@@ -2304,9 +2415,10 @@ def _backup_progress(p):
 @csrf_exempt
 @require_http_methods(['POST'])
 def api_restore(request):
-    """全量恢复：兼容 v1.0 旧备份和 v2.0 新备份。
+    """全量恢复：兼容 v1.0 / v2.0 / v2.1 备份。
+    - v2.1 备份自带 units+words 词库本体，恢复前自动补齐缺失单元与词条（只增不改）
     - v2.0 备份自带 word 字符串，可跨不同数据库的 Word.id 正常恢复
-    - v1.0 旧备份只有 word_id，若两边词库 id 不一致会跳过引用 Word 的表
+    - v1.0 旧备份只有 word_id，若两边词库不一致会跳过引用 Word 的表
     - AIModel / Conversation / WritingPractice 内部 id 做映射
     - 事务级关闭 FK 约束，恢复完恢复
     """
@@ -2318,21 +2430,14 @@ def api_restore(request):
             content = request.body.decode('utf-8')
         data = json.loads(content)
 
-        # 预先从当前库（exe）建 word → id 映射，供跨库恢复用
-        from words.models import Word
-        exe_word_map = dict(Word.objects.values_list('word', 'id'))  # {'abandon': 217, ...}
-
         skipped = {}  # 跳过计数（{表名: 条数}）
 
         def _resolve_word_id(row, table):
-            """把备份里的 word_id 转成当前库的 word_id。找不到返回 None（应跳过）"""
+            """严格按 word 字符串映射当前库的 word_id；查不到返回 None（跳过）。
+            不回退使用原 word_id，避免 id 撞车错挂到别的单词上。"""
             w = row.get('word')
             if w and w in exe_word_map:
-                return exe_word_map[w]  # v2.0 备份：word 字符串命中
-            # 旧备份或 word 不匹配：直接用 word_id（两边 id 相同的情况也能工作）
-            wid = row.get('word_id')
-            if wid and Word.objects.filter(id=wid).exists():
-                return wid
+                return exe_word_map[w]
             skipped[table] = skipped.get(table, 0) + 1
             return None
 
@@ -2340,6 +2445,61 @@ def api_restore(request):
             with connection.cursor() as cur:
                 cur.execute('PRAGMA foreign_keys = OFF')
             try:
+                # --- 0) 补齐词库：v2.1 备份携带 units+words，只增不改 ---
+                units_added = 0
+                words_added = 0
+                existing_numbers = set(Unit.objects.values_list('number', flat=True))
+                for u in data.get('units', []):
+                    num = u.get('number')
+                    if num is None or num in existing_numbers:
+                        continue
+                    Unit.objects.create(
+                        number=num, name=u.get('name') or f'List {num}',
+                        category=u.get('category', 'required'),
+                        word_count=u.get('word_count', 0))
+                    existing_numbers.add(num)
+                    units_added += 1
+
+                existing_words = set(Word.objects.values_list('word', flat=True))
+                unit_id_by_number = dict(Unit.objects.values_list('number', 'id'))
+                next_unit_number = (max(existing_numbers) if existing_numbers else 0) + 1
+                fallback_unit_id = None
+                for wd in data.get('words', []):
+                    wtext = (wd.get('word') or '').strip()
+                    if not wtext or wtext in existing_words:
+                        continue  # 目标库已有：绝不覆盖用户编辑过的内容
+                    unit_id = unit_id_by_number.get(wd.get('unit_number'))
+                    if unit_id is None:
+                        # 备份里单元信息缺失：统一挂到兜底单元
+                        if fallback_unit_id is None:
+                            fu = Unit.objects.create(
+                                number=next_unit_number, name='导入词汇',
+                                category='advanced', word_count=0)
+                            unit_id_by_number[next_unit_number] = fu.id
+                            fallback_unit_id = fu.id
+                            units_added += 1
+                        unit_id = fallback_unit_id
+                    Word.objects.create(
+                        word=wtext,
+                        phonetic_us=wd.get('phonetic_us', '') or '',
+                        phonetic_uk=wd.get('phonetic_uk', '') or '',
+                        pos=wd.get('pos', '') or '',
+                        meanings=wd.get('meanings', '[]') or '[]',
+                        meanings_by_pos=wd.get('meanings_by_pos', '{}') or '{}',
+                        uncommon_meanings=wd.get('uncommon_meanings', '[]') or '[]',
+                        collocations=wd.get('collocations', '[]') or '[]',
+                        word_forms=wd.get('word_forms', '{}') or '{}',
+                        example_en=wd.get('example_en', '') or '',
+                        example_zh=wd.get('example_zh', '') or '',
+                        category=wd.get('category', 'advanced'),
+                        unit_id=unit_id,
+                        list_number=wd.get('list_number', 1) or 1)
+                    existing_words.add(wtext)
+                    words_added += 1
+
+                # 补齐后重建映射，供后续所有表带 word 的记录使用
+                exe_word_map = dict(Word.objects.values_list('word', 'id'))
+
                 # --- 1) AI 模型（必须先恢复，其他表 FK 引用模型 id）---
                 id_map = {}
                 if data.get('ai_models'):
@@ -2574,10 +2734,15 @@ def api_restore(request):
                     cur2.execute('PRAGMA foreign_keys = ON')
 
         msg = '恢复完成'
+        if words_added or units_added:
+            msg += f'（已随备份补齐 {units_added} 个单元、{words_added} 个词条）'
         if skipped:
             total_skipped = sum(skipped.values())
-            msg += f'（跳过 {total_skipped} 条词库 id 不匹配的数据：'
+            msg += f'（跳过 {total_skipped} 条词库中不存在的单词数据：'
             msg += ', '.join(f'{k} {v}条' for k, v in skipped.items()) + '）'
+            if not data.get('words'):
+                msg += ('。该备份由旧版本生成，不包含词库本体，新增的单元/单词无法随备份恢复；'
+                        '请在新版程序中重新备份，或先在本机导入对应词库后再恢复')
         return JsonResponse({'success': True, 'message': msg})
     except Exception as e:
         import traceback
@@ -4157,16 +4322,18 @@ def _extract_json_array(content):
 
 
 def ai_complete_words(word_objs):
-    """导入后自动 AI 补全：为缺按词性释义 / 例句的单词批量生成（失败静默，不影响导入结果）"""
+    """导入后自动 AI 补全：为缺音标 / 缺按词性释义 / 缺例句的单词批量生成（失败静默，不影响导入结果）"""
     if not word_objs:
         return
+    # 缺音标：美式音标为空（英式缺失会在写入时用美式填充）
+    need_ph = [w for w in word_objs if not w.phonetic_us.strip()]
     # 需要按词性归类的：没有按词性释义，或全部被归到「未分类」
     need_pos = [
         w for w in word_objs
         if not w.get_meanings_by_pos() or all(k == '未分类' for k in w.get_meanings_by_pos())
     ]
     need_ex = [w for w in word_objs if not w.example_en.strip()]
-    if not need_pos and not need_ex:
+    if not need_ph and not need_pos and not need_ex:
         return
     settings_obj = UserSettings.get_settings()
     model_data = {}
@@ -4182,7 +4349,30 @@ def ai_complete_words(word_objs):
         return '%s | %s | %s' % (w.word, w.pos or '', '；'.join(w.get_meanings()))
 
     try:
-        # 1) 补按词性释义
+        # 1) 补音标（temperature 0.1，保证读音标注稳定）
+        for i in range(0, len(need_ph), batch):
+            chunk = need_ph[i:i + batch]
+            try:
+                data = _extract_json_object(
+                    _ai_chat_once(cfg, phonetics_prompt([w.word for w in chunk]),
+                                  max_tokens=2000, temperature=0.1))
+            except Exception:
+                data = {}
+            for w in chunk:
+                item = data.get(w.word)
+                if not isinstance(item, dict):
+                    continue
+                us = normalize_phonetic(item.get('us') or item.get('phonetic_us'))
+                uk = normalize_phonetic(item.get('uk') or item.get('phonetic_uk'))
+                if not us:
+                    continue
+                if not uk:
+                    uk = us
+                w.phonetic_us = us
+                w.phonetic_uk = uk
+                w.save(update_fields=['phonetic_us', 'phonetic_uk'])
+            time.sleep(0.5)
+        # 2) 补按词性释义
         for i in range(0, len(need_pos), batch):
             chunk = need_pos[i:i + batch]
             lines = [_word_line(w) for w in chunk]
@@ -4197,7 +4387,7 @@ def ai_complete_words(word_objs):
                     w.meanings_by_pos = json.dumps(item, ensure_ascii=False)
                     w.save(update_fields=['meanings_by_pos'])
             time.sleep(0.5)
-        # 2) 补例句
+        # 3) 补例句
         for i in range(0, len(need_ex), batch):
             chunk = need_ex[i:i + batch]
             lines = [_word_line(w) for w in chunk]
@@ -4829,6 +5019,21 @@ def _ffmpeg_bin(name):
 
 
 _AAC_OK = None
+_FFMPEG_OK = None
+
+
+def _ffmpeg_available():
+    """快速检测 ffmpeg 是否可执行（结果缓存）"""
+    global _FFMPEG_OK
+    if _FFMPEG_OK is not None:
+        return _FFMPEG_OK
+    try:
+        ffmpeg = _ffmpeg_bin('FFMPEG_PATH')
+        r = subprocess.run([ffmpeg, '-version'], capture_output=True, timeout=10)
+        _FFMPEG_OK = (r.returncode == 0)
+    except Exception:
+        _FFMPEG_OK = False
+    return _FFMPEG_OK
 
 
 def _has_aac_encoder():
@@ -4898,6 +5103,10 @@ def _get_duration(video_path):
         return 0.0
 
 
+# 浏览器（Chromium/WebView2）无需 ffmpeg 即可直接播放其音轨的容器
+_DIRECT_PLAY_EXTS = {'.mp4', '.m4v', '.mov', '.webm'}
+
+
 def music_library(request):
     """音乐库列表页：支持按歌名搜索 + 分页"""
     q = request.GET.get('q', '').strip()
@@ -4916,11 +5125,12 @@ def music_library(request):
 
 def music_player(request):
     """独立迷你播放器窗口：不继承主站布局，刷新主页面不影响播放"""
-    songs = list(Music.objects.filter(transcode_status='done').order_by('-created_at'))
+    songs = list(Music.objects.filter(transcode_status__in=['done', 'direct']).order_by('-created_at'))
     data = [{
         'id': s.id, 'title': s.title, 'duration': s.duration,
-        'audio_url': s.audio_file.url if s.audio_file else '',
+        'audio_url': s.audio_file.url if s.audio_file else (s.video_file.url if s.video_file else ''),
         'video_url': s.video_file.url if s.video_file else '',
+        'direct': s.transcode_status == 'direct',
     } for s in songs]
     raw_id = request.GET.get('id')
     current_id = None
@@ -4955,20 +5165,31 @@ def api_music_upload(request):
         # 同步转码：提取音轨
         try:
             video_path = song.video_file.path
-            song.duration = _get_duration(video_path)
+            if _ffmpeg_available():
+                song.duration = _get_duration(video_path)
             audio_path = os.path.join(settings.MEDIA_ROOT, 'music', 'audio',
                                       f'song_{song.id}.mp4')
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-            ok, diag = _extract_audio(video_path, audio_path)
-            if ok:
-                from django.core.files import File
-                with open(audio_path, 'rb') as f:
-                    song.audio_file.save(os.path.basename(audio_path), File(f), save=False)
-                song.transcode_status = 'done'
+            # ffmpeg 不可用且浏览器可直放：跳过转码，直接用原文件
+            if not _ffmpeg_available() and ext in _DIRECT_PLAY_EXTS:
+                song.transcode_status = 'direct'
+                print(f'[Music] 无 ffmpeg，浏览器直放 id={song.id}')
             else:
-                song.transcode_status = 'failed'
-                song.transcode_error = diag
-                print(f'[Music] 音轨提取失败 id={song.id}: {diag}')
+                ok, diag = _extract_audio(video_path, audio_path)
+                if ok:
+                    from django.core.files import File
+                    with open(audio_path, 'rb') as f:
+                        song.audio_file.save(os.path.basename(audio_path), File(f), save=False)
+                    song.transcode_status = 'done'
+                elif ext in _DIRECT_PLAY_EXTS:
+                    # 兜底：ffmpeg 存在但转码失败，浏览器可直接播放原文件音轨
+                    song.transcode_status = 'direct'
+                    song.transcode_error = ''
+                    print(f'[Music] 未提取音轨，浏览器直放 id={song.id}（{diag[:120]}）')
+                else:
+                    song.transcode_status = 'failed'
+                    song.transcode_error = diag
+                    print(f'[Music] 音轨提取失败 id={song.id}: {diag}')
         except Exception as e:
             song.transcode_status = 'failed'
             song.transcode_error = str(e)[:300]

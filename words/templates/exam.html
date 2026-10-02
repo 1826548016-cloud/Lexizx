@@ -436,6 +436,37 @@ function examNext() {
   else submitExam();
 }
 
+// ===== 键盘操作：A-F 选选项，← → 切题，答题区回车保存，Ctrl+回车下一题/交卷 =====
+document.addEventListener('keydown', function (e) {
+  const answerEl = document.getElementById('examAnswer');
+  if (!answerEl || answerEl.classList.contains('hidden')) return;
+  if (document.querySelector('.app-dialog-mask')) return; // 交卷确认框打开时让给弹窗
+  const tag = e.target && e.target.tagName;
+  const typing = tag === 'INPUT' || tag === 'TEXTAREA';
+  if (typing) {
+    if (e.key === 'Enter' && (e.altKey || e.ctrlKey)) {
+      e.preventDefault();
+      flushCurrentAnswer();
+      examNext();
+    }
+    return;
+  }
+  if (e.key === 'ArrowRight' || e.key === 'Enter') {
+    e.preventDefault();
+    examNext();
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    examPrev();
+  } else {
+    const idx = ['a', 'b', 'c', 'd', 'e', 'f'].indexOf(e.key.toLowerCase());
+    const q = examState.questions[examCurrent];
+    if (idx >= 0 && q && q.options && idx < q.options.length) {
+      e.preventDefault();
+      selectOption(idx);
+    }
+  }
+});
+
 // ===== 逐题 AI 释义判定（答一题判一题，结果缓存到服务端 session；只判定不写库）=====
 function judgeMeaning(id) {
   if (!examState.judgments) examState.judgments = {};
@@ -570,9 +601,9 @@ async function submitExam() {
   const total = examState.questions.length;
   const answered = Object.keys(examState.answers).length;
   if (answered < total) {
-    if (!confirm('还有 ' + (total - answered) + ' 题未作答，确定交卷？未作答的题按错误计分，但不会改变单词的掌握状态。')) return;
+    if (!await appConfirm('还有 ' + (total - answered) + ' 题未作答，确定交卷？未作答的题按错误计分，但不会改变单词的掌握状态。')) return;
   } else {
-    if (!confirm('确定交卷吗？交卷后将自动更新单词掌握状态。')) return;
+    if (!await appConfirm('确定交卷吗？交卷后将自动更新单词掌握状态。')) return;
   }
   if (examTimerInt) { clearInterval(examTimerInt); examTimerInt = null; }
 

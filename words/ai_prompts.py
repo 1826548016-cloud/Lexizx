@@ -114,6 +114,23 @@ def pos_grouping_prompt(lines):
     return _pos_grouping_prompt(lines, cli=False)
 
 
+def phonetics_prompt(lines):
+    """页面接口（ai_complete_words）使用的批量补音标提示词。"""
+    return (
+        '请为下列英语单词标注标准 IPA 国际音标。\n'
+        '返回一个 JSON 对象：键名严格等于原单词（注意大小写），'
+        '值为 {"us": "美式音标", "uk": "英式音标"}，音标必须用 / 包裹，'
+        '如 {"abandon": {"us": "/əˈbændən/", "uk": "/əˈbændən/"}}。\n'
+        '要求：\n'
+        '- 美式、英式音标都要给出；若英美读音相同则填一样的\n'
+        '- 重音符号 ˈ 与次重音 ˌ 必须准确\n'
+        '- 词组按正常连读标注即可\n'
+        '- 所有单词都要出现在 JSON 中，不要遗漏\n'
+        '- 只输出 JSON 本身，不要输出任何多余文字、不要用代码块包裹\n\n'
+        '单词列表：\n' + '\n'.join(lines)
+    )
+
+
 def pos_grouping_cli_prompt(lines):
     """命令行（optimize_pos_meanings）使用的按词性归类提示词。"""
     return _pos_grouping_prompt(lines, cli=True)

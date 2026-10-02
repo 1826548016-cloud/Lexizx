@@ -4,6 +4,125 @@ function initFontSize() {
   document.documentElement.setAttribute('data-font-size', size);
 }
 
+// ===== 全局自定义弹窗（替代系统原生黑框 alert/confirm，居中且跟随主题）=====
+var AppDialog = (function () {
+  var CSS = ''
+    + '.app-dialog-mask{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;'
+    + 'background:rgba(30,25,15,.38);backdrop-filter:blur(2px);animation:appDlgFade .18s ease;}'
+    + '.app-dialog{width:min(440px,calc(100vw - 48px));max-height:70vh;overflow:auto;border-radius:var(--radius-lg);'
+    + 'background:var(--c-surface);box-shadow:var(--shadow-lg);border:1px solid var(--c-border-light);'
+    + 'padding:22px 24px 18px;animation:appDlgPop .2s cubic-bezier(.2,.9,.3,1.2);}'
+    + '.app-dialog-body{color:var(--c-text);font-size:.95rem;line-height:1.75;white-space:pre-wrap;word-break:break-word;}'
+    + '.app-dialog-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;}'
+    + '@keyframes appDlgFade{from{opacity:0}to{opacity:1}}'
+    + '@keyframes appDlgPop{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:none}}';
+
+  function ensureCss() {
+    if (document.getElementById('app-dialog-css')) return;
+    var st = document.createElement('style');
+    st.id = 'app-dialog-css';
+    st.textContent = CSS;
+    document.head.appendChild(st);
+  }
+
+  // 同时只显示一个；新弹窗入队
+  var queue = [];
+  var active = false;
+
+  function next() {
+    active = false;
+    if (queue.length) {
+      var job = queue.shift();
+      run(job.message, job.showCancel, job.resolve, job.opts);
+    }
+  }
+
+  function run(message, showCancel, resolve, opts) {
+    opts = opts || {};
+    active = true;
+    ensureCss();
+    var mask = document.createElement('div');
+    mask.className = 'app-dialog-mask';
+    var dlg = document.createElement('div');
+    dlg.className = 'app-dialog';
+    dlg.setAttribute('role', 'dialog');
+
+    var body = document.createElement('div');
+    body.className = 'app-dialog-body';
+    body.textContent = message == null ? '' : String(message);
+    dlg.appendChild(body);
+
+    var input = null;
+    if (opts.withInput) {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'form-input';
+      input.value = opts.defaultValue || '';
+      input.style.marginTop = '14px';
+      dlg.appendChild(input);
+    }
+
+    var footer = document.createElement('div');
+    footer.className = 'app-dialog-footer';
+
+    function close(result) {
+      document.removeEventListener('keydown', onKey, true);
+      mask.remove();
+      resolve(result);
+      next();
+    }
+
+    var okBtn = document.createElement('button');
+    okBtn.className = 'btn btn-primary btn-sm';
+    okBtn.textContent = '确定';
+    okBtn.onclick = function () { close(input ? input.value : true); };
+
+    if (showCancel) {
+      var cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn btn-secondary btn-sm';
+      cancelBtn.textContent = '取消';
+      cancelBtn.onclick = function () { close(input ? null : false); };
+      footer.appendChild(cancelBtn);
+    }
+    footer.appendChild(okBtn);
+    dlg.appendChild(footer);
+    mask.appendChild(dlg);
+    document.body.appendChild(mask);
+
+    function onKey(e) {
+      if (e.key === 'Enter') { e.preventDefault(); close(input ? input.value : true); }
+      else if (e.key === 'Escape' && showCancel) { e.preventDefault(); close(input ? null : false); }
+    }
+    document.addEventListener('keydown', onKey, true);
+    setTimeout(function () { if (input) { input.focus(); input.select(); } else { okBtn.focus(); } }, 30);
+  }
+
+  function open(message, showCancel, opts) {
+    return new Promise(function (resolve) {
+      if (active) { queue.push({ message: message, showCancel: showCancel, resolve: resolve, opts: opts }); return; }
+      run(message, showCancel, resolve, opts);
+    });
+  }
+
+  return {
+    // 提示框（单按钮）
+    alert: function (message) { return open(message, false); },
+    // 确认框：Promise<boolean>
+    confirm: function (message) { return open(message, true); },
+    // 输入框：确定返回字符串，取消返回 null
+    prompt: function (message, defaultValue) {
+      return open(message, true, { withInput: true, defaultValue: defaultValue });
+    },
+  };
+})();
+
+function appAlert(message) { return AppDialog.alert(message); }
+function appConfirm(message) { return AppDialog.confirm(message); }
+function appPrompt(message, defaultValue) { return AppDialog.prompt(message, defaultValue); }
+
+// 全局接管原生 alert：所有现有 alert() 零改动自动变成自定义弹窗
+window.alert = function (message) { AppDialog.alert(message); };
+
 // ===== Toast =====
 function showToast(message, type, duration) {
   type = type || 'success';

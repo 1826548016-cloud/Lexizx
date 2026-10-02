@@ -543,7 +543,7 @@
       els.checkInput.disabled = true;
       els.checkSubmitBtn.disabled = false;
       els.checkSubmitBtn.textContent = '开始默写';
-      els.checkHint.innerHTML = '<span class="gate-badge">第 1/3 步</span> 先看单词拼写和释义，熟悉后点「开始默写」';
+      els.checkHint.innerHTML = '<span class="gate-badge">第 1/3 步</span> 先看单词拼写和释义，熟悉后按 <strong>空格</strong>（或点按钮）开始默写';
       els.checkInput.placeholder = '先看上面单词和释义';
     } else if (checkMode === 'meaning') {
       els.wordCard.classList.remove('is-spelling');
@@ -1147,10 +1147,10 @@
   });
 
   // 永不忘记：标记后当前词直接跳过，不计入统计
-  function skipWord() {
+  async function skipWord() {
     if (!currentWord || checked) return;
     var w = currentWord;
-    if (!confirm('标记「' + w.word + '」为永不忘记？之后它将不再出现在背诵/复习中。')) return;
+    if (!await appConfirm('标记「' + w.word + '」为永不忘记？之后它将不再出现在背诵/复习中。')) return;
     VOCAB_API.post('/api/mark/skip/' + w.id + '/', { source: 'review', mode: checkMode })
       .then(function (res) {
         if (res && res.success) {
@@ -1185,6 +1185,8 @@
 
   // Keyboard
   document.addEventListener('keydown', function (e) {
+    // 全局确认弹窗打开时，快捷键一律让给弹窗（回车=确定等）
+    if (document.querySelector('.app-dialog-mask')) return;
     // 笔记/速记展开区打开时：仅响应 ESC 收起，其余按键不触发复习操作
     if (window.WordExtPanel && WordExtPanel.isOpen()) {
       if (e.key === 'Escape') WordExtPanel.closeExtPanel();
@@ -1197,9 +1199,13 @@
     }
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     if (els.wordCard.classList.contains('hidden')) return; // 展示小结/完成卡片时忽略操作键
-    // 高效模式：屏蔽空格/会/不会快捷键；上一词自由切换，下一词仅在已背诵的词之间可用
+    // 高效模式：空格开始默写；上一词自由切换，下一词仅在已复习的词之间可用
     if (checkMode === 'gates') {
-      if (e.code === 'ArrowLeft') { e.preventDefault(); goPrev(); }
+      if (e.code === 'Space' && gateStage === 0) {
+        e.preventDefault();
+        startGateSpelling(); // 预看阶段：空格直接进入拼写默写并聚焦输入框
+      }
+      else if (e.code === 'ArrowLeft') { e.preventDefault(); goPrev(); }
       else if (e.code === 'ArrowRight') { e.preventDefault(); if (gateDone[currentIndex] === true || gateDone[currentIndex + 1] === true) goNext(); }
       return;
     }

@@ -175,6 +175,8 @@
       <div class="s">
         {% if song.transcode_status == 'done' %}
           <span style="color: #31c27c;"><i class="ph ph-check-circle"></i> 已就绪</span>
+        {% elif song.transcode_status == 'direct' %}
+          <span style="color: var(--c-blue);"><i class="ph ph-lightning"></i> 免转码直放</span>
         {% elif song.transcode_status == 'failed' %}
           <span style="color: var(--c-red);" title="{{ song.transcode_error }}"><i class="ph ph-warning-circle"></i> 音轨提取失败</span>
         {% else %}
@@ -185,10 +187,10 @@
     </div>
     <span class="qm-dur">{{ song.duration_display }}</span>
     <div class="qm-ops">
-      {% if song.transcode_status == 'done' %}
+      {% if song.transcode_status == 'done' or song.transcode_status == 'direct' %}
       <button class="qm-play-main" onclick="playMusic({{ song.id }})" title="播放"><i class="ph ph-play"></i></button>
       {% else %}
-      <button class="qm-play-main" disabled title="待转码"><i class="ph ph-play"></i></button>
+      <button class="qm-play-main" disabled title="暂不可播（音轨提取失败）"><i class="ph ph-play"></i></button>
       {% endif %}
       <button class="op" onclick="openEditSong({{ song.id }}, '{{ song.title|escapejs }}')" title="编辑歌名"><i class="ph ph-pencil"></i></button>
       <button class="op danger" onclick="deleteMusic({{ song.id }}, '{{ song.title|escapejs }}')" title="删除"><i class="ph ph-trash"></i></button>
@@ -324,6 +326,8 @@
         showToast('文件已保存，但音轨提取失败', 'error');
       } else if (result.status === 'done') {
         showToast('上传成功，音轨已提取', 'success');
+      } else if (result.status === 'direct') {
+        showToast('上传成功，将直接播放原文件', 'success');
       } else {
         showToast('上传成功，正在提取音轨…', 'success');
       }
@@ -359,7 +363,7 @@
   }
 
   async function deleteMusic(id, title) {
-    if (!confirm('确定删除「' + title + '」？\n删除后文件无法恢复。')) return;
+    if (!await appConfirm('确定删除「' + title + '」？\n删除后文件无法恢复。')) return;
     try {
       var csrf = document.querySelector('[name=csrfmiddlewaretoken]');
       var resp = await fetch('/api/music/delete/' + id + '/', {

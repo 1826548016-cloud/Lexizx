@@ -6,6 +6,9 @@ import os
 import sys
 from pathlib import Path
 
+# 应用版本号（检查更新、关于页展示统一引用此处）
+APP_VERSION = '3.3.0'
+
 # ===== 运行模式检测 =====
 # PyInstaller 打包后：sys.frozen=True，sys._MEIPASS 指向解压的只读资源目录
 # 开发模式：BASE_DIR 是项目根目录

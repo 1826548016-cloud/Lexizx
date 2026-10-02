@@ -347,6 +347,7 @@ class UserSettings(models.Model):
     THEME_CHOICES = [
         ('light', '暖纸浅色'),
         ('blue', '清爽蓝白'),
+        ('pureblue', '纯蓝白'),
         ('sepia', '复古牛皮'),
         ('dark', '深夜书桌'),
         ('nightblue', '星空午夜'),
@@ -567,6 +568,7 @@ class Music(models.Model):
     TRANSCODE_CHOICES = [
         ('pending', '转码中'),
         ('done', '已完成'),
+        ('direct', '免转码直放'),
         ('failed', '失败'),
     ]
     title = models.CharField(max_length=200, verbose_name='标题')
@@ -588,6 +590,8 @@ class Music(models.Model):
         return self.title
 
     def duration_display(self):
+        if not self.duration:
+            return '—'
         m = int(self.duration) // 60
         s = int(self.duration) % 60
         return f'{m}:{s:02d}'

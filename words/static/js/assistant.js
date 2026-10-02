@@ -269,8 +269,8 @@ window.AssistantPanel = (function () {
     send('请讲解单词 "' + w.word + '" 的考法、常见搭配和记忆技巧');
   }
 
-  function clearHistory() {
-    if (!confirm('确定要清空小助手的全部聊天记录吗？')) return;
+  async function clearHistory() {
+    if (!await appConfirm('确定要清空小助手的全部聊天记录吗？')) return;
     VOCAB_API.del('/api/assistant/').then(function (res) {
       if (res.success) {
         renderMessages([]);

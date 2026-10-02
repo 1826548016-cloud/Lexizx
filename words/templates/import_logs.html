@@ -104,7 +104,7 @@
 
 <script>
   async function deleteImportLog(logId) {
-    if (!confirm('确定删除这条导入记录吗？（仅删除记录，不影响已导入的单词）')) return;
+    if (!await appConfirm('确定删除这条导入记录吗？（仅删除记录，不影响已导入的单词）')) return;
     try {
       var res = await VOCAB_API.post('/api/import-log/delete/' + logId + '/');
       if (res.success) {

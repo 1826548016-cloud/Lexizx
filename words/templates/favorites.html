@@ -13,6 +13,9 @@
     <span class="text-sm text-secondary" style="font-weight: 400;">共 {{ favorites|length }} 个</span>
   </h2>
   <div class="flex gap-2">
+    <a href="{% url 'words:api_export_pdf' %}?type=favorites" target="_blank" class="btn btn-secondary btn-sm"><i class="ph ph-file-pdf"></i> 导出 PDF</a>
+    <a href="{% url 'words:api_export_pdf' %}?type=favorites&dictation=en2zh" target="_blank" class="btn btn-secondary btn-sm" title="看英文写中文默写纸">英→中默写纸</a>
+    <a href="{% url 'words:api_export_pdf' %}?type=favorites&dictation=zh2en" target="_blank" class="btn btn-secondary btn-sm" title="看中文写英文默写纸">中→英默写纸</a>
     <a href="{% url 'words:learn_session' %}?mode=random&units=" class="btn btn-primary btn-sm">从收藏开始背诵</a>
   </div>
 </div>

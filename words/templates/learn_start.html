@@ -442,7 +442,7 @@ function startPreset(card) {
 async function deletePreset(btn) {
   const id = btn.getAttribute('data-id');
   const name = btn.getAttribute('data-name');
-  if (!id || !confirm('确定要删除预设"' + name + '"吗？')) return;
+  if (!id || !await appConfirm('确定要删除预设"' + name + '"吗？')) return;
   try {
     const res = await VOCAB_API.post('/api/preset/delete/' + id + '/');
     if (res.success) {

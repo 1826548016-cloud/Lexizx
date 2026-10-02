@@ -7,6 +7,7 @@
 {% block extra_head %}
 <style>
   .vocab-workspace { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .vocab-workspace > * { min-width: 0; }
   .vocab-sidebar { position: sticky; top: 16px; padding: 12px; }
   .vocab-nav-item { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 9px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-text); font: inherit; cursor: pointer; text-align: left; }
   .vocab-nav-item:hover, .vocab-nav-item.active { background: var(--c-surface-2); color: var(--c-green); }
@@ -23,8 +24,9 @@
   .filter-panel { margin: 0 0 12px; padding: 0; }
   .filter-panel summary { cursor: pointer; list-style: none; padding: 10px 12px; color: var(--c-text-2); font-size: var(--fs-sm); }
   .filter-panel summary::-webkit-details-marker { display: none; }
-  .filter-fields { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; padding: 0 12px 12px; }
-  .vocab-summary { display: flex; align-items: center; gap: 10px; min-height: 32px; margin-bottom: 10px; color: var(--c-text-2); font-size: var(--fs-sm); }
+  .filter-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; padding: 0 12px 12px; }
+  .vocab-summary { display: flex; align-items: center; gap: 10px; min-height: 32px; margin-bottom: 10px; color: var(--c-text-2); font-size: var(--fs-sm); flex-wrap: wrap; }
+  #pagination { flex-wrap: wrap; row-gap: 8px; }
   .quick-filter { border: 0; background: transparent; color: var(--c-text-2); font: inherit; cursor: pointer; padding: 3px 8px; border-radius: 999px; }
   .quick-filter:hover, .quick-filter.active { background: var(--c-surface-2); color: var(--c-green); }
   .vocab-table th:first-child, .vocab-table td:first-child { width: 42px; color: var(--c-text-3); }
@@ -587,7 +589,7 @@
   async function toggleWordExcluded(wordId, exclude, btn) {
     var action = exclude ? 'skip' : 'unskip';
     var confirmMsg = exclude ? '标记此词为「永不忘记」？之后它将不再出现在背诵/复习中。' : '恢复此词？之后它将重新出现在背诵/复习中。';
-    if (!confirm(confirmMsg)) return;
+    if (!await appConfirm(confirmMsg)) return;
     try {
       var res = await VOCAB_API.post('/api/mark/' + action + '/' + wordId + '/', {});
       if (res.success) {
@@ -844,9 +846,9 @@
   }
 
   // 添加 / 移除常用词性
-  function toggleQuickPos(k) {
+  async function toggleQuickPos(k) {
     if (Object.prototype.hasOwnProperty.call(wmPosData, k)) {
-      if (confirm('确定删除词性 "' + k + '" 及其所有释义吗？')) {
+      if (await appConfirm('确定删除词性 "' + k + '" 及其所有释义吗？')) {
         delete wmPosData[k];
         renderPosEditor();
       }
@@ -857,8 +859,8 @@
   }
 
   // 增：自定义词性
-  function addCustomPos() {
-    var tag = prompt('输入自定义词性标签（如 vt.、phr.、modal.）');
+  async function addCustomPos() {
+    var tag = await appPrompt('输入自定义词性标签（如 vt.、phr.、modal.）');
     if (!tag) return;
     tag = tag.trim().replace(/[^a-zA-Z.]+/g, '');
     if (!tag) return;
@@ -869,15 +871,15 @@
   }
 
   // 删：删除整个词性及其释义
-  function removePos(k) {
-    if (!confirm('确定删除词性 "' + k + '" 及其所有释义吗？')) return;
+  async function removePos(k) {
+    if (!await appConfirm('确定删除词性 "' + k + '" 及其所有释义吗？')) return;
     delete wmPosData[k];
     renderPosEditor();
   }
 
   // 改：重命名词性（保留其下释义）
-  function renamePos(k) {
-    var newTag = prompt('重命名词性（当前：' + k + '）', k);
+  async function renamePos(k) {
+    var newTag = await appPrompt('重命名词性（当前：' + k + '）', k);
     if (!newTag) return;
     newTag = newTag.trim().replace(/[^a-zA-Z.]+/g, '');
     if (!newTag || newTag === k) return;
@@ -983,7 +985,7 @@
 
   // ===== Delete Word =====
   async function deleteWord(wordId, wordText) {
-    if (!confirm('确定要删除 "' + wordText + '" 吗？')) return;
+    if (!await appConfirm('确定要删除 "' + wordText + '" 吗？')) return;
     try {
       var res = await VOCAB_API.del('/api/word/delete/' + wordId + '/');
       if (res.success) {
@@ -1221,7 +1223,7 @@
   }
 
   async function deleteUnit(unitNumber, unitName) {
-    if (!confirm('确定要删除"' + unitName + '"吗？\n\n该单元下的所有单词也会被一起删除，此操作不可恢复。')) {
+    if (!await appConfirm('确定要删除"' + unitName + '"吗？\n\n该单元下的所有单词也会被一起删除，此操作不可恢复。')) {
       return;
     }
 
