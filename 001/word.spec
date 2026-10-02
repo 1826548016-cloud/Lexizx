@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置：把 Django 项目打成单 exe。
+"""PyInstaller 打包配置：把 Django 项目打成单 exe（原生窗口版，无控制台、无浏览器）。
 用法：在项目根目录执行
     cd d:\\word\\001
     pyinstaller word.spec
@@ -24,21 +24,23 @@ import vocab_project    # noqa: E402
 datas = []
 datas += collect_data_files('words')           # words/templates/、words/static/
 datas += collect_data_files('vocab_project')   # vocab_project/templates/ 等
-# 红宝书词库 JSON（首次启动 import_words 用）
-datas += [(str(Path(PROJECT_ROOT) / 'data'), 'data')]
+datas += collect_data_files('webview')         # webview 需要自己的 web 资源
+# 红宝书词库 JSON（首启自动导入）——只打包词库，不打 db.sqlite3 等用户数据
+datas += [(str(Path(PROJECT_ROOT) / 'data' / 'hongbaoshu.json'), 'data')]
 
 # ===== 隐藏导入（Django 动态加载的模块）=====
 hiddenimports = []
-hiddenimports += collect_submodules('words')            # 含 migrations、management commands
+hiddenimports += collect_submodules('words')
 hiddenimports += collect_submodules('vocab_project')
-hiddenimports += collect_submodules('django.contrib')   # admin、auth、sessions 等动态 import
+hiddenimports += collect_submodules('django.contrib')
+hiddenimports += collect_submodules('webview')           # webview 的动态子模块
 hiddenimports += ['vocab_project.settings', 'vocab_project.urls', 'vocab_project.wsgi']
 # words 包关键模块兜底（Django 通过字符串动态 import，必须显式声明）
 hiddenimports += [
     'words', 'words.apps', 'words.urls', 'words.views', 'words.models',
     'words.ai_exam_prompts', 'words.admin',
 ]
-# management commands（首次启动 launch.py 通过 call_command 调用，必须显式声明）
+# management commands（首启 launch.py 通过 call_command 调用，必须显式声明）
 hiddenimports += [
     'words.management.commands.generate_examples',
     'words.management.commands.import_cet6_translations',
@@ -71,9 +73,9 @@ exe = EXE(
     a.datas,
     [],
     name='word',
-    console=True,            # 保留控制台，便于看启动日志和报错
+    console=False,            # 无黑框控制台，完全桌面软件体验
     disable_windowed_traceback=False,
-    onefile=True,            # 单 exe
-    icon=None,               # 如有 icon.ico，改成 icon='icon.ico'
+    onefile=True,             # 单 exe
+    icon='D:\\word\\ioc\\03_learning_cycle.ico',
     runtime_tmpdir=None,
 )

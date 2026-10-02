@@ -1,2 +1,3 @@
 Django>=4.2,<5.0
 reportlab>=4.0,<6.0
+pywebview>=5.0  # 打包 exe 后提供原生桌面窗口（Edge WebView2 内核）
