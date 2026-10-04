@@ -1,0 +1,255 @@
+﻿<!-- 软件使用、隐私、知识产权及二次创作声明：首次使用强制同意（gate）；设置页可随时查看（viewer） -->
+<div id="privacyMask"
+     class="modal-overlay privacy-mask{% if privacy_agreed %} hidden{% else %} privacy-gate{% endif %}"
+     data-version="{{ privacy_version }}"
+     onclick="if(event.target===this && !this.classList.contains('privacy-gate')) PrivacyUI.close()">
+  <div class="modal privacy-modal" role="dialog" aria-modal="true" aria-label="软件使用、隐私、知识产权及二次创作声明">
+    <div class="privacy-head">
+      <div class="privacy-head-title"><i class="ph ph-shield-check"></i> 软件使用、隐私、知识产权及二次创作声明</div>
+      <button type="button" class="privacy-x" id="privacyCloseX" aria-label="关闭"><i class="ph ph-x"></i></button>
+    </div>
+    <div class="privacy-meta" id="privacyMeta">
+      事半功倍 · 考研英语学习软件　|　版本日期：{{ privacy_version }}　·　适用于 v3.3.0 及以后版本
+    </div>
+
+    <div class="privacy-body" id="privacyBody">
+      <p>感谢您使用本软件。请在使用前阅读本声明。继续使用本软件，即视为您已阅读并接受本声明。</p>
+
+      <h4>一、软件性质与使用许可</h4>
+      <p>1. 本软件由个人开发者独立开发，是一款本地单机运行的考研英语学习工具，不运营中心化账号系统或学习数据服务器。</p>
+      <p>2. 除第三方开源组件、第三方资源及依法属于他人的内容外，本软件原创代码、界面设计、交互逻辑及其他原创内容的相关知识产权归开发者所有。</p>
+      <p>3. 本软件主要用于个人学习、研究及其他非商业用途。</p>
+
+      <h4>二、二次创作许可</h4>
+      <p>1. 开发者允许其他开发者、学习者及研究者，在遵守本声明及第三方许可证的前提下，对本软件中属于开发者的原创部分进行<strong>非商业性质的二次创作、修改、功能扩展、界面调整及技术研究</strong>。</p>
+      <p>2. 经修改形成的版本、源码、教程及其他衍生作品，可以在 GitHub、代码托管平台或其他渠道进行<strong>免费、非商业性质的分享和发布</strong>。</p>
+      <p>3. 二次创作或发布时，应保留原开发者的版权声明、项目来源及本许可说明，并明确标注修改内容。</p>
+      <p>4. 修改版不得使用户误认为其由原开发者官方发布、维护、认证或担保。</p>
+      <p>5. 禁止将本软件原版、修改版或基于本软件形成的衍生作品用于出售、出租、付费下载、商业培训、付费陪练、广告获利或其他直接商业经营活动。</p>
+      <p>6. 本条仅针对开发者享有权利的原创部分。第三方软件、字体、图标、音频、数据等内容不受本条重新授权，其使用、修改和再分发应以相应许可证、授权协议或其他合法依据为准。</p>
+      <p>7. 本声明未明确授予的其他权利，仍归相应权利人所有。</p>
+      <p style="padding:8px 12px; background:var(--c-surface-2); border-left:3px solid var(--c-amber); border-radius:6px;"><strong>说明：本软件允许非商业二次创作，但不以“开源软件”许可证的名义授权商业使用。</strong></p>
+
+      <h4>三、个人信息与本地数据</h4>
+      <p>1. 本软件无需注册或登录，不主动收集用户姓名、手机号、邮箱等身份信息，不设置广告投放、行为统计或后台追踪功能。</p>
+      <p>2. 学习记录、笔记、收藏、打卡、错题、学习计划、AI 调用记录及备份等数据，原则上保存在本机软件目录的 <strong>data/</strong> 文件夹及相关子目录中。</p>
+      <p>3. 开发者不通过自有服务器主动上传或远程读取上述本地学习数据。</p>
+      <p>4. 删除 <strong>data/</strong> 文件夹后，本软件将无法继续读取其中保存的数据，但该操作不等同于对磁盘、备份介质或第三方服务端数据进行不可恢复删除。</p>
+      <p>5. 用户应自行妥善保管设备、数据文件及备份文件。</p>
+
+      <h4>四、软件联网范围</h4>
+      <p>除以下情况外，本软件不主动发起网络请求：</p>
+      <p>1. <strong>AI 功能</strong>：用户主动使用 AI 范文、作文批改、翻译解析、智能判定、词库识别等功能时，相关输入内容会发送至用户自行配置的第三方 AI 服务地址。</p>
+      <p>2. <strong>真人发音</strong>：用户主动点击朗读时，相关单词或短语可能发送至有道发音服务。</p>
+      <p>3. <strong>检查更新</strong>：用户主动点击检查更新时，软件可能访问 GitHub 获取版本及更新说明。</p>
+      <p>4. <strong>外部链接</strong>：仅在用户主动点击后打开 GitHub、打赏及其他第三方链接。</p>
+      <p>软件不会主动向上述服务发送与对应功能无关的完整学习数据库或 API 密钥。</p>
+      <p>第三方服务可能依据其自身服务协议、隐私政策及适用法律处理相关请求或网络日志，开发者无法控制其具体处理方式。</p>
+
+      <h4>五、AI 接口与 API 密钥</h4>
+      <p>1. 使用 AI 功能时，用户需要自行配置第三方模型服务商的接口地址及 API 密钥。</p>
+      <p>2. API 密钥用于向用户指定的服务地址进行身份验证，不通过开发者自有服务器中转。</p>
+      <p>3. 软件可通过本地密钥保险箱对 API 密钥进行加密保存，具体实现以当前软件版本为准。</p>
+      <p>4. 保险箱密码不会以明文形式保存。忘记保险箱密码后，原则上只能清除原有密钥并重新配置。</p>
+      <p>5. 用户应确保所使用的 API 密钥来源合法，并遵守相关服务商的服务协议。</p>
+
+      <h4>六、AI 内容说明</h4>
+      <p>1. AI 生成的释义、范文、翻译、评分、建议等内容仅供学习参考，不构成考试成绩保证、专业意见或其他形式的承诺。</p>
+      <p>2. AI 输出可能存在错误、遗漏或不准确情况，用户应结合教材、考试大纲及其他可靠资料自行判断。</p>
+      <p>3. 不得利用本软件及其 AI 功能实施诈骗、考试作弊、侵犯隐私、侵犯知识产权或其他违法违规行为。</p>
+      <p>4. 用户向第三方 AI 服务提交内容前，应自行确认相关服务商的数据处理规则，并避免提交不必要的敏感信息。</p>
+
+      <h4>七、内容来源与知识产权</h4>
+      <p>1. 本软件部分词汇、题目、示例及其他学习资料来源于公开传播的考试资料、用户提供内容或其他来源。</p>
+      <p>2. 对于可能受到第三方著作权或其他权利保护的内容，开发者将根据实际情况采取合理使用、注明来源、获得授权或其他合法方式进行处理。</p>
+      <p>3. 用户不得擅自提取、出售或将本软件中的受保护内容用于未经授权的商业用途。</p>
+      <p>4. 本软件使用的第三方开源软件、字体、图标、音频、数据及其他第三方资源，其权利归相应权利人所有，并按照适用的许可证、授权协议或其他合法依据使用。</p>
+
+      <h4>八、禁止行为</h4>
+      <p>在法律法规允许范围之外，未经授权不得：</p>
+      <p>1. 商业出售、出租、付费分享本软件或其衍生版本；</p>
+      <p>2. 制作或传播破解版本、破解补丁、注册机或恶意修改版本；</p>
+      <p>3. 绕过软件的安全机制、加密机制或授权限制；</p>
+      <p>4. 删除、遮挡原有版权声明，并冒充官方版本；</p>
+      <p>5. 利用本软件实施违法违规活动或侵犯他人合法权益。</p>
+      <p>前述限制不影响法律法规明确赋予用户的合法权利。</p>
+
+      <h4>九、用户自行导入的文件</h4>
+      <p>用户导入的 PDF、音乐、图片及其他文件原则上保存在本机。软件可根据功能进行本地索引、展示、播放及必要的本地处理。</p>
+      <p>用户应确保所导入文件来源合法，并依法承担因侵犯第三方著作权、隐私权、名誉权等合法权益而产生的责任。</p>
+
+      <h4>十、软件发布与 Windows 认证说明</h4>
+      <p>本软件由个人开发者独立开发，并通过开发者官方 GitHub 仓库发布。</p>
+      <p>目前本软件<strong>未取得 Microsoft 官方软件认证，未通过 Microsoft Store 上架审核</strong>。如当前版本未进行受信任的代码签名，Windows SmartScreen 等系统安全机制可能出现安全提示。</p>
+      <p>GitHub 仅作为代码及发布文件的托管平台，<strong>不代表 GitHub 或 Microsoft 对本软件进行审核、认证、推荐或担保</strong>。</p>
+      <p>建议用户从开发者官方 GitHub 仓库获取软件，并核对仓库地址、版本号及发布文件来源。</p>
+
+      <h4>十一、责任说明</h4>
+      <p>1. 开发者会尽合理努力保障软件正常运行，但无法保证软件在所有设备、操作系统及第三方服务环境下始终无错误或不中断。</p>
+      <p>2. 因操作系统故障、硬件损坏、病毒、网络异常、第三方 AI 服务或其他开发者无法合理控制的原因造成的损失，由相关责任方依法承担相应责任。</p>
+      <p>3. 用户违反法律法规、本声明或第三方服务协议所产生的责任，由用户依法承担。</p>
+      <p>4. 本声明不排除法律规定不得排除或限制的责任。</p>
+
+      <h4>十二、未成年人使用</h4>
+      <p>未成年人应在监护人指导下使用本软件。涉及第三方 AI 服务配置及相关费用的，应由监护人根据实际情况进行管理。</p>
+
+      <h4>十三、声明更新</h4>
+      <p>开发者可根据软件功能、技术方案或适用法律法规变化更新本声明，并通过软件内页面或版本说明进行提示。</p>
+      <p>用户不同意更新内容的，应停止使用相关功能。</p>
+
+      <h4>十四、法律适用与争议解决</h4>
+      <p>本声明的订立、解释、履行及争议解决适用中华人民共和国大陆地区现行法律法规。</p>
+      <p>发生争议时，双方应首先协商解决；协商不成的，依法向有管辖权的人民法院提起诉讼。</p>
+
+      <h4>十五、联系我们</h4>
+      <p>如您对本声明有疑问、建议，或认为软件中的相关内容侵犯您的合法权益，可通过以下方式联系开发者：</p>
+      <ul>
+        <li>邮箱：<a href="mailto:qzx1028918@163.com">qzx1028918@163.com</a></li>
+        <li>GitHub：软件设置页提供官方仓库及 Issues 入口</li>
+      </ul>
+      <p>开发者收到有效权利通知后，将根据具体情况依法核实并处理。</p>
+
+      <p class="text-sm text-secondary" style="margin-top:16px; border-top:1px solid var(--c-border-light); padding-top:12px;">
+        <strong>AI 辅助说明</strong>：本声明在撰写和整理过程中使用了 <strong>GPT-5.6 Luna</strong> 作为 AI 辅助工具，用于文字整理、内容完善及风险提示，不构成律师法律意见。本声明最终由软件开发者审核、确认并发布。
+      </p>
+      <p class="text-sm text-secondary">开发者：个人开发者　|　版本日期：2026年10月4日</p>
+    </div>
+
+    <!-- 首次使用：必须选择 -->
+    <div class="privacy-footer" id="privacyFooter">
+      <button type="button" class="btn btn-secondary btn-sm" id="privacyDisagreeBtn">不同意</button>
+      <button type="button" class="btn btn-primary btn-sm" id="privacyAgreeBtn">我已阅读并同意</button>
+      <button type="button" class="btn btn-secondary btn-sm hidden" id="privacyViewerCloseBtn">关闭</button>
+    </div>
+
+    <!-- 选择"不同意"后的阻断态 -->
+    <div class="privacy-blocked hidden" id="privacyBlocked">
+      <i class="ph ph-prohibit"></i>
+      <div class="privacy-blocked-title">您尚未同意《软件使用、隐私、知识产权及二次创作声明》</div>
+      <p>不同意则无法使用本软件。<br>请关闭软件窗口退出；下次启动时将再次提示您选择。</p>
+      <div class="privacy-footer" style="border-top:none; justify-content:center;">
+        <button type="button" class="btn btn-secondary btn-sm" id="privacyBackBtn">
+          <i class="ph ph-arrow-left"></i> 返回重新阅读
+        </button>
+        <button type="button" class="btn btn-primary btn-sm" id="privacyExitBtn">
+          <i class="ph ph-power"></i> 关闭软件
+        </button>
+      </div>
+      <div class="text-sm text-secondary hidden" id="privacyExitNote" style="margin-top:10px;">
+        浏览器可能阻止了自动关闭，请直接关闭当前标签页或软件窗口。
+      </div>
+    </div>
+  </div>
+  {% csrf_token %}
+</div>
+
+<script>
+(function () {
+  var mask = document.getElementById('privacyMask');
+  if (!mask) return;
+  var closeX = document.getElementById('privacyCloseX');
+  var agreeBtn = document.getElementById('privacyAgreeBtn');
+  var disagreeBtn = document.getElementById('privacyDisagreeBtn');
+  var viewerCloseBtn = document.getElementById('privacyViewerCloseBtn');
+  var bodyBox = document.getElementById('privacyBody');
+  var metaBox = document.getElementById('privacyMeta');
+  var gateFooter = document.getElementById('privacyFooter');
+  var blocked = document.getElementById('privacyBlocked');
+  var backBtn = document.getElementById('privacyBackBtn');
+  var exitBtn = document.getElementById('privacyExitBtn');
+  var exitNote = document.getElementById('privacyExitNote');
+  var AGREE_URL = '{% url "words:api_privacy_agree" %}';
+  var CURRENT_VERSION = '{{ privacy_version }}';
+
+  function isGate() { return mask.classList.contains('privacy-gate'); }
+
+  function showStatement() {
+    blocked.classList.add('hidden');
+    exitNote.classList.add('hidden');
+    bodyBox.classList.remove('hidden');
+    metaBox.classList.remove('hidden');
+    gateFooter.classList.remove('hidden');
+  }
+
+  function showBlocked() {
+    bodyBox.classList.add('hidden');
+    metaBox.classList.add('hidden');
+    gateFooter.classList.add('hidden');
+    closeX.classList.add('hidden');
+    blocked.classList.remove('hidden');
+  }
+
+  function applyMode() {
+    var gate = isGate();
+    closeX.classList.toggle('hidden', gate);
+    agreeBtn.classList.toggle('hidden', !gate);
+    disagreeBtn.classList.toggle('hidden', !gate);
+    viewerCloseBtn.classList.toggle('hidden', gate);
+  }
+
+  function closeViewer() {
+    if (isGate()) return; // 首次使用强制态不允许关闭
+    mask.classList.add('hidden');
+  }
+
+  // 供设置页 / 其他入口调用：以"查看"模式打开
+  window.openPrivacy = function () {
+    mask.classList.remove('privacy-gate');
+    showStatement();
+    applyMode();
+    mask.classList.remove('hidden');
+  };
+  window.PrivacyUI = { open: window.openPrivacy, close: closeViewer };
+
+  closeX.addEventListener('click', closeViewer);
+  viewerCloseBtn.addEventListener('click', closeViewer);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !mask.classList.contains('hidden') && !isGate()) closeViewer();
+  });
+
+  agreeBtn.addEventListener('click', function () {
+    agreeBtn.disabled = true;
+    var oldHtml = agreeBtn.innerHTML;
+    agreeBtn.innerHTML = '<i class="ph ph-circle-notch"></i> 提交中…';
+    VOCAB_API.post(AGREE_URL, {}).then(function (d) {
+      if (d && d.success) {
+        mask.classList.remove('privacy-gate');
+        mask.classList.add('hidden');
+        showStatement();
+        applyMode();
+        showToast('已同意《软件使用、隐私、知识产权及二次创作声明》，欢迎使用', 'success');
+        var line = document.getElementById('privacyStatusLine');
+        if (line) line.textContent = '您已于本机同意 ' + (d.version || CURRENT_VERSION) + ' 版声明';
+      } else {
+        appAlert((d && d.error) || '保存失败，请重试');
+      }
+    }).catch(function () {
+      appAlert('服务异常，请重试（同意记录仅保存在本机，不会联网）');
+    }).finally(function () {
+      agreeBtn.disabled = false;
+      agreeBtn.innerHTML = oldHtml;
+    });
+  });
+
+  disagreeBtn.addEventListener('click', async function () {
+    var ok = await appConfirm(
+      '不同意《软件使用、隐私、知识产权及二次创作声明》将无法使用本软件。\n您可以关闭软件退出，下次启动时会再次提示。\n\n确认选择「不同意」吗？'
+    );
+    if (ok) showBlocked();
+  });
+
+  backBtn.addEventListener('click', function () {
+    showStatement();
+    applyMode();
+  });
+
+  exitBtn.addEventListener('click', function () {
+    try { window.close(); } catch (e) {}
+    setTimeout(function () { exitNote.classList.remove('hidden'); }, 400);
+  });
+
+  // 初始化：服务端已按同意状态渲染 gate / hidden
+  showStatement();
+  applyMode();
+})();
+</script>

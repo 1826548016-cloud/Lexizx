@@ -51,15 +51,6 @@
 
   <div class="card stat-card">
     <div class="stat-card-head">
-      <span class="stat-icon stat-icon--ink"><i class="ph ph-clock"></i></span>
-      <div class="card-header">今日到期</div>
-    </div>
-    <div class="stat-value">{{ review_due }}</div>
-    <div class="stat-label">今天需复习的词 · 昨天学的自动加入</div>
-  </div>
-
-  <div class="card stat-card">
-    <div class="stat-card-head">
       <span class="stat-icon stat-icon--amber"><i class="ph ph-fire"></i></span>
       <div class="card-header">连续打卡</div>
     </div>
@@ -195,28 +186,31 @@
   </div>
 </div>
 
-<!-- Overall progress -->
+<!-- Overall progress（GitHub 语言占比条风格） -->
 <div class="card" style="margin-bottom: 24px;">
-  <div class="card-header">总体进度</div>
-  <div class="flex gap-4" style="flex-wrap: wrap; margin-bottom: 16px;">
-    <div class="stat-card" style="flex: 1;">
-      <div class="stat-value">{{ total_words }}</div>
-      <div class="stat-label">总词数</div>
-    </div>
-    <div class="stat-card" style="flex: 1;">
-      <div class="stat-value">{{ mastered_words }}</div>
-      <div class="stat-label">会</div>
-    </div>
-    <div class="stat-card" style="flex: 1;">
-      <div class="stat-value">{{ learning_words }}</div>
-      <div class="stat-label">不会</div>
-    </div>
+  <div class="flex justify-between items-center" style="margin-bottom: 14px;">
+    <div class="card-header" style="margin-bottom: 0;">总体进度</div>
+    <span class="text-secondary text-sm">共 {{ total_words }} 词</span>
   </div>
-  <div class="progress-bar">
-    <div class="progress-bar-fill" style="width: {% if total_words > 0 %}{% widthratio mastered_words total_words 100 %}{% else %}0{% endif %}%;"></div>
+  <div style="display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--c-border-light);">
+    {% if master_percent > 0 %}
+    <div style="width: {{ master_percent }}%; background: var(--c-green);" title="会 {{ master_percent }}%"></div>
+    {% endif %}
+    {% if learning_percent > 0 %}
+    <div style="width: {{ learning_percent }}%; background: var(--c-amber);" title="不会 {{ learning_percent }}%"></div>
+    {% endif %}
   </div>
-  <div class="stat-label" style="margin-top: 8px;">
-    掌握率 {% if total_words > 0 %}{% widthratio mastered_words total_words 100 %}{% else %}0{% endif %}%
+  <div class="flex text-sm" style="gap: 20px; margin-top: 12px; flex-wrap: wrap;">
+    <span style="display: inline-flex; align-items: center; gap: 6px;">
+      <span style="width: 10px; height: 10px; border-radius: 50%; background: var(--c-green); display: inline-block;"></span>
+      会 <strong>{{ mastered_words }}</strong>
+      <span class="text-secondary">{{ master_percent }}%</span>
+    </span>
+    <span style="display: inline-flex; align-items: center; gap: 6px;">
+      <span style="width: 10px; height: 10px; border-radius: 50%; background: var(--c-amber); display: inline-block;"></span>
+      不会 <strong>{{ learning_words }}</strong>
+      <span class="text-secondary">{{ learning_percent }}%</span>
+    </span>
   </div>
 </div>
 

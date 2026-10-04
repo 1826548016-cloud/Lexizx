@@ -20,7 +20,6 @@ from django.http import JsonResponse, HttpResponse, FileResponse, Http404
 from django.shortcuts import render, get_object_or_404
 from django.utils import timezone
 from django.db import IntegrityError
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .models import (Unit, Word, StudyProgress, StudyPlan,
@@ -37,6 +36,7 @@ from .ai_exam_prompts import (
     translation_help_prompt, translation_grading_prompt, themes_report_prompt,
     personal_template_prompt, cet6_translation_help_prompt, cet6_translation_grading_prompt,
 )
+from . import vault
 
 
 def parse_uncommon_pos(value):
@@ -99,15 +99,16 @@ def dashboard(request):
     today_review = StudyProgress.objects.filter(
         last_review__date=today, review_count__gt=0
     ).exclude(learned_date=today).count()
-    # 今日待复习：按「每天固定复习」自动调度，只统计今日到期的词；
-    # 历史数据无 next_review 视为今天到期，保证存量已学词不丢失
-    review_due = StudyProgress.objects.exclude(status='new').exclude(is_excluded=True).filter(
-        Q(next_review__isnull=True) | Q(next_review__lte=today)).count()
-
     total_words = Word.objects.count()
     mastered_words = StudyProgress.objects.filter(status='mastered').count()
     # also count learning+reviewing
     learning_words = StudyProgress.objects.exclude(status='new').exclude(status='mastered').count()
+    # GitHub 语言条式占比（一位小数，供总体进度卡分段条/图例使用）
+    if total_words > 0:
+        master_percent = round(mastered_words / total_words * 100, 1)
+        learning_percent = round(learning_words / total_words * 100, 1)
+    else:
+        master_percent = learning_percent = 0
 
     # by category
     cats = [('required', '必考词'), ('basic', '基础词'), ('advanced', '超纲词')]
@@ -155,13 +156,14 @@ def dashboard(request):
     context = {
         'today_new': today_new,
         'today_review': today_review,
-        'review_due': review_due,
         'settings': settings_obj,
         'plan': active_plan,
         'plan_today': plan_today,
         'total_words': total_words,
         'mastered_words': mastered_words,
         'learning_words': learning_words,
+        'master_percent': master_percent,
+        'learning_percent': learning_percent,
         'category_stats': category_stats,
         'streak': streak,
         'today_checkin': today_checkin,
@@ -906,7 +908,6 @@ def _schedule_next_review(progress, today):
         progress.next_review = today + timedelta(days=1)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_mark_word(request, action, word_id):
     try:
@@ -1180,7 +1181,6 @@ def _judge_meaning_batch(pairs, data, chunk_size=10):
     return results
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_spelling_check(request, word_id):
     """拼写检测：看中文默写英文，本地判定是否与标准拼写一致"""
@@ -1237,7 +1237,6 @@ def api_spelling_check(request, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_meaning_check(request, word_id):
     """释义默写：看英文写中文意思，AI 判定正确 / 部分正确 / 错误（失败时退回本地比对）"""
@@ -1297,7 +1296,6 @@ def api_meaning_check(request, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_toggle_mastery(request, word_id):
     """在 会(mastered) 与 不会(未掌握) 之间切换"""
@@ -1347,7 +1345,6 @@ def api_toggle_mastery(request, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_mark_uncommon_pos(request, word_id):
     """标记/取消标记某个词性为陌生（add/remove）。"""
@@ -1436,7 +1433,6 @@ def api_today(request):
     })
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_reset_progress(request):
     try:
@@ -1458,7 +1454,6 @@ def api_reset_progress(request):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_plan_create(request):
     try:
@@ -1478,7 +1473,6 @@ def api_plan_create(request):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_plan_update(request, plan_id):
     try:
@@ -1504,7 +1498,6 @@ def api_plan_update(request, plan_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST', 'DELETE'])
 def api_plan_delete(request, plan_id):
     """删除学习计划"""
@@ -1673,7 +1666,6 @@ def _get_plan_today_data(plan, today):
     }
 
 
-@csrf_exempt
 @require_http_methods(['GET'])
 def api_plan_today(request):
     """返回当前激活计划的今日学习任务与进度"""
@@ -1874,7 +1866,6 @@ def _collect_report_summary(week_start, week_end):
     }
 
 
-@csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def api_learning_report(request):
     """周学习报告：GET 查当前周报告与历史 / POST 生成（或重新生成）本周报告"""
@@ -1933,7 +1924,6 @@ def api_learning_report(request):
         return JsonResponse({'error': f'生成失败：{e}'}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_study_duration(request):
     """累加当前学习页的有效前台时长（秒）。"""
@@ -2142,13 +2132,20 @@ def api_backup_dir(request):
     return JsonResponse({'success': True, 'path': str(backup_dir)})
 
 
+def api_privacy_agree(request):
+    """记录用户同意《隐私与内容声明》。仅写本机数据库，不发起任何网络请求。"""
+    if request.method != 'POST':
+        return JsonResponse({'error': '仅支持 POST 请求'}, status=405)
+    user_settings = UserSettings.get_settings()
+    user_settings.privacy_agreed_version = settings.PRIVACY_VERSION
+    user_settings.save(update_fields=['privacy_agreed_version'])
+    return JsonResponse({'success': True, 'version': settings.PRIVACY_VERSION})
+
+
 GITHUB_LATEST_RELEASE_API = (
     'https://api.github.com/repos/'
     '1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/releases/latest'
 )
-# 作者官网版本清单（国内可达；发布新版时在官网放此 JSON 即可，无需改动程序）
-# 格式：{"latest_version":"v3.4.0","release_notes":"...","download_url":"...","published_at":"2026-10-05"}
-OFFICIAL_VERSION_JSON = 'http://english.qzx1028.space/version.json'
 RELEASE_PAGE = ('https://github.com/1826548016-cloud/'
                 'Postgraduate-Vocabulary-Memorization-System/releases/latest')
 
@@ -2172,46 +2169,42 @@ def _http_get_json(url, timeout=6):
 
 
 def api_check_update(request):
-    """检查是否有新版本。依次尝试：官网清单（国内快）→ GitHub API。
-    均不可达时友好返回，不抛错。"""
+    """检查是否有新版本：读取 GitHub 最新 Release 信息。
+    不可达时友好返回，不抛错。"""
     current = settings.APP_VERSION
     cur_tuple = _parse_version(current)
-    payload = None
 
-    # 1) 官网版本清单（404/超时立即跳过，不影响后续）
-    try:
-        data = _http_get_json(OFFICIAL_VERSION_JSON, timeout=5)
-        if isinstance(data, dict) and _parse_version(data.get('latest_version')):
-            payload = {
-                'latest': str(data['latest_version']).strip(),
-                'release_title': data.get('release_title', ''),
-                'release_notes': data.get('release_notes', ''),
-                'html_url': data.get('download_url') or RELEASE_PAGE,
-                'published_at': str(data.get('published_at', ''))[:10],
-            }
-    except Exception:
-        payload = None
-
-    # 2) GitHub Release API
-    if payload is None:
+    # GitHub API 国内访问偶发被重置，失败时重试最多 3 次再报错
+    data = None
+    for timeout in (7, 10, 15):
         try:
-            data = _http_get_json(GITHUB_LATEST_RELEASE_API, timeout=7)
-            latest_tag = data.get('tag_name') or ''
-            if not _parse_version(latest_tag):
-                raise ValueError('bad tag')
-            payload = {
-                'latest': latest_tag,
-                'release_title': data.get('name') or '',
-                'release_notes': data.get('body') or '',
-                'html_url': data.get('html_url') or RELEASE_PAGE,
-                'published_at': (data.get('published_at') or '')[:10],
-            }
+            data = _http_get_json(GITHUB_LATEST_RELEASE_API, timeout=timeout)
+            break
         except Exception:
-            return JsonResponse({
-                'success': False,
-                'current': 'v' + current,
-                'error': '无法连接更新服务器，请检查网络后重试',
-            })
+            data = None
+    if not data:
+        return JsonResponse({
+            'success': False,
+            'current': 'v' + current,
+            'error': '无法连接更新服务器（GitHub），请检查网络后重试',
+        })
+    try:
+        latest_tag = data.get('tag_name') or ''
+        if not _parse_version(latest_tag):
+            raise ValueError('bad tag')
+        payload = {
+            'latest': latest_tag,
+            'release_title': data.get('name') or '',
+            'release_notes': data.get('body') or '',
+            'html_url': data.get('html_url') or RELEASE_PAGE,
+            'published_at': (data.get('published_at') or '')[:10],
+        }
+    except Exception:
+        return JsonResponse({
+            'success': False,
+            'current': 'v' + current,
+            'error': '更新服务器返回数据异常，请稍后重试',
+        })
 
     new_tuple = _parse_version(payload['latest'])
     payload.update({
@@ -2222,16 +2215,17 @@ def api_check_update(request):
     return JsonResponse(payload)
 
 
-def api_backup(request):
-    """全量备份：词库（单元+单词）、设置、学习进度、背词记录、打卡、收藏、笔记、
+def _build_backup_payload(settings_obj):
+    """全量备份数据结构：词库（单元+单词）、设置、学习进度、背词记录、打卡、收藏、笔记、
     速记、计划、预设、AI 模型、会话与消息、写作练习、写作好句、导入记录、学习周报。"""
     from django.core.serializers.json import DjangoJSONEncoder
 
-    settings_obj = UserSettings.get_settings()
     data = {
         'version': '2.1',
         'exported_at': timezone.localtime().isoformat(),
         'settings': _backup_settings(settings_obj),
+        # 密钥保险箱元数据：跨机恢复后可用原密码解锁；密码本身不在备份中
+        'vault': {'salt': settings_obj.vault_salt, 'verifier': settings_obj.vault_verifier},
         # 词库本体（v2.1 起携带，用于跨端恢复时自动补齐缺失的单元/词条）
         'units': [
             {'number': u.number, 'name': u.name,
@@ -2306,7 +2300,11 @@ def api_backup(request):
             {
                 'id': m.id, 'provider': m.provider, 'model_id': m.model_id,
                 'display_name': m.display_name, 'base_url': m.base_url,
-                'endpoint': m.endpoint, 'api_key': m.api_key, 'context': m.context,
+                'endpoint': m.endpoint,
+                # 已设保险箱：导出密文、绝不导出明文；未设：照旧导出明文（兼容旧版）
+                'api_key': '' if settings_obj.vault_salt else m.api_key,
+                'api_key_enc': m.api_key_encrypted if settings_obj.vault_salt else '',
+                'context': m.context,
                 'vision': m.vision, 'enabled': m.enabled,
             }
             for m in AIModel.objects.all()
@@ -2360,19 +2358,82 @@ def api_backup(request):
         ],
     }
 
-    os.makedirs(settings.BACKUP_DIR, exist_ok=True)
-    filename = f'backup_{timezone.now().strftime("%Y%m%d_%H%M%S")}.json'
-    filepath = os.path.join(settings.BACKUP_DIR, filename)
+    return data
 
+
+def _write_backup_copy(data):
+    """在 data/backups 写一份本机副本，返回 (文件名, 绝对路径)。
+
+    文件名带毫秒，避免同一秒内连续备份互相覆盖。
+    """
+    from django.core.serializers.json import DjangoJSONEncoder
+    os.makedirs(settings.BACKUP_DIR, exist_ok=True)
+    now = timezone.now()
+    filename = f'backup_{now.strftime("%Y%m%d_%H%M%S")}_{now.microsecond // 1000:03d}.json'
+    filepath = os.path.join(settings.BACKUP_DIR, filename)
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, cls=DjangoJSONEncoder)
+    return filename, filepath
 
+
+# 本机副本目录中最多保留的备份份数
+_BACKUP_COPY_KEEP = 10
+
+
+def _rotate_backup_copies():
+    """清理 data/backups 中的本机副本，只保留最新的 _BACKUP_COPY_KEEP 份。
+
+    只处理本目录下的 backup_*.json（文件名自带毫秒级时间戳，字典序即时间序），
+    绝不触碰其他文件。
+    """
+    backup_dir = str(settings.BACKUP_DIR)
+    try:
+        candidates = sorted(
+            (name for name in os.listdir(backup_dir)
+             if name.startswith('backup_') and name.endswith('.json')),
+            reverse=True,
+        )
+        for name in candidates[_BACKUP_COPY_KEEP:]:
+            try:
+                os.remove(os.path.join(backup_dir, name))
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def api_backup(request):
+    """浏览器模式：生成备份并直接以附件形式返回（走浏览器自身下载流程）。"""
+    from django.core.serializers.json import DjangoJSONEncoder
+    settings_obj = UserSettings.get_settings()
+    data = _build_backup_payload(settings_obj)
+    filename = f'backup_{timezone.now().strftime("%Y%m%d_%H%M%S")}.json'
     response = HttpResponse(
         json.dumps(data, ensure_ascii=False, cls=DjangoJSONEncoder),
         content_type='application/json; charset=utf-8',
     )
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
+
+
+def api_backup_prepare(request):
+    """桌面端备份第一步：生成备份并写一份本机副本。
+
+    随后前端通过 pywebview 桥接弹出系统「另存为」对话框，由宿主把该副本
+    复制到用户选择的位置。
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': '仅支持 POST 请求'}, status=405)
+    settings_obj = UserSettings.get_settings()
+    data = _build_backup_payload(settings_obj)
+    filename, filepath = _write_backup_copy(data)
+    _rotate_backup_copies()
+    return JsonResponse({
+        'success': True,
+        'filename': filename,
+        'size': os.path.getsize(filepath),
+        'copy_path': filepath,
+    })
 
 
 def _backup_settings(s):
@@ -2412,7 +2473,6 @@ def _backup_progress(p):
     }
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_restore(request):
     """全量恢复：兼容 v1.0 / v2.0 / v2.1 备份。
@@ -2448,6 +2508,7 @@ def api_restore(request):
                 # --- 0) 补齐词库：v2.1 备份携带 units+words，只增不改 ---
                 units_added = 0
                 words_added = 0
+                skipped_keys = 0
                 existing_numbers = set(Unit.objects.values_list('number', flat=True))
                 for u in data.get('units', []):
                     num = u.get('number')
@@ -2500,22 +2561,50 @@ def api_restore(request):
                 # 补齐后重建映射，供后续所有表带 word 的记录使用
                 exe_word_map = dict(Word.objects.values_list('word', 'id'))
 
+                # --- 0) 密钥保险箱：本机未设密码时采纳备份的 salt/校验串，
+                #       跨机恢复后用原来的保险箱密码即可解锁；本机已设密码则保留本机体系 ---
+                cur_s = UserSettings.get_settings()
+                backup_vault = data.get('vault') or {}
+                if backup_vault.get('salt') and not cur_s.vault_salt:
+                    cur_s.vault_salt = backup_vault['salt']
+                    cur_s.vault_verifier = backup_vault.get('verifier', '')
+                    cur_s.save(update_fields=['vault_salt', 'vault_verifier'])
+                    vault.lock()  # 校验体系变更，强制下次重新解锁
+
                 # --- 1) AI 模型（必须先恢复，其他表 FK 引用模型 id）---
                 id_map = {}
                 if data.get('ai_models'):
                     AIModel.objects.all().delete()
+                    local_salt = UserSettings.get_settings().vault_salt
+                    backup_salt = backup_vault.get('salt', '')
                     for m in data['ai_models']:
                         old_id = m.get('id')
+                        enc = m.get('api_key_enc', '') or ''
+                        plain = m.get('api_key', '') or ''
+                        key_field = {'api_key': '', 'api_key_encrypted': ''}
+                        if enc and backup_salt and backup_salt == local_salt:
+                            # 同一密码体系（同机自恢复 / 已采纳备份保险箱）：密文原样可用
+                            key_field['api_key_encrypted'] = enc
+                        elif plain:
+                            # 旧版备份明文：本机已设密码且已解锁 → 立即加密；
+                            # 已设但锁定 → 暂存明文，输入密码解锁时自动迁移加密
+                            if local_salt and vault.is_unlocked():
+                                key_field['api_key_encrypted'] = vault.encrypt(plain)
+                            else:
+                                key_field['api_key'] = plain
+                        elif enc:
+                            # 备份为密文但密码体系不同且无明文：无法还原，需重新填写
+                            skipped_keys += 1
                         m2 = AIModel.objects.create(
                             provider=m.get('provider', 'openai'),
                             model_id=m['model_id'],
                             display_name=m.get('display_name', ''),
                             base_url=m.get('base_url', 'https://api.openai.com/v1'),
                             endpoint=m.get('endpoint', ''),
-                            api_key=m.get('api_key', ''),
                             context=m.get('context', '128K'),
                             vision=m.get('vision', True),
                             enabled=m.get('enabled', True),
+                            **key_field
                         )
                         if old_id:
                             id_map[old_id] = m2.id
@@ -2743,13 +2832,14 @@ def api_restore(request):
             if not data.get('words'):
                 msg += ('。该备份由旧版本生成，不包含词库本体，新增的单元/单词无法随备份恢复；'
                         '请在新版程序中重新备份，或先在本机导入对应词库后再恢复')
+        if skipped_keys:
+            msg += f'（另有 {skipped_keys} 个模型的 API 密钥因保险箱密码不同无法恢复，请重新填写）'
         return JsonResponse({'success': True, 'message': msg})
     except Exception as e:
         import traceback
         return JsonResponse({'error': str(e), 'trace': traceback.format_exc()[:2000]}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def api_settings(request):
     if request.method == 'GET':
@@ -2787,7 +2877,6 @@ def api_settings(request):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_word_example(request, word_id):
     """例句增删改查（仅背诵页使用）：POST {action: 'save'|'delete', en, zh}"""
@@ -2810,7 +2899,6 @@ def api_word_example(request, word_id):
     return JsonResponse({'success': True, 'example_en': word.example_en, 'example_zh': word.example_zh})
 
 
-@csrf_exempt
 @require_http_methods(['GET', 'POST', 'DELETE'])
 def api_note(request, word_id):
     word = get_object_or_404(Word, id=word_id)
@@ -2838,7 +2926,6 @@ def api_note(request, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['GET', 'POST', 'DELETE'])
 def api_quick_memory(request, word_id):
     """速记：增删改查（GET 查询 / POST 保存编辑 / DELETE 删除），内容存数据库"""
@@ -2863,7 +2950,6 @@ def api_quick_memory(request, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_quick_memory_generate(request, word_id):
     """AI 生成速记：数据库已有缓存则直接返回（不再调用 AI）；force=true 时强制重新生成"""
@@ -2931,7 +3017,6 @@ def api_quick_memory_generate(request, word_id):
     return JsonResponse({'success': True, 'content': content, 'cached': False})
 
 
-@csrf_exempt
 @require_http_methods(['GET', 'POST', 'DELETE'])
 def api_assistant(request):
     """小助手：GET 获取对话历史 / POST 提问（AI 回答，历史互通） / DELETE 清空历史"""
@@ -3261,7 +3346,6 @@ def api_ai_chat_delete(request, conv_id):
     return JsonResponse({'success': True})
 
 
-@csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def api_assistant_model(request):
     """小助手模型配置：GET 查询当前指定 / POST 设置（null = 自动使用第一个启用模型）"""
@@ -3300,7 +3384,6 @@ def api_assistant_model(request):
     })
 
 
-@csrf_exempt
 @require_http_methods(['POST', 'DELETE'])
 def api_favorite(request, word_id):
     word = get_object_or_404(Word, id=word_id)
@@ -3476,7 +3559,6 @@ def api_exam_words(request):
     return JsonResponse({'questions': questions, 'direction': direction, 'total': len(questions)})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_judge_meaning(request):
     """模拟考试中逐题判定释义默写：只判定、不写库。
@@ -3511,14 +3593,12 @@ def api_exam_judge_meaning(request):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['GET'])
 def api_exam_judgments(request):
     """回填本场考试已缓存的逐题判定（刷新页面后恢复判定状态）"""
     return JsonResponse({'judgments': request.session.get('exam_judgments') or {}})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_submit(request):
     """交卷评分：更新会/不会状态、记录会话、更新统计"""
@@ -3747,7 +3827,6 @@ def api_units(request):
     return JsonResponse({'units': data})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_unit_create(request):
     """创建新单元（词汇类别可为必考/基础/超纲，也支持自定义）"""
@@ -3784,7 +3863,6 @@ def api_unit_create(request):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST', 'DELETE'])
 def api_unit_delete(request, unit_number):
     """删除单元及其所有单词"""
@@ -3802,7 +3880,6 @@ def api_unit_delete(request, unit_number):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_unit_update(request, unit_number):
     """更新单元信息"""
@@ -3839,7 +3916,6 @@ def api_unit_update(request, unit_number):
 
 # ─── 手动添加 / AI 导入单词 ────────────────────────────────
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_word_create(request):
     """手动添加或 AI 导入单词（统一走规范化层）"""
@@ -3896,7 +3972,6 @@ def api_word_create(request):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_word_bulk_import(request):
     """批量导入单词 - AI识别结果批量导入（统一走规范化层）"""
@@ -4003,7 +4078,6 @@ def import_logs(request):
     })
 
 
-@csrf_exempt
 @require_http_methods(['POST', 'DELETE'])
 def api_import_log_delete(request, log_id):
     """删除一条导入记录（仅删除记录，不影响已导入的单词）"""
@@ -4012,7 +4086,6 @@ def api_import_log_delete(request, log_id):
     return JsonResponse({'success': True, 'message': '记录已删除'})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_word_update(request, word_id):
     """更新单词信息（完整字段）"""
@@ -4096,7 +4169,6 @@ def api_word_update(request, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
-@csrf_exempt
 @require_http_methods(['POST', 'DELETE'])
 def api_word_delete(request, word_id):
     """删除单词"""
@@ -4414,6 +4486,37 @@ def resolve_ai_endpoint(base_url, endpoint):
     return base_url.rstrip('/') + '/chat/completions'
 
 
+VAULT_LOCKED_MSG = 'API 密钥已加密，请先到「设置 → AI 模型」输入保险箱密码解锁后再使用'
+VAULT_LOCKED_CODE = 'vault_locked'
+
+
+def _model_has_key(m):
+    return bool(getattr(m, 'api_key_encrypted', '') or m.api_key)
+
+
+def _model_plain_key(m):
+    """供 AI 调用取明文密钥：加密字段优先（需保险箱已解锁），否则回退旧版明文。"""
+    enc = getattr(m, 'api_key_encrypted', '')
+    if enc:
+        if not vault.is_unlocked():
+            raise ValueError(VAULT_LOCKED_MSG)
+        return vault.decrypt(enc)
+    return m.api_key or ''
+
+
+def _store_model_key(m, plain):
+    """按保险箱状态写入密钥：已配置密码则加密并清空明文，未配置则按旧版明文存储。"""
+    s = UserSettings.get_settings()
+    if s.vault_salt:
+        if not vault.is_unlocked():
+            raise ValueError(VAULT_LOCKED_MSG)
+        m.api_key_encrypted = vault.encrypt(plain) if plain else ''
+        m.api_key = ''
+    else:
+        m.api_key = plain or ''
+        m.api_key_encrypted = ''
+
+
 def build_ai_headers(api_key):
     """构造请求头；无密钥时省略 Authorization（本机无鉴权服务如 opencode）。
     部分中转服务商（Codex2API 等）前端挂了 Cloudflare，会把 Python-urllib UA 拦成 502，
@@ -4429,7 +4532,8 @@ def build_ai_headers(api_key):
 
 
 def serialize_ai_model(m):
-    """AIModel 数据库记录 → 前端 JSON"""
+    """AIModel 数据库记录 → 前端 JSON。安全原则：任何情况下都不回传密钥明文，
+    只给 has_key 供前端展示状态；查看明文走 /api/vault/reveal/（需解锁）。"""
     return {
         'id': m.id,
         'provider': m.provider,
@@ -4437,7 +4541,8 @@ def serialize_ai_model(m):
         'display_name': m.display_name,
         'base_url': m.base_url,
         'endpoint': m.endpoint,
-        'api_key': m.api_key,
+        'has_key': _model_has_key(m),
+        'encrypted': bool(getattr(m, 'api_key_encrypted', '')),
         'context': m.context,
         'vision': m.vision,
         'enabled': m.enabled,
@@ -4457,7 +4562,9 @@ def resolve_ai_model(data):
             raise ValueError('指定的模型不存在，请到「设置 → AI 模型」中重新选择')
         if not m.enabled:
             raise ValueError('该模型已被禁用，请到「设置 → AI 模型」中启用')
-        return serialize_ai_model(m)
+        cfg = serialize_ai_model(m)
+        cfg['api_key'] = _model_plain_key(m)
+        return cfg
     # 旧版兼容：前端直接传 api_key/base_url/endpoint/model
     if data.get('model') or data.get('api_key') or data.get('base_url') or data.get('endpoint'):
         cfg = {
@@ -4478,10 +4585,11 @@ def resolve_ai_model(data):
     m = AIModel.objects.filter(enabled=True).order_by('id').first()
     if not m:
         raise ValueError('尚未配置 AI 模型，请先到「设置 → AI 模型」中添加并启用一个模型')
-    return serialize_ai_model(m)
+    cfg = serialize_ai_model(m)
+    cfg['api_key'] = _model_plain_key(m)
+    return cfg
 
 
-@csrf_exempt
 @require_http_methods(['GET', 'POST', 'DELETE'])
 def api_ai_models(request):
     """AI 模型管理：GET 列表 / POST 新增或更新 / DELETE 删除（配置统一存数据库，设置页管理）"""
@@ -4521,7 +4629,19 @@ def api_ai_models(request):
     m.display_name = (data.get('display_name') or '').strip()
     m.base_url = (data.get('base_url') or 'https://api.openai.com/v1').strip()
     m.endpoint = (data.get('endpoint') or '').strip()
-    m.api_key = (data.get('api_key') or '').strip()
+    # 仅当请求显式带 api_key 时才改密钥；留空且模型已有密钥 = 不修改（启停等操作不受影响）
+    if 'api_key' in data:
+        plain_key = (data.get('api_key') or '').strip()
+        if plain_key:
+            try:
+                _store_model_key(m, plain_key)
+            except ValueError as e:
+                return JsonResponse({'error': str(e), 'code': VAULT_LOCKED_CODE}, status=403)
+        elif not _model_has_key(m):
+            try:
+                _store_model_key(m, '')
+            except ValueError as e:
+                return JsonResponse({'error': str(e), 'code': VAULT_LOCKED_CODE}, status=403)
     m.context = (data.get('context') or '128K').strip() or '128K'
     if 'vision' in data:
         m.vision = bool(data.get('vision'))
@@ -4533,7 +4653,131 @@ def api_ai_models(request):
     return JsonResponse({'success': True, 'model': serialize_ai_model(m)})
 
 
-@csrf_exempt
+# ==================== API 密钥保险箱 ====================
+
+def _vault_payload(s):
+    return {
+        'configured': bool(s.vault_salt),
+        'unlocked': vault.is_unlocked(),
+        'key_count': AIModel.objects.exclude(api_key='', api_key_encrypted='').count(),
+    }
+
+
+@require_http_methods(['GET'])
+def api_vault_status(request):
+    """保险箱状态：是否已设密码、本次运行是否已解锁、已保存密钥数量"""
+    s = UserSettings.get_settings()
+    return JsonResponse(_vault_payload(s))
+
+
+@require_http_methods(['POST'])
+def api_vault_setup(request):
+    """首次设置保险箱密码：校验串落库、内存解锁，并把存量明文密钥全部迁移为密文。"""
+    try:
+        data = json.loads(request.body)
+    except Exception:
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    password = data.get('password') or ''
+    if len(password) < 4:
+        return JsonResponse({'error': '密码至少 4 位'}, status=400)
+    s = UserSettings.get_settings()
+    if s.vault_salt:
+        return JsonResponse({'error': '已设置过保险箱密码，无需重复设置'}, status=400)
+
+    salt = vault.new_salt()
+    verifier = vault.make_verifier(password, salt)
+    key = vault.verify_password(password, salt, verifier)
+    vault.unlock_in_memory(key)
+    s.vault_salt = salt
+    s.vault_verifier = verifier
+    s.save(update_fields=['vault_salt', 'vault_verifier'])
+
+    migrated = 0
+    for m in AIModel.objects.exclude(api_key=''):
+        m.api_key_encrypted = vault.encrypt(m.api_key)
+        m.api_key = ''
+        m.save(update_fields=['api_key', 'api_key_encrypted'])
+        migrated += 1
+    return JsonResponse({'success': True, 'migrated': migrated, **_vault_payload(s)})
+
+
+@require_http_methods(['POST'])
+def api_vault_unlock(request):
+    """用密码解锁保险箱（派生密钥只存进程内存，重启程序自动锁定）。"""
+    try:
+        data = json.loads(request.body)
+    except Exception:
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    password = data.get('password') or ''
+    s = UserSettings.get_settings()
+    if not s.vault_salt:
+        return JsonResponse({'error': '尚未设置保险箱密码'}, status=400)
+    key = vault.verify_password(password, s.vault_salt, s.vault_verifier)
+    if key is None:
+        return JsonResponse({'error': '密码不正确'}, status=403)
+    vault.unlock_in_memory(key)
+    # 恢复旧版备份时可能暂存了明文密钥，解锁后立即迁移为密文
+    migrated = 0
+    for m in AIModel.objects.exclude(api_key=''):
+        m.api_key_encrypted = vault.encrypt(m.api_key)
+        m.api_key = ''
+        m.save(update_fields=['api_key', 'api_key_encrypted'])
+        migrated += 1
+    return JsonResponse({'success': True, 'migrated': migrated, **_vault_payload(s)})
+
+
+@require_http_methods(['POST'])
+def api_vault_lock(request):
+    """立即锁定保险箱。"""
+    vault.lock()
+    s = UserSettings.get_settings()
+    return JsonResponse({'success': True, **_vault_payload(s)})
+
+
+@require_http_methods(['POST'])
+def api_vault_reset(request):
+    """忘记密码的唯一办法：清空全部已保存的 API 密钥与保险箱密码，
+    模型的其他配置（服务商/模型ID/地址）保留，之后重新填写密钥即可。"""
+    try:
+        data = json.loads(request.body or b'{}')
+    except Exception:
+        data = {}
+    if not data.get('confirm'):
+        return JsonResponse({'error': '缺少确认参数'}, status=400)
+    vault.lock()
+    cleared = AIModel.objects.exclude(api_key='', api_key_encrypted='').update(
+        api_key='', api_key_encrypted='')
+    s = UserSettings.get_settings()
+    s.vault_salt = ''
+    s.vault_verifier = ''
+    s.save(update_fields=['vault_salt', 'vault_verifier'])
+    return JsonResponse({'success': True, 'cleared': cleared, **_vault_payload(s)})
+
+
+@require_http_methods(['POST'])
+def api_vault_reveal(request):
+    """查看某个模型的密钥明文：必须已设置密码并在本次运行中解锁。"""
+    try:
+        data = json.loads(request.body)
+    except Exception:
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    s = UserSettings.get_settings()
+    if not s.vault_salt:
+        # 未设置保险箱 = 没有加密也没有锁，明文可直接查看
+        try:
+            m = AIModel.objects.get(id=int(data.get('id') or 0))
+        except (AIModel.DoesNotExist, ValueError, TypeError):
+            return JsonResponse({'error': '模型不存在'}, status=404)
+        return JsonResponse({'success': True, 'api_key': m.api_key or ''})
+    if not vault.is_unlocked():
+        return JsonResponse({'error': '请先输入保险箱密码解锁', 'code': VAULT_LOCKED_CODE}, status=403)
+    try:
+        m = AIModel.objects.get(id=int(data.get('id') or 0))
+    except (AIModel.DoesNotExist, ValueError, TypeError):
+        return JsonResponse({'error': '模型不存在'}, status=404)
+    return JsonResponse({'success': True, 'api_key': _model_plain_key(m)})
+
+
 @require_http_methods(['POST'])
 def api_ai_recognize(request):
     """AI 识别单词 → 结构化数据（OpenAI 兼容接口）
@@ -4622,7 +4866,6 @@ def api_ai_recognize(request):
         return JsonResponse({'error': str(e)}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_ai_review(request):
     """AI 复审：对识别结果进行二次校验，返回问题与修正建议"""
@@ -4716,7 +4959,6 @@ def api_ai_review(request):
         return JsonResponse({'error': str(e)}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_ai_export_pdf(request):
     """人工审核导出 PDF：将 AI 识别结果导出为可离线核对的 PDF 清单"""
@@ -4807,16 +5049,29 @@ def api_ai_export_pdf(request):
                         as_attachment=True)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_ai_test(request):
     """测试 API 密钥与模型连通性（发送最小请求验证）"""
     try:
         data = json.loads(request.body)
-        api_key = data.get('api_key', '')
-        base_url = data.get('base_url', 'https://api.openai.com/v1')
-        endpoint = data.get('endpoint', '')
-        model = data.get('model', 'gpt-4o-mini')
+        # 支持只传 model_id：直接用库里已保存的配置（密钥在后端解密，不经过前端）
+        if data.get('model_id') and not data.get('api_key'):
+            try:
+                saved = AIModel.objects.get(id=int(data['model_id']))
+            except (AIModel.DoesNotExist, ValueError, TypeError):
+                return JsonResponse({'error': '模型不存在'}, status=404)
+            try:
+                api_key = _model_plain_key(saved)
+            except ValueError:
+                return JsonResponse({'error': VAULT_LOCKED_MSG, 'code': VAULT_LOCKED_CODE}, status=403)
+            base_url = saved.base_url
+            endpoint = saved.endpoint
+            model = saved.model_id
+        else:
+            api_key = data.get('api_key', '')
+            base_url = data.get('base_url', 'https://api.openai.com/v1')
+            endpoint = data.get('endpoint', '')
+            model = data.get('model', 'gpt-4o-mini')
 
         if not model:
             return JsonResponse({'error': '请填写模型 ID'}, status=400)
@@ -4864,7 +5119,6 @@ def pdf_library(request):
     return render(request, 'pdf_library.html', {'pdfs': pdfs})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def pdf_upload(request):
     """上传 PDF 文件到资料库（按文件内容 MD5 去重）"""
@@ -4915,7 +5169,6 @@ def pdf_upload(request):
         return JsonResponse({'error': f'上传失败：{str(e)}'}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def pdf_delete(request, doc_id):
     """删除一个 PDF 资料（同时删除文件）"""
@@ -4932,7 +5185,6 @@ def pdf_delete(request, doc_id):
         return JsonResponse({'error': str(e)}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def pdf_update(request, doc_id):
     """更新 PDF 资料：可重命名 title，可替换文件（仍做 MD5 去重）"""
@@ -5139,7 +5391,6 @@ def music_player(request):
     return render(request, 'music_player.html', {'songs_json': json.dumps(data), 'current_id': current_id})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_music_upload(request):
     """上传视频文件并提取音轨"""
@@ -5203,7 +5454,6 @@ def api_music_upload(request):
         return JsonResponse({'error': f'上传失败：{str(e)}'}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_music_delete(request, song_id):
     """删除音乐（同时删除视频与音频文件）"""
@@ -5221,7 +5471,6 @@ def api_music_delete(request, song_id):
         return JsonResponse({'error': str(e)}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_music_update(request, song_id):
     """编辑歌名"""
@@ -5511,7 +5760,6 @@ def exam_logs_page(request):
     })
 
 
-@csrf_exempt
 @require_http_methods(['GET'])
 def api_exam_logs(request):
     """AI 调用日志 API：GET 列表，可按动作筛选"""
@@ -5539,7 +5787,6 @@ def api_exam_logs(request):
     return JsonResponse({'success': True, 'logs': data})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_workshop_data(request):
     """工坊数据统计 API"""
@@ -5556,7 +5803,6 @@ def api_exam_workshop_data(request):
     })
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_generate_essay(request):
     """AI 生成作文（根据词汇画像）"""
@@ -5587,7 +5833,6 @@ def api_exam_generate_essay(request):
     return JsonResponse({'success': True, 'content': content.strip(), 'practice_id': practice.id})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_grade(request):
     """AI 批改用户作文"""
@@ -5646,7 +5891,6 @@ def api_exam_grade(request):
     return JsonResponse({'success': True, 'result': score_data, 'practice_id': practice.id})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_translate_analyze(request):
     """翻译真题句子解析"""
@@ -5669,7 +5913,6 @@ def api_exam_translate_analyze(request):
     return JsonResponse({'success': True, 'content': content.strip()})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_grade_translation(request):
     """AI 批改用户译文"""
@@ -5706,7 +5949,6 @@ def api_exam_grade_translation(request):
     return JsonResponse({'success': True, 'result': score_data, 'practice_id': practice.id})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_cet6_translate_analyze(request):
     """六级段落翻译（汉译英）解析：分析中文段落，给出词汇、句式、参考译文"""
@@ -5729,7 +5971,6 @@ def api_cet6_translate_analyze(request):
     return JsonResponse({'success': True, 'content': content.strip()})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_cet6_grade_translation(request):
     """六级段落翻译（汉译英）AI 批改：批改用户英文译文"""
@@ -5777,7 +6018,6 @@ def api_cet6_grade_translation(request):
     return JsonResponse({'success': True, 'result': score_data, 'practice_id': practice.id})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_themes_report(request):
     """历年真题主题规律分析（AI 报告）"""
@@ -5801,7 +6041,6 @@ def api_exam_themes_report(request):
     return JsonResponse({'success': True, 'content': content.strip()})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_personal_template(request):
     """生成用户专属作文模板：结合词汇画像 + 历史练习记录（得分、错误点、优秀表达）"""
@@ -5867,7 +6106,6 @@ def api_exam_personal_template(request):
                          'has_practice': bool(recents), 'practice_count': len(recents)})
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_export_pdf(request):
     """导出专属作文模板为 PDF：接收 {title, content}，将 AI 生成的 Markdown 排版为可下载的 PDF"""
@@ -6187,7 +6425,6 @@ def api_exam_export_pdf(request):
                         as_attachment=True)
 
 
-@csrf_exempt
 @require_http_methods(['POST'])
 def api_exam_phrase_toggle(request):
     """好句收藏/取消"""

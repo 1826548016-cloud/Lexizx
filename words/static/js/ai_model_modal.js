@@ -22,7 +22,9 @@ function aiProviderInfo(pid) {
 
 function openAddModel(m) {
   fillAddModel(m || null);
-  document.getElementById('amEditId').value = m ? m.id : '';
+  var editIdEl = document.getElementById('amEditId');
+  editIdEl.value = m ? m.id : '';
+  editIdEl.dataset.hasKey = m && m.has_key ? '1' : '';
   document.getElementById('amModalTitle').textContent = m ? '编辑模型' : '添加模型';
   document.getElementById('amSubmitBtn').innerHTML = '<i class="ph ph-check"></i> ' + (m ? '保存模型' : '添加模型');
   document.getElementById('addModelModal').classList.remove('hidden');
@@ -56,7 +58,11 @@ function fillAddModel(m) {
     document.getElementById('amCustomModelWrap').classList.add('hidden');
   }
 
-  document.getElementById('amApiKey').value = m ? (m.api_key || '') : '';
+  var keyInput = document.getElementById('amApiKey');
+  keyInput.value = m ? (m.api_key || '') : '';
+  keyInput.placeholder = (m && m.has_key && !m.api_key)
+    ? '已保存密钥，留空表示不修改'
+    : 'sk-...（无鉴权服务可不填）';
   document.getElementById('amBaseUrl').value = m ? (m.endpoint || m.base_url || '') : '';
   document.getElementById('amFullUrl').checked = !!(m && m.endpoint);
   onAMFullUrlChange();
@@ -221,7 +227,13 @@ async function submitAddModel() {
   btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 验证连接中…';
 
   try {
-    var ok = await runAMConnectionTest(f);
+    // 编辑已有密钥的模型且密钥框留空 = 不修改密钥，跳过连接测试直接保存
+    var keyUnchanged = !!editId && !f.apiKey &&
+      document.getElementById('amEditId').dataset.hasKey === '1';
+    var ok = true;
+    if (!keyUnchanged) {
+      ok = await runAMConnectionTest(f);
+    }
     if (!ok) return;
 
     var saveRes = await VOCAB_API.post('/api/ai-models/', {

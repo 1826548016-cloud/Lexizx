@@ -1314,3 +1314,59 @@ textarea.form-input { resize: vertical; min-height: 80px; }
     scroll-behavior: auto !important;
   }
 }
+
+/* ===== 隐私与内容声明弹窗 ===== */
+.privacy-mask { z-index: 200; }
+.privacy-modal {
+  max-width: 760px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.privacy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px 8px;
+}
+.privacy-head-title { font-size: 1.12rem; font-weight: 700; }
+.privacy-head-title i.ph { color: var(--c-green); margin-right: 4px; }
+.privacy-x {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 1.2rem; line-height: 1; color: var(--c-text-3);
+  padding: 4px 6px; border-radius: 6px;
+}
+.privacy-x:hover { background: var(--c-surface-2); color: var(--c-text); }
+.privacy-meta {
+  padding: 0 24px 12px;
+  font-size: var(--fs-sm);
+  color: var(--c-text-3);
+  border-bottom: 1px solid var(--c-border-light);
+}
+.privacy-body {
+  padding: 16px 24px 20px;
+  overflow-y: auto;
+  font-size: var(--fs-sm);
+  line-height: 1.8;
+  color: var(--c-text-2);
+}
+.privacy-body h4 {
+  font-size: .95rem;
+  color: var(--c-text);
+  margin: 16px 0 6px;
+}
+.privacy-body h4:first-child { margin-top: 0; }
+.privacy-body p { margin: 0 0 6px; }
+.privacy-body ul { margin: 0 0 8px; padding-left: 20px; }
+.privacy-body li { margin-bottom: 4px; }
+.privacy-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--c-border-light);
+}
+.privacy-blocked { padding: 44px 24px 36px; text-align: center; }
+.privacy-blocked i.ph { font-size: 2.4rem; color: var(--c-amber); }
+.privacy-blocked-title { font-weight: 600; margin: 10px 0 6px; color: var(--c-text); }
+.privacy-blocked p { color: var(--c-text-3); font-size: var(--fs-sm); margin: 0 0 8px; line-height: 1.8; }

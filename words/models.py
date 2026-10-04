@@ -382,6 +382,14 @@ class UserSettings(models.Model):
     exam_model = models.ForeignKey('AIModel', null=True, blank=True,
         on_delete=models.SET_NULL, related_name='+', verbose_name='考研写作工坊模型')
 
+    # 密钥保险箱：salt 与校验串落库，密码本身与派生密钥不落库
+    vault_salt = models.CharField(max_length=64, blank=True, default='', verbose_name='保险箱密码 salt')
+    vault_verifier = models.TextField(blank=True, default='', verbose_name='保险箱密码校验串')
+
+    # 隐私与内容声明：记录用户已同意的声明版本（PRIVACY_VERSION），空串=未同意
+    privacy_agreed_version = models.CharField(max_length=20, blank=True, default='',
+        verbose_name='已同意的隐私声明版本')
+
     class Meta:
         verbose_name = '用户设置'
         verbose_name_plural = '用户设置'
@@ -461,7 +469,8 @@ class AIModel(models.Model):
     display_name = models.CharField(max_length=100, blank=True, verbose_name='展示名称')
     base_url = models.CharField(max_length=300, default='https://api.openai.com/v1', verbose_name='接口基础地址')
     endpoint = models.CharField(max_length=400, blank=True, verbose_name='完整请求地址')
-    api_key = models.CharField(max_length=300, blank=True, verbose_name='API 密钥')
+    api_key = models.CharField(max_length=300, blank=True, verbose_name='API 密钥（旧版明文，新数据使用加密字段）')
+    api_key_encrypted = models.TextField(blank=True, default='', verbose_name='加密后的 API 密钥')
     context = models.CharField(max_length=10, blank=True, default='128K', verbose_name='上下文')
     vision = models.BooleanField(default=True, verbose_name='支持图片识别')
     enabled = models.BooleanField(default=True, verbose_name='启用')

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Django settings for vocab_project project.
 """
 
@@ -8,6 +8,9 @@ from pathlib import Path
 
 # 应用版本号（检查更新、关于页展示统一引用此处）
 APP_VERSION = '3.3.0'
+
+# 软件使用、隐私、知识产权及二次创作声明版本（用发布日期标识）：首次使用需同意，声明修订后老用户需重新确认
+PRIVACY_VERSION = '2026-10-04'
 
 # ===== 运行模式检测 =====
 # PyInstaller 打包后：sys.frozen=True，sys._MEIPASS 指向解压的只读资源目录
@@ -35,7 +38,7 @@ SECRET_KEY = 'django-insecure-%3#v_5wpj1rord)qcqs*s0v0@hfb-y#8=q6k=(oy7ho=4vdxk'
 
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '::1']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -51,6 +54,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -68,6 +72,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'words.context_processors.privacy',
             ],
         },
     },

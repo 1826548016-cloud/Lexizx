@@ -15,9 +15,11 @@ import os
 import sys
 import json
 import time
+import shutil
 import socket
 import threading
 import webbrowser
+import subprocess
 import urllib.parse
 from pathlib import Path
 
@@ -213,6 +215,56 @@ def main_gui():
             except Exception as e:
                 print(f'open_external 失败: {e}')
                 return False
+
+        def save_backup(self, src_path, filename):
+            """弹出系统「另存为」对话框，把已生成的本机备份副本复制到用户选择的位置。
+
+            返回 {'cancelled': True} 表示用户取消；成功返回路径与大小。
+            不在前端传文件内容，避免大备份走 JS 桥；服务端副本已在本机磁盘。
+            """
+            import webview
+            try:
+                if not isinstance(src_path, str) or not os.path.exists(src_path):
+                    return {'error': '备份副本不存在，可能已被清理'}
+                win = webview.active_window()
+                result = win.create_file_dialog(
+                    webview.SAVE_DIALOG,
+                    save_filename=filename or 'backup.json',
+                    file_types=('JSON 备份文件 (*.json)', '所有文件 (*.*)'),
+                )
+                if not result:
+                    return {'cancelled': True}
+                dest = result[0] if isinstance(result, (list, tuple)) else str(result)
+                if not dest:
+                    return {'cancelled': True}
+                if not dest.lower().endswith('.json'):
+                    dest += '.json'
+                shutil.copy2(src_path, dest)
+                return {'cancelled': False, 'path': os.path.abspath(dest),
+                        'size': os.path.getsize(dest)}
+            except Exception as e:
+                print(f'save_backup 失败: {e}')
+                return {'error': str(e)}
+
+        def show_in_folder(self, path):
+            """在 Windows 资源管理器中定位并选中该文件（Edge 下载项同款行为）。"""
+            try:
+                if not isinstance(path, str) or not os.path.exists(path):
+                    return {'success': False, 'error': '文件不存在，可能已被移动或删除'}
+                subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
+                return {'success': True}
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
+
+        def open_local_file(self, path):
+            """用系统默认程序打开本地文件。"""
+            try:
+                if not isinstance(path, str) or not os.path.exists(path):
+                    return {'success': False, 'error': '文件不存在，可能已被移动或删除'}
+                os.startfile(os.path.normpath(path))
+                return {'success': True}
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
 
     api = AppApi()
 

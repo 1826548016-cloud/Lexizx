@@ -1,18 +1,14 @@
-{% load static %}
+﻿{% load static %}
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}考研单词背诵系统{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=331">
-  <!-- Phosphor 图标字体（外网 CDN）：非阻塞加载，无外网时页面照常渲染，只是不显示图标 -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css" media="print" onload="this.media='all'">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/fill/style.css" media="print" onload="this.media='all'">
-  <noscript>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/fill/style.css">
-  </noscript>
+  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=333">
+  <!-- Phosphor 图标字体（随程序打包的本地静态资源，离线可用，不发起任何外网请求） -->
+  <link rel="stylesheet" href="{% static 'vendor/phosphor/regular/style.css' %}?v=211">
+  <link rel="stylesheet" href="{% static 'vendor/phosphor/fill/style.css' %}?v=211">
   {% block extra_head %}{% endblock %}
   <script>
   /* 外链处理：打包成桌面应用时，外链在应用内新窗口打开，不跳出程序；
@@ -179,6 +175,9 @@
   <!-- AI 模型配置独立窗口（API 填写，全局可用） -->
   {% include 'partials/ai_model_modal.html' %}
 
+  <!-- 软件使用、隐私、知识产权及二次创作声明：首次使用强制同意；设置页可随时查看 -->
+  {% include 'partials/privacy_modal.html' %}
+
   <!-- Toast Container -->
   <div id="toast-container" class="toast-container"></div>
 
@@ -186,7 +185,8 @@
 
   <script src="{% static 'js/tts.js' %}"></script>
   <script src="{% static 'js/app.js' %}"></script>
-  <script src="{% static 'js/ai_model_modal.js' %}"></script>
+  <script src="{% static 'js/ai_model_modal.js' %}?v=332"></script>
+  <script src="{% static 'js/vault.js' %}?v=332"></script>
   {% block extra_scripts %}{% endblock %}
 
   <script>

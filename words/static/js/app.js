@@ -178,7 +178,11 @@ var VOCAB_API = {
       });
       return r.json();
     }
-    var r = await fetch(url, { method: 'DELETE' });
+    var csrf = document.querySelector('[name=csrfmiddlewaretoken]');
+    var r = await fetch(url, {
+      method: 'DELETE',
+      headers: { 'X-CSRFToken': csrf ? csrf.value : '' },
+    });
     return r.json();
   },
 };
@@ -238,9 +242,13 @@ window.VocabStudyTimer = (function () {
     var seconds = Math.min(pendingSeconds, 90);
     if (!seconds) return;
     pendingSeconds -= seconds;
+    var csrf = document.querySelector('[name=csrfmiddlewaretoken]');
     fetch('/api/study-duration/', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrf ? csrf.value : '',
+      },
       body: JSON.stringify({ seconds: seconds }),
       keepalive: true,
     }).catch(function () { pendingSeconds += seconds; });

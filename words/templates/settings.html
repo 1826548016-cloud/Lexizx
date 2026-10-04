@@ -1,4 +1,4 @@
-{% extends 'base.html' %}
+﻿{% extends 'base.html' %}
 {% load static %}
 
 {% block title %}设置 - 考研单词背诵系统{% endblock %}
@@ -70,11 +70,23 @@
     background: var(--c-surface-2); border-radius: 8px; padding: 12px 14px; font-family: inherit;
     font-size: .88rem; line-height: 1.7; color: var(--c-text); margin: 0 0 6px; }
 
+  /* 密钥保险箱状态条 */
+  .vault-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    border-radius: 10px; padding: 10px 14px; font-size: .88rem; line-height: 1.5; }
+  .vault-bar i { vertical-align: -2px; margin-right: 2px; }
+  .vault-warn { background: #fdf3e3; color: #9a6208; border: 1px solid #e9c27c; }
+  .vault-ok { background: #eef8ef; color: #2c7a3f; border: 1px solid #a9d8b3; }
+  .vault-locked { background: #eef3fb; color: #355a8c; border: 1px solid #b6c9e4; }
+
   @media (max-width: 900px) {
     .feat-grid, .action-grid, .about-links { grid-template-columns: 1fr; }
     .about-stats { grid-template-columns: 1fr; }
   }
   @media (max-width: 760px) { .settings-page { grid-template-columns: 1fr; } .settings-page .card.span-2 { grid-column: 1 / -1; } }
+
+  /* 备份保存完成弹窗 */
+  .dl-done-path { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--c-surface-2); border: 1px solid var(--c-border-light); border-radius: 8px; margin: 12px 0 4px; font-size: .85rem; }
+  .dl-done-path code { flex: 1; min-width: 0; word-break: break-all; color: var(--c-text); font-family: ui-monospace, Consolas, monospace; font-size: .8rem; }
 </style>
 {% endblock %}
 
@@ -207,8 +219,10 @@
 <div class="card span-2" id="ai-models" style="scroll-margin-top: 16px;">
   <div class="card-header"><i class="ph ph-cpu" style="color: var(--c-blue);"></i> AI 模型</div>
   <div class="text-sm text-secondary" style="margin: 4px 0 12px;">
-    <p style="margin: 0 0 4px;">集中管理用于 <strong>AI 单词导入（图片 / 文本 / 文件识别）、AI 复审、速记生成、小助手问答</strong> 的模型，配置保存在数据库中。未单独指定时，各功能会自动使用「已启用」的模型。</p>
+    <p style="margin: 0 0 4px;">集中管理用于 <strong>AI 单词导入（图片 / 文本 / 文件识别）、AI 复审、速记生成、小助手问答</strong> 的模型，未单独指定时各功能自动使用「已启用」的模型。API 密钥可通过保险箱密码加密存储，重启软件后需重新解锁。</p>
   </div>
+
+  <div id="vaultBar" class="vault-bar vault-locked" style="margin-bottom: 12px;"></div>
 
   <div class="flex justify-between items-center" style="margin-bottom: 12px;">
     <span class="text-sm text-secondary"><span id="modelCount">0</span> 个模型</span>
@@ -288,7 +302,7 @@
     <div class="action-item">
       <div class="action-head"><i class="ph ph-download-simple"></i> 备份数据</div>
       <div class="action-desc">下载所有学习进度、设置、打卡记录（含词汇本数据）</div>
-      <button class="btn btn-primary btn-sm" onclick="backupData()">下载备份</button>
+      <button class="btn btn-primary btn-sm" onclick="backupData(event)">下载备份</button>
     </div>
 
     <div class="action-item">
@@ -366,14 +380,8 @@
         <div style="flex:1;">
           <div style="font-weight:500; margin-bottom: 10px;">联系作者</div>
           <div class="about-links">
-            <a href="http://english.qzx1028.space/" target="_blank" rel="noopener" class="about-link" style="grid-column: 1 / -1; color: var(--c-blue); font-weight: 500;">
-              <i class="ph ph-globe-hemisphere-east"></i> <span>官方网站 ·查看相关信息</span>
-            </a>
             <a href="mailto:qzx1028918@163.com" class="about-link">
               <i class="ph ph-envelope-simple"></i> <span>qzx1028918@163.com</span>
-            </a>
-            <a href="http://wpa.qq.com/msgrd?v=3&uin=3491686496&site=qq&menu=yes" target="_blank" rel="noopener" class="about-link">
-              <i class="ph ph-chat-circle"></i> <span>QQ：3491686496</span>
             </a>
             <a href="https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System" target="_blank" rel="noopener" class="about-link">
               <i class="ph ph-github-logo"></i> <span>GitHub 项目仓库</span>
@@ -386,13 +394,21 @@
       </div>
     </div>
 
-    <!-- 声明 -->
-    <div style="padding: 12px 14px; background: var(--c-surface-2); border-left: 3px solid var(--c-amber); border-radius: 6px; margin-bottom: 14px;">
+    <!-- 软件使用、隐私、知识产权及二次创作声明 -->
+    <div style="padding: 12px 14px; background: var(--c-surface-2); border-left: 3px solid var(--c-green); border-radius: 6px; margin-bottom: 14px;">
       <div style="display:flex; align-items:flex-start; gap:8px;">
-        <i class="ph ph-warning-circle" style="color: var(--c-amber); margin-top: 2px;"></i>
-        <div>
-          <div style="font-weight:500; margin-bottom: 4px;">使用声明</div>
-          <div class="text-secondary text-sm">仅用于学习和研究，不涉及任何商业用途。</div>
+        <i class="ph ph-shield-check" style="color: var(--c-green); margin-top: 2px;"></i>
+        <div style="flex:1;">
+          <div style="font-weight:500; margin-bottom: 4px;">软件使用、隐私、知识产权及二次创作声明</div>
+          <div class="text-secondary text-sm" id="privacyStatusLine" style="margin-bottom: 8px;">
+            {% if privacy_agreed %}您已于本机同意 {{ privacy_version }} 版声明{% else %}您尚未同意最新版声明，部分功能暂不可用{% endif %}
+          </div>
+          <a href="javascript:void(0)" class="about-link" onclick="openPrivacy()">
+            <i class="ph ph-file-text"></i> <span>查看完整《软件使用、隐私、知识产权及二次创作声明》</span>
+          </a>
+          {% if not privacy_agreed %}
+          <button type="button" class="btn btn-primary btn-xs" style="margin-left:10px;" onclick="openPrivacy()">阅读并同意</button>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -452,6 +468,28 @@
         <i class="ph ph-download-simple"></i> 前往下载页面
       </a>
       <button class="btn btn-secondary btn-sm" onclick="closeUpdate()">以后再说</button>
+    </div>
+  </div>
+</div>
+
+<!-- 备份保存完成弹窗（Edge 下载完成提示风格） -->
+<div id="dlDoneMask" class="donate-mask" onclick="if(event.target===this) closeDlDone()">
+  <div class="donate-box" role="dialog" aria-modal="true" aria-label="备份已保存" style="width: min(520px, calc(100vw - 48px));">
+    <div class="donate-title"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> 备份已保存</div>
+    <div class="text-sm text-secondary" style="text-align:center;">备份文件已通过系统对话框保存到您选择的位置，本机同时留有一份副本。</div>
+    <div class="dl-done-path">
+      <i class="ph ph-file-json" style="color: var(--c-green); flex-shrink:0;"></i>
+      <code id="dlDonePath"></code>
+    </div>
+    <div class="text-sm text-secondary" style="text-align:center;">大小：<span id="dlDoneSize"></span></div>
+    <div class="donate-footer" style="gap: 10px;">
+      <button class="btn btn-primary btn-sm" onclick="dlDoneOpenFolder()">
+        <i class="ph ph-folder-open"></i> 在文件夹中显示
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="dlDoneOpenFile()">
+        <i class="ph ph-file-arrow-up"></i> 打开文件
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="closeDlDone()">关闭</button>
     </div>
   </div>
 </div>
@@ -701,21 +739,66 @@ async function saveDailyTargets() {
   }
 }
 
-// ===== Backup / Restore =====
-async function backupData() {
-  showToast('正在生成备份文件...', 'success');
-  var backupPath = '';
+// ===== Backup / Restore（桌面端走系统「另存为」；浏览器走附件下载）=====
+function nativeApi() {
+  return (window.pywebview && window.pywebview.api &&
+          typeof window.pywebview.api.save_backup === 'function')
+    ? window.pywebview.api : null;
+}
+
+async function backupData(evt) {
+  var btn = evt && evt.target ? evt.target.closest('button') : null;
+  if (btn) { btn.disabled = true; var oldHtml = btn.innerHTML; btn.innerHTML = '<i class="ph ph-circle-notch"></i> 正在生成…'; }
   try {
-    var info = await VOCAB_API.get('/api/backup/dir/');
-    if (info.success) backupPath = info.path;
-  } catch (e) { /* 取不到路径则不影响下载 */ }
-  window.location.href = '/api/backup/';
-  var msg = '备份文件已开始下载。';
-  if (backupPath) {
-    msg += '\n\n本机同时留有一份副本，文件夹位置：\n' + backupPath +
-           '\n\n文件名格式：backup_年月日_时分秒.json';
+    var api = nativeApi();
+    if (!api) {
+      // 浏览器开发模式：直接附件下载（走浏览器自身的下载流程）
+      window.location.href = '/api/backup/';
+      showToast('备份文件已开始下载', 'success');
+      return;
+    }
+    showToast('正在生成备份文件…', 'success');
+    // 桌面端：服务端生成备份并写本机副本
+    var info = await VOCAB_API.post('/api/backup/prepare/');
+    if (!info.success) { appAlert(info.error || '备份生成失败'); return; }
+    // 弹系统资源管理器「另存为」，由宿主把副本复制到用户选择的位置
+    var r = await api.save_backup(info.copy_path, info.filename);
+    if (!r || r.cancelled) { showToast('已取消保存', 'error'); return; }
+    if (r.error) { appAlert('保存失败：' + r.error); return; }
+    showDlDone(r.path, r.size);
+  } catch (e) {
+    appAlert('备份失败，请重试：' + e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; }
   }
-  appAlert(msg);
+}
+
+function fmtSize(bytes) {
+  bytes = Number(bytes) || 0;
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+// ===== 保存完成弹窗 =====
+var _dlDonePath = '';
+function showDlDone(path, size) {
+  _dlDonePath = path;
+  document.getElementById('dlDonePath').textContent = path;
+  document.getElementById('dlDoneSize').textContent = fmtSize(size);
+  document.getElementById('dlDoneMask').style.display = 'flex';
+}
+function closeDlDone() { document.getElementById('dlDoneMask').style.display = 'none'; }
+async function dlDoneOpenFolder() {
+  var api = nativeApi(); if (!api || !_dlDonePath) return;
+  var r = await api.show_in_folder(_dlDonePath);
+  if (r && !r.success) showToast(r.error || '打开失败', 'error');
+}
+async function dlDoneOpenFile() {
+  var api = nativeApi(); if (!api || !_dlDonePath) return;
+  var r = await api.open_local_file(_dlDonePath);
+  if (r && !r.success) showToast(r.error || '打开失败', 'error');
 }
 
 async function restoreData(input) {
@@ -807,8 +890,11 @@ function loadAIModels() {
   });
 }
 
-// 全局 API 填写窗口保存成功后刷新本页模型列表
-window.aiModelModalOnSaved = loadAIModels;
+// 全局 API 填写窗口保存成功后刷新本页模型列表与保险箱状态条
+window.aiModelModalOnSaved = function () {
+  if (window.Vault && Vault.refresh) Vault.refresh();
+  return loadAIModels();
+};
 
 // ===== 各功能模型 =====
 function fillModelSelect(selId, value) {
@@ -865,7 +951,7 @@ function renderModelList() {
       '<div class="flex justify-between items-center">' +
         '<div style="min-width: 0;">' +
           '<strong>' + escapeHtml(m.display_name || m.model_id) + '</strong> ' + visionTag(m) +
-          '<div class="text-sm text-secondary" style="margin-top: 2px;">' + escapeHtml(p.name) + ' · ' + escapeHtml(m.model_id) + ' · ' + maskKey(m.api_key) + ' · ' + escapeHtml(m.context || '128K') + '</div>' +
+          '<div class="text-sm text-secondary" style="margin-top: 2px;">' + escapeHtml(p.name) + ' · ' + escapeHtml(m.model_id) + ' · ' + (m.has_key ? ('<i class="ph ph-' + (m.encrypted ? 'lock-key' : 'lock-open') + '"></i> ' + (m.encrypted ? '密钥已加密' : '密钥已保存')) : '未设置密钥') + ' · ' + escapeHtml(m.context || '128K') + '</div>' +
         '</div>' +
         '<div class="flex items-center gap-2">' +
           '<span class="text-sm" style="color: ' + (m.enabled ? 'var(--c-green)' : 'var(--c-text-3)') + ';">' + (m.enabled ? '已启用' : '已禁用') + '</span>' +
@@ -905,6 +991,7 @@ async function deleteAIModel(id) {
     if (res && res.success) {
       aiModels = aiModels.filter(function (x) { return x.id !== id; });
       renderModelList();
+      if (window.Vault && Vault.refresh) Vault.refresh();
       showToast('模型已删除', 'success');
     } else {
       showToast((res && res.error) || '删除失败', 'error');
@@ -936,10 +1023,7 @@ async function testSavedModel(id) {
   var ts = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) + ':' + ('0' + now.getSeconds()).slice(-2);
   try {
     var res = await VOCAB_API.post('/api/ai/test/', {
-      api_key: m.api_key || '',
-      base_url: m.base_url || '',
-      endpoint: m.endpoint || '',
-      model: m.model_id,
+      model_id: id,
     });
     if (res && res.success) {
       btn.innerHTML = '<i class="ph ph-check-circle" style="color: var(--c-green);"></i>';
