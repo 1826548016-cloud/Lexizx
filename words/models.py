@@ -387,8 +387,12 @@ class UserSettings(models.Model):
     vault_verifier = models.TextField(blank=True, default='', verbose_name='保险箱密码校验串')
 
     # 隐私与内容声明：记录用户已同意的声明版本（PRIVACY_VERSION），空串=未同意
+    # hash 为同意时正文（弹窗渲染后的可见文本）的 SHA-256，用于事后举证"同意的是哪一份文本"：
+    # 正文措辞一旦修改，hash 随之变化，可与归档在 docs/legal/ 下的各版本正文相互印证
     privacy_agreed_version = models.CharField(max_length=20, blank=True, default='',
         verbose_name='已同意的隐私声明版本')
+    privacy_agreed_hash = models.CharField(max_length=64, blank=True, default='',
+        verbose_name='已同意正文的 SHA-256')
 
     class Meta:
         verbose_name = '用户设置'
@@ -542,69 +546,6 @@ class LearningReport(models.Model):
             return json.loads(self.summary_json)
         except (json.JSONDecodeError, TypeError):
             return {}
-
-
-class PdfDocument(models.Model):
-    """PDF 资料库：上传的 PDF 文件，供在线阅读"""
-    title = models.CharField(max_length=200, verbose_name='标题')
-    file = models.FileField(upload_to='pdfs/', verbose_name='PDF 文件')
-    filesize = models.BigIntegerField(default=0, verbose_name='文件大小(字节)')
-    file_hash = models.CharField(max_length=32, blank=True, default='', db_index=True,
-        verbose_name='文件MD5', help_text='用于去重，相同内容判定为重复')
-    uploaded_at = models.DateTimeField(auto_now_add=True, verbose_name='上传时间')
-
-    class Meta:
-        ordering = ['-uploaded_at']
-        verbose_name = 'PDF 资料'
-        verbose_name_plural = 'PDF 资料'
-
-    def __str__(self):
-        return self.title
-
-    def filesize_display(self):
-        """人类可读的文件大小"""
-        size = self.filesize
-        if size < 1024:
-            return f'{size} B'
-        elif size < 1024 * 1024:
-            return f'{round(size / 1024, 1)} KB'
-        else:
-            return f'{round(size / (1024 * 1024), 1)} MB'
-
-
-class Music(models.Model):
-    """音乐播放器：上传视频文件，ffmpeg 提取音轨生成纯音频播放"""
-    TRANSCODE_CHOICES = [
-        ('pending', '转码中'),
-        ('done', '已完成'),
-        ('direct', '免转码直放'),
-        ('failed', '失败'),
-    ]
-    title = models.CharField(max_length=200, verbose_name='标题')
-    video_file = models.FileField(upload_to='music/videos/', verbose_name='视频文件')
-    audio_file = models.FileField(upload_to='music/audio/', null=True, blank=True, verbose_name='音频文件')
-    duration = models.FloatField(default=0, verbose_name='时长(秒)')
-    filesize = models.BigIntegerField(default=0, verbose_name='视频大小(字节)')
-    transcode_status = models.CharField(max_length=10, choices=TRANSCODE_CHOICES,
-        default='pending', verbose_name='转码状态')
-    transcode_error = models.TextField(blank=True, default='', verbose_name='转码错误信息')
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='添加时间')
-
-    class Meta:
-        ordering = ['-created_at']
-        verbose_name = '音乐'
-        verbose_name_plural = '音乐'
-
-    def __str__(self):
-        return self.title
-
-    def duration_display(self):
-        if not self.duration:
-            return '—'
-        m = int(self.duration) // 60
-        s = int(self.duration) % 60
-        return f'{m}:{s:02d}'
-
 
 class ExamQuestion(models.Model):
     """考研英语真题库：作文 / 翻译题目"""

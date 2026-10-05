@@ -1,4 +1,4 @@
-﻿"""
+"""
 Django settings for vocab_project project.
 """
 
@@ -21,18 +21,11 @@ if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     # 可写数据目录：exe 同目录的 ./data/（避免 _MEIPASS 临时目录被清空）
     DATA_DIR = Path(sys.executable).resolve().parent / 'data'
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (DATA_DIR / 'media').mkdir(exist_ok=True)
     (DATA_DIR / 'backups').mkdir(exist_ok=True)
-    _local_ffmpeg = Path(sys.executable).resolve().parent / 'ffmpeg.exe'
-    _local_ffprobe = Path(sys.executable).resolve().parent / 'ffprobe.exe'
-    FFMPEG_PATH = str(_local_ffmpeg) if _local_ffmpeg.exists() else 'ffmpeg'
-    FFPROBE_PATH = str(_local_ffprobe) if _local_ffprobe.exists() else 'ffprobe'
 else:
     FROZEN = False
     BASE_DIR = Path(__file__).resolve().parent.parent
     DATA_DIR = BASE_DIR
-    FFMPEG_PATH = 'd:\\trae\\Trae CN\\resources\\app\\bin\\ffmpeg.exe'
-    FFPROBE_PATH = 'd:\\trae\\Trae CN\\resources\\app\\bin\\ffprobe.exe'
 
 SECRET_KEY = 'django-insecure-%3#v_5wpj1rord)qcqs*s0v0@hfb-y#8=q6k=(oy7ho=4vdxk'
 
@@ -101,9 +94,6 @@ STATIC_URL = '/static/'
 STATICFILES_DIRS = [
     BASE_DIR / 'words' / 'static',
 ]
-
-MEDIA_URL = '/media/'
-MEDIA_ROOT = DATA_DIR / 'media'
 
 BACKUP_DIR = DATA_DIR / 'backups'
 

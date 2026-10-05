@@ -6,6 +6,8 @@
 {% block page_title %}AI 调用日志{% endblock %}
 
 {% block content %}
+{% include 'partials/exam_nav.html' with ws_active='logs' %}
+
 <!-- 统计 -->
 <div class="grid-3 mb-4" style="gap: 14px;">
   <div class="card stat-card">
@@ -26,10 +28,10 @@
 <div class="card">
   <div class="card-header flex justify-between items-center">
     <span>调用明细</span>
-    <div class="flex gap-2" style="background: var(--c-surface-2); padding: 4px; border-radius: 10px;">
-      <a href="{% url 'words:exam_logs' %}" class="btn btn-sm {% if not current_action %}btn-primary{% else %}btn-secondary{% endif %}" style="border:none; box-shadow:none;">全部</a>
+    <div class="ws-filter-group">
+      <a href="{% url 'words:exam_logs' %}" class="{% if not current_action %}active{% endif %}">全部</a>
       {% for code, label in action_options %}
-      <a href="{% url 'words:exam_logs' %}?action={{ code }}" class="btn btn-sm {% if current_action == code %}btn-primary{% else %}btn-secondary{% endif %}" style="border:none; box-shadow:none;">{{ label }}</a>
+      <a href="{% url 'words:exam_logs' %}?action={{ code }}" class="{% if current_action == code %}active{% endif %}">{{ label }}</a>
       {% endfor %}
     </div>
   </div>
@@ -56,18 +58,20 @@
         </tr>
         <tr id="log-detail-{{ l.id }}" style="display:none;">
           <td colspan="7" style="padding: 0;">
-            <div style="padding: 16px 20px; background: var(--c-surface-2); display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-              <div>
-                <div class="text-secondary text-sm" style="margin-bottom:6px;">提示词预览</div>
-                <pre style="white-space:pre-wrap; margin:0; font-family:inherit; font-size:var(--fs-xs); max-height:220px; overflow:auto;">{{ l.prompt_preview }}</pre>
-              </div>
-              <div>
-                <div class="text-secondary text-sm" style="margin-bottom:6px;">{% if l.success %}响应预览{% else %}错误信息{% endif %}</div>
-                {% if l.success %}
-                <pre style="white-space:pre-wrap; margin:0; font-family:inherit; font-size:var(--fs-xs); max-height:220px; overflow:auto;">{{ l.response_preview }}</pre>
-                {% else %}
-                <pre style="white-space:pre-wrap; margin:0; font-family:inherit; font-size:var(--fs-xs); color: var(--c-red);">{{ l.error }}</pre>
-                {% endif %}
+            <div class="ws-detail">
+              <div class="ws-detail-grid">
+                <div>
+                  <div class="ws-detail-label">提示词预览</div>
+                  <pre class="ws-pre ws-pre-scroll" style="font-size:var(--fs-xs);">{{ l.prompt_preview }}</pre>
+                </div>
+                <div>
+                  <div class="ws-detail-label">{% if l.success %}响应预览{% else %}错误信息{% endif %}</div>
+                  {% if l.success %}
+                  <pre class="ws-pre ws-pre-scroll" style="font-size:var(--fs-xs);">{{ l.response_preview }}</pre>
+                  {% else %}
+                  <pre class="ws-pre ws-pre-error" style="font-size:var(--fs-xs);">{{ l.error }}</pre>
+                  {% endif %}
+                </div>
               </div>
             </div>
           </td>

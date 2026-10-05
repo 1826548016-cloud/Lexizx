@@ -1,5 +1,6 @@
 {% extends 'base.html' %}
 {% load static %}
+{% load custom_filters %}
 
 {% block title %}考研写作工坊 - 考研单词背诵系统{% endblock %}
 
@@ -7,6 +8,8 @@
 
 {% block content %}
 <form style="display:none;">{% csrf_token %}</form>
+
+{% include 'partials/exam_nav.html' with ws_active='workshop' %}
 
 <!-- 数据统计卡片 -->
 <div class="card-grid mb-4" style="grid-template-columns: repeat(4, 1fr); gap: 14px;">
@@ -47,11 +50,11 @@
 <!-- 写作引导区：两个并排大卡 -->
 <div class="grid-2 mb-4" style="gap: 16px;">
   <!-- 作文 -->
-  <div class="card" style="padding: 0; overflow: hidden;">
-    <div class="card-header" style="display:flex; align-items:center; gap:10px; padding: 16px 22px; margin:0; border-bottom:1px solid var(--c-border-light); background: var(--c-surface-2);">
-      <i class="ph ph-quill" style="color: var(--c-red); font-size:1.3rem;"></i> 作文练习
+  <div class="card ws-card">
+    <div class="card-header ws-card-head">
+      <span class="ws-card-title"><i class="ph ph-feather" style="color: var(--c-red);"></i> 作文练习</span>
     </div>
-    <div class="p-3" style="padding: 18px 22px; display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+    <div class="ws-tile-grid">
       {% for card in essay_cards %}
       <a href="{{ card.url }}" class="study-tile">
         <div class="study-tile-icon study-tile-icon--{{ card.tone }}"><i class="ph {{ card.icon }}"></i></div>
@@ -63,11 +66,11 @@
   </div>
 
   <!-- 翻译 -->
-  <div class="card" style="padding: 0; overflow: hidden;">
-    <div class="card-header" style="display:flex; align-items:center; gap:10px; padding: 16px 22px; margin:0; border-bottom:1px solid var(--c-border-light); background: var(--c-surface-2);">
-      <i class="ph ph-translate" style="color: var(--c-blue); font-size:1.3rem;"></i> 翻译专项
+  <div class="card ws-card">
+    <div class="card-header ws-card-head">
+      <span class="ws-card-title"><i class="ph ph-translate" style="color: var(--c-blue);"></i> 翻译专项</span>
     </div>
-    <div class="p-3" style="padding: 18px 22px; display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+    <div class="ws-tile-grid">
       {% for card in trans_cards %}
       <a href="{{ card.url }}" class="study-tile">
         <div class="study-tile-icon study-tile-icon--{{ card.tone }}"><i class="ph {{ card.icon }}"></i></div>
@@ -79,88 +82,104 @@
   </div>
 </div>
 
-<!-- AI 规律分析 + 最近练习 -->
-<div class="grid-2 mb-4" style="grid-template-columns: 1fr 1.4fr; gap: 16px;">
-  <!-- AI 面板 -->
-  <div class="card" style="padding: 0; overflow: hidden;">
-    <div class="card-header" style="display:flex; align-items:center; gap:10px; padding: 16px 22px; margin:0; border-bottom:1px solid var(--c-border-light);">
-      <i class="ph ph-lightbulb" style="color: var(--c-amber); font-size:1.3rem;"></i> AI 命题规律分析
+<!-- AI 规律分析 + 专属模板 -->
+<div class="card mb-4 ws-card">
+  <div class="card-header ws-card-head">
+    <span class="ws-card-title"><i class="ph ph-lightbulb" style="color: var(--c-amber);"></i> AI 命题规律分析</span>
+  </div>
+  <div class="ws-card-body">
+    <p class="ws-note">基于历年真题，AI 自动归纳高频主题、常考题型与写作要点，助你把握命题方向。</p>
+    <div class="flex gap-2" style="flex-wrap: wrap;">
+      <button class="btn btn-secondary btn-sm" onclick="genThemesReport('english1')"><i class="ph ph-magnifying-glass"></i> 英语一</button>
+      <button class="btn btn-secondary btn-sm" onclick="genThemesReport('english2')"><i class="ph ph-magnifying-glass"></i> 英语二</button>
     </div>
-    <div style="padding: 18px 22px;">
-      <p class="text-secondary" style="font-size: var(--fs-sm); margin-bottom: 14px; line-height:1.7;">基于历年真题，AI 自动归纳高频主题、常考题型与写作要点，助你把握命题方向。</p>
-      <div class="flex gap-2" style="flex-wrap: wrap;">
-        <button class="btn btn-secondary btn-sm" onclick="genThemesReport('english1')"><i class="ph ph-magnifying-glass"></i> 英语一</button>
-        <button class="btn btn-secondary btn-sm" onclick="genThemesReport('english2')"><i class="ph ph-magnifying-glass"></i> 英语二</button>
-      </div>
-      <div id="themesReportWrap" class="mt-3" style="display:none;">
-        <div class="report-loading text-secondary text-sm">AI 正在分析历年真题规律，请稍候…</div>
-        <div id="themesReport" class="markdown-body" style="margin-top: 12px;"></div>
-      </div>
+    <div id="themesReportWrap" class="mt-3" style="display:none;">
+      <div class="report-loading text-secondary text-sm">AI 正在分析历年真题规律，请稍候…</div>
+      <div id="themesReport" class="markdown-body" style="margin-top: 12px;"></div>
+    </div>
 
-      <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--c-border-light);">
-        <div style="font-weight:500; margin-bottom: 6px; display:flex; align-items:center; gap:8px;">
-          <i class="ph ph-user-circle" style="color: var(--c-red);"></i> 我的专属作文模板
-        </div>
-        <p class="text-secondary" style="font-size: var(--fs-sm); margin: 0 0 12px; line-height:1.7;">
-          综合你已掌握的词汇与历史练习记录，AI 为你量身定制可背诵、可套用的个人作文模板。
-        </p>
+    <div class="ws-subsection">
+      <div class="ws-subsection-head"><i class="ph ph-user-circle" style="color: var(--c-red);"></i> 我的专属作文模板</div>
+      <p class="ws-note">
+        综合你已掌握的词汇与历史练习记录，AI 为你量身定制可背诵、可套用的个人作文模板。
+      </p>
+      <div class="flex gap-2" style="flex-wrap: wrap;">
         <button class="btn btn-primary btn-sm" onclick="genPersonalTemplate()">
           <i class="ph ph-magic-wand"></i> 生成我的专属模板
         </button>
         <button id="tmplExportBtn" class="btn btn-secondary btn-sm" style="display:none;" onclick="exportTemplatePdf()">
           <i class="ph ph-file-pdf"></i> 导出为 PDF
         </button>
-        <div id="tmplWrap" style="display:none; margin-top: 14px;">
-          <div class="report-loading text-secondary text-sm">AI 正在结合你的词汇与练习记录生成模板，通常需要 15-30 秒…</div>
-          <div id="personalTempl" class="markdown-body" style="margin-top: 12px;"></div>
-        </div>
+      </div>
+      <div id="tmplWrap" style="display:none; margin-top: 14px;">
+        <div class="report-loading text-secondary text-sm">AI 正在结合你的词汇与练习记录生成模板，通常需要 15-30 秒…</div>
+        <div id="personalTempl" class="markdown-body" style="margin-top: 12px;"></div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- 最近练习：整行宽度，带列头与得分档次 -->
+<div class="card ws-card">
+  <div class="card-header ws-card-head">
+    <span class="ws-card-title"><i class="ph ph-clock" style="color: var(--c-green);"></i> 最近练习</span>
+    <span class="ws-head-actions">
+      <a href="{% url 'words:exam_history' %}" class="btn btn-secondary btn-xs"><i class="ph ph-clock-counter-clockwise"></i> 全部记录</a>
+    </span>
   </div>
 
-  <!-- 最近练习 -->
-  <div class="card" style="padding: 0; overflow: hidden;">
-    <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding: 16px 22px; margin:0; border-bottom:1px solid var(--c-border-light);">
-      <span style="display:flex; align-items:center; gap:10px;"><i class="ph ph-clock" style="color: var(--c-green); font-size:1.3rem;"></i> 最近练习</span>
-      <span class="flex gap-2">
-        <a href="{% url 'words:exam_history' %}" class="btn btn-secondary btn-xs">练习历史</a>
-        <a href="{% url 'words:exam_logs' %}" class="btn btn-secondary btn-xs">AI 日志</a>
-        <a href="{% url 'words:exam_phrases' %}" class="btn btn-secondary btn-xs">好句 / 错题本</a>
-      </span>
-    </div>
-    <div style="padding: 12px 12px;">
-      {% if recent_practices %}
-      <div class="table-wrap" style="width:100%;">
-        <table class="word-table">
-          <tbody>
-            {% for p in recent_practices %}
-            {% if p.question %}
-            <tr style="border-bottom:1px solid var(--c-border-light);">
-              <td><span class="date-chip">{{ p.question.year }}</span></td>
-              <td>{{ p.question.get_exam_type_display|slice:":2" }}</td>
-              <td>{{ p.question.get_question_type_display }}</td>
-              <td>{{ p.get_mode_display }}{% if p.source == 'ai' %}<span class="text-secondary text-xs">（AI）</span>{% endif %}</td>
-              <td>
-                {% with s=p.get_score %}
-                  {% if s.total %}<span class="text-accent">{{ s.total }} 分</span>{% else %}-{% endif %}
-                {% endwith %}
-              </td>
-              <td class="text-secondary text-xs">{{ p.created_at|date:"m-d" }}</td>
-              <td><a href="{% url 'words:exam_write' p.question.id %}" class="btn btn-secondary btn-xs">续写</a></td>
-            </tr>
+  {% if recent_practices %}
+  <div class="table-wrap">
+    <table class="word-table ws-rec-table">
+      <thead>
+        <tr>
+          <th style="width:74px;">年份</th>
+          <th style="width:150px;">科目 / 题型</th>
+          <th style="width:104px;">来源</th>
+          <th style="width:96px;">得分</th>
+          <th style="width:88px;">时间</th>
+          <th style="width:86px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in recent_practices %}
+        {% if p.question %}
+        {% with s=p.get_score %}
+        <tr class="ws-rec-row">
+          <td><span class="date-chip ws-year-chip">{{ p.question.year }}</span></td>
+          <td>
+            <div class="ws-rec-title">{{ p.question.get_exam_type_display }} · {{ p.question.get_question_type_display }}</div>
+            {% if p.question.genre %}<div class="ws-rec-sub">{{ p.question.genre }}</div>{% endif %}
+          </td>
+          <td>
+            {% if p.source == 'ai' %}<span class="badge badge-review">AI 代写</span>
+            {% else %}<span class="badge badge-new">{{ p.get_mode_display }}</span>{% endif %}
+          </td>
+          <td>
+            {% if s.total %}
+            <span class="ws-score-chip ws-score-chip--{{ s|score_tone }}">
+              {{ s.total }}<small>/{{ s|score_max }}</small>
+            </span>
+            {% else %}
+            <span class="ws-score-chip ws-score-chip--none">未批改</span>
             {% endif %}
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <div class="empty-state">
-        <div class="empty-state-title">还没有练习记录</div>
-        <div>从上方入口选一篇真题开始吧</div>
-      </div>
-      {% endif %}
-    </div>
+          </td>
+          <td class="text-secondary text-xs">{{ p.created_at|date:"m-d H:i" }}</td>
+          <td><a href="{% url 'words:exam_write' p.question.id %}" class="btn btn-secondary btn-xs">续写</a></td>
+        </tr>
+        {% endwith %}
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
+  {% else %}
+  <div class="empty-state">
+    <i class="ph ph-note-pencil"></i>
+    <div class="empty-state-title">还没有练习记录</div>
+    <div class="empty-state-hint">从上方「作文练习」或「翻译专项」选一篇真题开始</div>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
 
@@ -239,89 +258,6 @@ function genThemesReport(examType) {
   });
 }
 
-function escapeHtml(src) {
-  return String(src || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-function renderMarkdown(src) {
-  if (!src) return '';
-  var lines = escapeHtml(src).split('\n');
-  var html = '', i = 0, para = [];
-  function flushPara() { if (para.length) { html += '<p>' + para.map(inline).join('\n') + '</p>'; para = []; } }
-  function inline(s) {
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, t, u) { return /^(https?:\/\/)/.test(u) ? '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>' : m; });
-    s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
-    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-    return s;
-  }
-  while (i < lines.length) {
-    var line = lines[i];
-    if (/^\s*```/.test(line)) {
-      flushPara(); var buf = []; i++;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i]); i++; }
-      html += '<pre><code>' + buf.join('\n') + '</code></pre>'; i++; continue;
-    }
-    var h = line.match(/^(#{1,4})\s+(.*)$/);
-    if (h) { flushPara(); html += '<h' + h[1].length + '>' + inline(h[2]) + '</h' + h[1].length + '>'; i++; continue; }
-    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { flushPara(); html += '<hr>'; i++; continue; }
-    if (/^\s*>\s?/.test(line)) {
-      flushPara(); var q = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { q.push(inline(lines[i].replace(/^\s*>\s?/, ''))); i++; }
-      html += '<blockquote>' + q.join('<br>') + '</blockquote>'; continue;
-    }
-    if (/^\s*[-*+]\s+/.test(line)) {
-      flushPara(); var ul = [];
-      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { ul.push('<li>' + inline(lines[i].replace(/^\s*[-*+]\s+/, '')) + '</li>'); i++; }
-      html += '<ul>' + ul.join('') + '</ul>'; continue;
-    }
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      flushPara(); var ol = [];
-      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) { ol.push('<li>' + inline(lines[i].replace(/^\s*\d+[.)]\s+/, '')) + '</li>'); i++; }
-      html += '<ol>' + ol.join('') + '</ol>'; continue;
-    }
-    // Markdown 表格解析：| 表头 | 表头 | + |---|---| + | 数据 | 数据 |
-    function isPipeRow(s) { return /^\s*\|?.*\|.*\|\s*$/.test(s) && s.indexOf('|') !== -1; }
-    function isSepRow(s) {
-      // 允许首列无空格前导 |，要求包含 ---|--- 模式
-      var stripped = s.trim().replace(/^\|/, '').replace(/\|$/, '');
-      if (!stripped) return false;
-      var parts = stripped.split('|');
-      if (parts.length < 2) return false;
-      return parts.every(function (p) { return /^\s*:?-{3,}:?\s*$/.test(p); });
-    }
-    function splitRow(s) {
-      var t = s.trim();
-      if (t.charAt(0) === '|') t = t.slice(1);
-      if (t.charAt(t.length - 1) === '|') t = t.slice(0, -1);
-      return t.split('|').map(function (c) { return c.trim(); });
-    }
-    if (isPipeRow(line) && i + 1 < lines.length && isSepRow(lines[i + 1])) {
-      flushPara();
-      var header = splitRow(line); i++; // 跳到分隔行
-      i++; // 跳过分隔行
-      var bodyRows = [];
-      while (i < lines.length && isPipeRow(lines[i])) {
-        bodyRows.push(splitRow(lines[i]));
-        i++;
-      }
-      html += '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
-      for (var hi = 0; hi < header.length; hi++) html += '<th>' + inline(header[hi]) + '</th>';
-      html += '</tr></thead><tbody>';
-      for (var bi = 0; bi < bodyRows.length; bi++) {
-        html += '<tr>';
-        for (var ci = 0; ci < bodyRows[bi].length; ci++) {
-          html += '<td>' + inline(bodyRows[bi][ci]) + '</td>';
-        }
-        while (ci < header.length) { html += '<td></td>'; ci++; }
-        html += '</tr>';
-      }
-      html += '</tbody></table></div>';
-      continue;
-    }
-    para.push(line); i++;
-  }
-  flushPara();
-  return html;
-}
+// escapeHtml / renderMarkdown 由 static/js/exam_shared.js 全局提供
 </script>
 {% endblock %}

@@ -62,19 +62,19 @@
       <button class="vocab-nav-item" onclick="setStatusFilter('mastered')"><span><i class="ph ph-check-circle"></i> 已掌握</span></button>
       <button class="vocab-nav-item" onclick="setStatusFilter('unknown')"><span><i class="ph ph-arrow-clockwise"></i> 待学习</span></button>
       <button class="vocab-nav-item" onclick="setStatusFilter('excluded')"><span><i class="ph ph-check-fat"></i> 永不忘记</span><span class="vocab-nav-count" id="excludedCount">—</span></button>
-      <div class="flex justify-between items-center" style="margin: 18px 10px 8px;">
-        <span class="text-sm text-secondary">单元（{{ units|length }}）</span>
+      <div class="vocab-side-heading">
+        <span>单元（{{ units|length }}）</span>
       </div>
       <div class="unit-list" id="unit-list">
         {% for unit in units %}
         <div class="unit-item" data-unit="{{ unit.number }}">
-          <div class="flex justify-between items-center" style="margin-bottom: 8px;">
-            <strong>{{ unit.name }}</strong>
-            <div class="flex items-center gap-1 unit-actions">
-              <span class="text-secondary text-sm">{{ unit.mastered }} / {{ unit.word_count }}</span>
-              <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); location.href='{% url 'words:ai_import' %}?unit={{ unit.number }}'" title="AI 导入到此单元" style="padding: 2px 4px; font-size: 0.7rem;"><i class="ph ph-sparkle"></i></button>
-              <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showEditUnit({{ unit.number }}, '{{ unit.name }}', '{{ unit.category }}')" title="编辑单元" style="padding: 2px 4px; font-size: 0.7rem;">✎</button>
-              <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); deleteUnit({{ unit.number }}, '{{ unit.name }}')" title="删除单元" style="padding: 2px 4px; font-size: 0.7rem;">✕</button>
+          <div class="unit-head">
+            <span class="unit-name">{{ unit.name }}</span>
+            <div class="unit-actions flex items-center gap-1">
+              <span class="unit-count">{{ unit.mastered }} / {{ unit.word_count }}</span>
+              <button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); location.href='{% url 'words:ai_import' %}?unit={{ unit.number }}'" title="AI 导入到此单元"><i class="ph ph-sparkle"></i></button>
+              <button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); showEditUnit({{ unit.number }}, '{{ unit.name }}', '{{ unit.category }}')" title="编辑单元"><i class="ph ph-pencil-simple"></i></button>
+              <button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); deleteUnit({{ unit.number }}, '{{ unit.name }}')" title="删除单元"><i class="ph ph-x"></i></button>
             </div>
           </div>
           <div class="progress-bar">
@@ -112,8 +112,10 @@
           <button onclick="exportPDF('filtered', 'zh2en')">看中文写英文(筛选)</button>
         </div>
       </details>
-      <button class="btn btn-primary" onclick="location.href='{% url 'words:ai_import' %}'"><i class="ph ph-sparkle"></i> AI 导入</button>
-      <button class="btn btn-primary" onclick="openWordModal('add')"><i class="ph ph-plus"></i> 添加单词</button>
+      <span class="vocab-toolbar-actions">
+        <button class="btn btn-primary" onclick="location.href='{% url 'words:ai_import' %}'"><i class="ph ph-sparkle"></i> AI 导入</button>
+        <button class="btn btn-primary" onclick="openWordModal('add')"><i class="ph ph-plus"></i> 添加单词</button>
+      </span>
     </div>
 
     <details class="card filter-panel" id="filterPanel">
@@ -147,8 +149,18 @@
 
     <!-- Word table -->
     <div class="card">
-      <div class="vocab-summary"><strong>单词列表</strong><span id="wordListSummary">加载中…</span><span style="flex: 1;"></span><button class="quick-filter" onclick="setStatusFilter('')">全部</button><button class="quick-filter" onclick="setStatusFilter('unknown')">待学习</button><button class="quick-filter" onclick="setStatusFilter('mastered')">已掌握</button><button class="quick-filter" onclick="setStatusFilter('excluded')">已排除</button></div>
-      <div style="overflow-x: auto;">
+      <div class="vocab-summary">
+        <strong>单词列表</strong>
+        <span id="wordListSummary">加载中…</span>
+        <span class="spacer"></span>
+        <span class="quick-filters">
+          <button class="quick-filter" onclick="setStatusFilter('')">全部</button>
+          <button class="quick-filter" onclick="setStatusFilter('unknown')">待学习</button>
+          <button class="quick-filter" onclick="setStatusFilter('mastered')">已掌握</button>
+          <button class="quick-filter" onclick="setStatusFilter('excluded')">已排除</button>
+        </span>
+      </div>
+      <div class="vocab-table-scroll">
         <table class="data-table vocab-table">
           <thead>
             <tr>
@@ -424,7 +436,7 @@
         '<td class="meaning-cell">' + meanings + '</td>' +
         '<td>' +
           (w.is_excluded
-            ? '<span class="badge" style="background: var(--c-purple, #8a6f9e); color: #fff;">永不忘记</span>'
+            ? '<span class="badge" style="background: var(--c-purple); color: #fff;">永不忘记</span>'
             : '<span class="badge ' + getStatusBadgeClass(w.status) + '">' + getStatusLabel(w.status) + '</span>'
           ) +
         '</td>' +
@@ -804,8 +816,8 @@
           '<span class="pos-tag ' + posColorClass(k) + '">' + escapeHtml(k) + '</span>' +
           '<span class="text-secondary text-sm">' + escapeHtml(POS_NAMES[k] || '自定义') + '</span>' +
           '<span class="pos-section-count">' + ms.length + ' 条释义</span>' +
-          '<button type="button" class="btn btn-sm btn-secondary" onclick="renamePos(\'' + safeJs(k) + '\')" title="重命名词性">✎</button>' +
-          '<button type="button" class="btn btn-sm btn-danger" onclick="removePos(\'' + safeJs(k) + '\')" title="删除该词性及所有释义">×</button>' +
+          '<button type="button" class="btn btn-sm btn-secondary unit-btn" onclick="renamePos(\'' + safeJs(k) + '\')" title="重命名词性"><i class="ph ph-pencil-simple"></i></button>' +
+          '<button type="button" class="btn btn-sm btn-danger unit-btn" onclick="removePos(\'' + safeJs(k) + '\')" title="删除该词性及所有释义"><i class="ph ph-trash"></i></button>' +
         '</div>' +
         '<div class="pos-meanings">' +
           (ms.length ? ms.map(function (m, i) {
@@ -1019,13 +1031,13 @@
       list.innerHTML = res.units.map(function (u) {
         var pct = Math.min(100, Math.round(u.progress_percent || 0));
         return '<div class="unit-item" data-unit="' + u.number + '">' +
-          '<div class="flex justify-between items-center" style="margin-bottom: 8px;">' +
-            '<strong>' + escapeHtml(u.name) + '</strong>' +
-            '<div class="flex items-center gap-1 unit-actions">' +
-              '<span class="text-secondary text-sm">' + u.mastered_count + ' / ' + u.word_count + '</span>' +
-              '<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); location.href=AI_IMPORT_URL + \'?unit=\' + ' + u.number + '" title="AI 导入到此单元" style="padding: 2px 4px; font-size: 0.7rem;"><i class="ph ph-sparkle"></i></button>' +
-              '<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); showEditUnit(' + u.number + ', \'' + escapeHtml(u.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(u.category || '').replace(/'/g, "\\'") + '\')" title="编辑单元" style="padding: 2px 4px; font-size: 0.7rem;">✎</button>' +
-              '<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); deleteUnit(' + u.number + ', \'' + escapeHtml(u.name).replace(/'/g, "\\'") + '\')" title="删除单元" style="padding: 2px 4px; font-size: 0.7rem;">✕</button>' +
+          '<div class="unit-head">' +
+            '<span class="unit-name">' + escapeHtml(u.name) + '</span>' +
+            '<div class="unit-actions flex items-center gap-1">' +
+              '<span class="unit-count">' + u.mastered_count + ' / ' + u.word_count + '</span>' +
+              '<button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); location.href=AI_IMPORT_URL + \'?unit=\' + ' + u.number + '" title="AI 导入到此单元"><i class="ph ph-sparkle"></i></button>' +
+              '<button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); showEditUnit(' + u.number + ', \'' + escapeHtml(u.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(u.category || '').replace(/'/g, "\\'") + '\')" title="编辑单元"><i class="ph ph-pencil-simple"></i></button>' +
+              '<button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); deleteUnit(' + u.number + ', \'' + escapeHtml(u.name).replace(/'/g, "\\'") + '\')" title="删除单元"><i class="ph ph-x"></i></button>' +
             '</div>' +
           '</div>' +
           '<div class="progress-bar"><div class="progress-bar-fill" style="width: ' + pct + '%;"></div></div>' +

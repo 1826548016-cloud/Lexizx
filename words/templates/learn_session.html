@@ -6,139 +6,20 @@
 
 {% block extra_head %}
 <style>
-  .learn-session { max-width: 840px; margin: 0 auto; }
-
+  
   /* ===== 学习进度条（红笔） ===== */
-  .learn-progress { padding: 14px 18px; margin-bottom: 16px; }
-  .learn-progress-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-  .learn-progress .progress-bar { height: 8px; background: var(--c-bg); }
-  .learn-progress-slider {
-    -webkit-appearance: none; appearance: none;
-    width: 100%; height: 18px; border-radius: 99px;
-    background: transparent; outline: none; cursor: pointer; margin-top: 0;
-  }
-  .learn-progress-slider::-webkit-slider-thumb {
-    -webkit-appearance: none; appearance: none;
-    width: 16px; height: 16px; border-radius: 50%;
-    background: var(--c-red); cursor: pointer;
-    border: 3px solid var(--c-surface);
-    box-shadow: 0 0 0 1px var(--c-border), var(--shadow);
-  }
-  .learn-progress-slider::-moz-range-thumb {
-    width: 16px; height: 16px; border-radius: 50%;
-    background: var(--c-red); cursor: pointer; border: 3px solid var(--c-surface);
-    box-shadow: 0 0 0 1px var(--c-border), var(--shadow);
-  }
-
+            
   /* ===== 背诵卡（错题本纸感） ===== */
-  .study-card {
-    position: relative;
-    min-height: 560px;
-    display: flex; flex-direction: column; align-items: center; text-align: center;
-    padding: 26px 44px 36px;
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-md);
-  }
-  .study-card-top { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 10px; flex-wrap: wrap; }
-  .study-unit { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 99px; background: var(--c-red-bg); color: var(--c-red); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .05em; }
-  .study-tools { display: flex; gap: 6px; }
-  .study-tools .btn { min-width: auto; padding: 6px 11px; border-radius: 99px; font-size: var(--fs-xs); }
-  .study-body {
-    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-    width: 100%; padding: 18px 0 8px;
-    animation: cardIn .32s ease;
-  }
-  @keyframes cardIn {
+              @keyframes cardIn {
     from { opacity: 0; transform: translateY(12px); }
     to { opacity: 1; transform: none; }
   }
-  .study-card .word-text {
-    margin-top: 18px;
-    font-size: clamp(2.5rem, 8vw, 4.9rem);
-    line-height: 1.14; letter-spacing: -.01em;
-    position: relative; padding-bottom: 16px;
-  }
-  .study-card .word-text::after {
-    content: ''; position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
-    width: 62px; height: 3px; border-radius: 999px; background: var(--c-red); opacity: .8;
-  }
-  .study-card.is-spelling .word-text::after { display: none; }
-  .study-card .word-phonetic { margin-top: 10px; font-size: var(--fs-lg); color: var(--c-text-2); }
-  .study-card .word-pos { margin: 16px 0 4px; display: inline-flex; padding: 3px 12px; border-radius: 99px; background: var(--c-surface-2); color: var(--c-text-2); font-size: var(--fs-xs); font-weight: 500; letter-spacing: .04em; }
-  .study-card .word-meaning { width: min(100%, 600px); margin: 16px 0 0; text-align: left; padding: 18px 20px; background: var(--c-bg); border-radius: var(--radius-sm); line-height: 1.8; }
-  .gate-badge { display: inline-block; padding: 2px 10px; border-radius: 99px; background: var(--c-purple, #8a6f9e); color: #fff; font-size: var(--fs-xs); font-weight: 600; margin-right: 6px; vertical-align: 1px; }
-  .gate-badge-alt { background: var(--c-amber, #d99a3d); }
-  .study-card .word-example { width: min(100%, 600px); margin-top: 12px; text-align: left; color: var(--c-text-2); font-style: italic; }
-  /* 例句增删改查（仅背诵页） */
-  .ex-en { white-space: pre-wrap; font-style: normal; color: var(--c-text-1); }
-  .ex-zh { color: var(--c-text-2); font-size: 0.92em; margin-top: 4px; white-space: pre-wrap; font-style: normal; }
-  .ex-actions { display: inline-flex; gap: 8px; margin-top: 8px; }
-  .ex-btn { border: 1px solid var(--c-border); background: var(--c-surface); color: var(--c-text-1); border-radius: var(--radius-sm); padding: 3px 10px; font-size: var(--fs-sm); cursor: pointer; font-style: normal; }
-  .ex-btn:hover { border-color: var(--c-green); color: var(--c-green); }
-  .ex-btn.ex-primary { background: var(--c-green); border-color: var(--c-green); color: #fff; }
-  .ex-btn.ex-danger { color: var(--c-red); }
-  .ex-btn.ex-danger:hover { border-color: var(--c-red); color: var(--c-red); }
-  .ex-empty { color: var(--c-text-3); font-size: var(--fs-sm); margin-bottom: 6px; font-style: normal; }
-  .ex-form { display: flex; flex-direction: column; gap: 8px; font-style: normal; }
-  .ex-input { width: 100%; border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 6px 9px; font: inherit; background: var(--c-surface); color: var(--c-text-1); resize: vertical; }
-  .ex-msg { color: var(--c-red); font-size: var(--fs-sm); min-height: 1em; font-style: normal; }
-
+                    /* 例句增删改查（仅背诵页） */
+                        
   /* ===== 检测输入区 ===== */
-  .check-panel { width: min(100%, 600px); margin: 22px 0 0; }
-  .check-hint { margin-bottom: 10px; font-size: var(--fs-sm); color: var(--c-text-3); letter-spacing: .02em; }
-  .check-input-row { display: flex; gap: 10px; align-items: stretch; }
-  .check-input {
-    flex: 1; min-width: 0; padding: 13px 16px; font-size: var(--fs-xl);
-    border: 2px solid var(--c-border); border-radius: var(--radius-sm);
-    background: var(--c-surface); color: var(--c-text); text-align: center;
-    letter-spacing: 1px; outline: none;
-    transition: border-color .15s, box-shadow .15s;
-  }
-  .check-input:focus { border-color: var(--c-red); box-shadow: 0 0 0 3px rgba(192,57,43,.14); }
-  .check-input::placeholder { color: var(--c-text-3); letter-spacing: 0; }
-  .check-submit { min-width: 108px; }
-  .check-result { margin-top: 14px; padding: 13px 16px; border-radius: var(--radius-sm); font-size: var(--fs-md); text-align: left; display: none; animation: resultIn .22s ease; }
-  @keyframes resultIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  .check-result.result-correct { display: block; background: var(--c-green-bg); border: 1px solid var(--c-green); color: var(--c-green); }
-  .check-result.result-partial { display: block; background: var(--c-amber-bg); border: 1px solid var(--c-amber); color: var(--c-amber); }
-  .check-result.result-wrong { display: block; background: var(--c-red-bg); border: 1px solid var(--c-red); color: var(--c-red); }
-  .check-result-title { font-weight: 700; margin-bottom: 6px; }
-  .check-result .check-comment { margin-top: 4px; opacity: .92; color: var(--c-text-2); }
-  .check-flag { display: inline-block; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 99px; margin-left: 6px; vertical-align: middle; background: var(--c-surface-2); color: var(--c-text-2); }
-  .spell-line { margin: 3px 0; color: var(--c-text-2); }
-  .spell-ok { font-weight: 600; color: var(--c-text); }
-  .spell-bad { color: var(--c-red); font-weight: 700; text-decoration: line-through; text-decoration-thickness: 2px; }
-
-  /* ===== 操作区 ===== */
-  .study-actions { margin-top: auto; width: 100%; }
-  .study-primary-action { width: 100%; }
-  .study-primary-action .btn { min-width: min(100%, 320px); border-radius: var(--radius); }
-  .study-mark-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; width: min(100%, 560px); margin-top: 14px; }
-  .study-mark-actions .btn { min-width: 0; min-height: 54px; border-radius: var(--radius); font-size: var(--fs-base); font-weight: 600; }
-  .btn-ghost-danger { background: transparent; color: var(--c-red); border: 1.5px solid var(--c-red); }
-  .btn-ghost-danger:hover { background: var(--c-red-bg); }
-  .kbd-hint { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 6px; font-size: var(--fs-xs); font-weight: 500; opacity: .8; background: var(--c-surface-2); color: var(--c-text-2); }
-  .mark-btn:disabled { opacity: .45; cursor: not-allowed; }
-  .study-navigation { display: flex; justify-content: space-between; width: 100%; margin-top: 26px; }
-  .study-navigation .btn { border-radius: 99px; padding: 8px 18px; }
-  .btn:active { transform: scale(.97); }
-
-  /* ===== 完成卡（红笔印章） ===== */
-  .completion-card { text-align: center; padding: 52px 36px 44px; }
-  .completion-stamp {
-    display: inline-block; margin-bottom: 26px; padding: 10px 24px;
-    border: 2px solid var(--c-red); border-radius: 8px; color: var(--c-red);
-    font-family: var(--font-serif); font-size: var(--fs-2xl); font-weight: 700;
-    letter-spacing: .35em; text-indent: .35em; transform: rotate(-3deg);
-    box-shadow: inset 0 0 0 2px var(--c-red);
-  }
-  .completion-card .card-header { justify-content: center; font-size: var(--fs-xl); margin-bottom: 8px; }
-  .summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; width: min(100%, 420px); margin: 26px auto; }
-  .summary-card { text-align: center; padding: 18px 14px; background: var(--c-surface-2); border-radius: var(--radius); border: 1px solid var(--c-border-light); }
-  .summary-value { font-family: var(--font-serif); font-size: var(--fs-3xl); font-weight: 700; }
-  .summary-label { font-size: var(--fs-sm); color: var(--c-text-2); margin-top: 2px; }
-  .completion-card .btn { margin-top: 6px; }
-
+  
+  
+            
   @media (max-width: 640px) {
     .study-card { min-height: 480px; padding: 20px 18px 24px; }
     .study-tools .btn span.text-sm { display: none; }
@@ -152,7 +33,7 @@
 {% block content %}
 {% csrf_token %}
 
-<div class="learn-session">
+<div class="learn-session check-scope">
   <div class="card learn-progress">
     <div class="learn-progress-top">
       <a href="{% url 'words:learn_start' %}" class="text-secondary text-sm"><i class="ph ph-arrow-left"></i> 退出背诵</a>
@@ -214,7 +95,7 @@
 </div>
 
 <div id="batchCard" class="card word-card completion-card hidden">
-  <div class="completion-stamp" style="background: var(--c-purple, #8a6f9e);">本批完成</div>
+  <div class="completion-stamp" style="background: var(--c-purple);">本批完成</div>
   <div class="card-header"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> 第 <span id="batchNum">1</span> / <span id="batchTotal">1</span> 批完成</div>
   <p class="text-secondary" id="batchMsg"></p>
   <div class="summary-grid">

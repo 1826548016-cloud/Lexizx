@@ -1,4 +1,4 @@
-﻿{% extends 'base.html' %}
+{% extends 'base.html' %}
 {% load static %}
 
 {% block title %}设置 - 考研单词背诵系统{% endblock %}
@@ -6,87 +6,22 @@
 
 {% block extra_head %}
 <style>
-  .settings-page { max-width: 1080px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: stretch; }
-  .settings-page > .card { margin: 0 !important; }
-  .settings-page .card.span-2 { grid-column: 1 / -1; }
-  .settings-page .card-header { display: flex; align-items: center; gap: 8px; }
-  .settings-page .card-header i.ph { font-size: 1.1rem; }
-  .settings-page .form-group:last-of-type { margin-bottom: 0; }
-  .settings-page .form-group > .flex.items-center { background: var(--c-surface-2); }
-  .settings-page .about-card { color: var(--c-text-2); padding: 0; overflow: hidden; }
-  .settings-page .about-card .card-header { padding: 16px 22px; border-bottom: 1px solid var(--c-border-light); background: var(--c-surface-2); }
-  .settings-page .about-body { padding: 18px 22px; }
-
-  /* AI 功能模型：2 列小卡片网格 */
-  .feat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .feat-item { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; background: var(--c-surface-2); border: 1px solid var(--c-border-light); border-radius: var(--radius-sm); }
-  .feat-item .feat-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 0.92rem; color: var(--c-text); }
-  .feat-item .feat-head i.ph { font-size: 1.05rem; }
-  .feat-item .feat-desc { font-size: 0.8rem; color: var(--c-text-3); line-height: 1.5; }
-  .feat-item select { min-width: 0 !important; width: 100%; margin-top: 2px; }
-
-  /* 数据管理：2×2 操作卡片 */
-  .action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .action-item { display: flex; flex-direction: column; gap: 8px; padding: 16px 18px; background: var(--c-surface-2); border: 1px solid var(--c-border-light); border-radius: var(--radius-sm); }
-  .action-item .action-head { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 0.95rem; color: var(--c-text); }
-  .action-item .action-head i.ph { font-size: 1.15rem; color: var(--c-blue); }
-  .action-item .action-desc { font-size: 0.82rem; color: var(--c-text-3); line-height: 1.55; }
-  .action-item .btn { align-self: flex-start; margin-top: 2px; }
-  .action-item.danger { border-left: 3px solid var(--c-red); }
-  .action-item.danger .action-head,
-  .action-item.danger .action-head i.ph { color: var(--c-red); }
-
-  /* 关于区 */
-  .about-stats { grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .about-stat-title { margin: 0; font-size: 0.85rem; font-weight: 600; color: var(--c-text-2); }
-  .about-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .about-link { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--c-surface); border: 1px solid var(--c-border-light); border-radius: var(--radius-sm); color: var(--c-blue); text-decoration: none; font-size: 0.85rem; min-width: 0; }
-  .about-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .about-link:hover { border-color: var(--c-blue); }
-  .about-link i.ph { flex-shrink: 0; }
-
-  /* 打赏二维码弹窗 */
-  .donate-mask { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center;
-    background: rgba(30,25,15,.38); backdrop-filter: blur(2px); }
-  .donate-box { width: min(480px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; border-radius: var(--radius-lg);
-    background: var(--c-surface); box-shadow: var(--shadow-lg); border: 1px solid var(--c-border-light);
-    padding: 22px 24px 18px; }
-  .donate-title { font-size: 1.05rem; font-weight: 600; color: var(--c-text); margin-bottom: 16px; text-align: center; }
-  .donate-qrs { display: flex; gap: 18px; justify-content: center; flex-wrap: wrap; }
-  .donate-qrs figure { margin: 0; text-align: center; }
-  .donate-qrs img { width: 190px; height: 190px; object-fit: contain; display: block;
-    border-radius: 10px; border: 1px solid var(--c-border-light); background: #fff; padding: 6px; }
-  .donate-qrs figcaption { margin-top: 8px; font-size: .85rem; color: var(--c-text-secondary); }
-  .donate-tip { text-align: center; margin-top: 14px; }
-  .donate-footer { display: flex; justify-content: center; margin-top: 18px; }
+  /* 本页样式主体已迁入 static/css/style.css 的「设置页（settings）」段。
+     此处仅保留必须就近声明的动画与响应式覆盖。 */
+  @keyframes settingsFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
   @keyframes donatePop { from { opacity: 0; transform: scale(.94) translateY(8px); } to { opacity: 1; transform: none; } }
-  .donate-box { animation: donatePop .2s cubic-bezier(.2,.9,.3,1.2); }
-  .save-row { display: flex; justify-content: flex-end; margin-top: 12px; }
-  .update-check-btn { background: none; border: none; padding: 0; cursor: pointer;
-    color: var(--c-blue); font-size: .8rem; font-family: inherit; }
-  .update-check-btn:hover { text-decoration: underline; }
-  .update-check-btn:disabled { color: var(--c-text-secondary); cursor: default; text-decoration: none; }
-  .update-notes { white-space: pre-wrap; word-break: break-word; max-height: 42vh; overflow: auto;
-    background: var(--c-surface-2); border-radius: 8px; padding: 12px 14px; font-family: inherit;
-    font-size: .88rem; line-height: 1.7; color: var(--c-text); margin: 0 0 6px; }
-
-  /* 密钥保险箱状态条 */
-  .vault-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    border-radius: 10px; padding: 10px 14px; font-size: .88rem; line-height: 1.5; }
-  .vault-bar i { vertical-align: -2px; margin-right: 2px; }
-  .vault-warn { background: #fdf3e3; color: #9a6208; border: 1px solid #e9c27c; }
-  .vault-ok { background: #eef8ef; color: #2c7a3f; border: 1px solid #a9d8b3; }
-  .vault-locked { background: #eef3fb; color: #355a8c; border: 1px solid #b6c9e4; }
 
   @media (max-width: 900px) {
     .feat-grid, .action-grid, .about-links { grid-template-columns: 1fr; }
     .about-stats { grid-template-columns: 1fr; }
   }
-  @media (max-width: 760px) { .settings-page { grid-template-columns: 1fr; } .settings-page .card.span-2 { grid-column: 1 / -1; } }
-
-  /* 备份保存完成弹窗 */
-  .dl-done-path { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--c-surface-2); border: 1px solid var(--c-border-light); border-radius: 8px; margin: 12px 0 4px; font-size: .85rem; }
-  .dl-done-path code { flex: 1; min-width: 0; word-break: break-all; color: var(--c-text); font-family: ui-monospace, Consolas, monospace; font-size: .8rem; }
+  @media (max-width: 820px) {
+    /* 标签栏改为可横向滑动的两行，图标在上文字在下，避免挤压 */
+    .settings-nav {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .settings-nav a { flex-direction: column; gap: 3px; font-size: .78rem; padding: 9px 4px; }
+  }
 </style>
 {% endblock %}
 
@@ -94,344 +29,342 @@
 {% csrf_token %}
 <div class="settings-page">
 
-<!-- Display Settings -->
-<div class="card">
-  <div class="card-header"><i class="ph ph-palette" style="color: var(--c-blue);"></i> 显示设置</div>
+  <!-- 分区标签栏：铺满整行，点击切换下方显示的分区（只显示选中项） -->
+  <nav class="settings-nav" aria-label="设置分区">
+    <a href="#sec-display" data-tab="sec-display" class="active"><i class="ph ph-palette"></i> 显示与主题</a>
+    <a href="#sec-speech" data-tab="sec-speech"><i class="ph ph-speaker-high"></i> 发音</a>
+    <a href="#sec-daily" data-tab="sec-daily"><i class="ph ph-target"></i> 每日目标</a>
+    <a href="#sec-ai" data-tab="sec-ai"><i class="ph ph-cpu"></i> AI 模型</a>
+    <a href="#sec-data" data-tab="sec-data"><i class="ph ph-database"></i> 数据管理</a>
+    <a href="#sec-about" data-tab="sec-about"><i class="ph ph-info"></i> 关于</a>
+  </nav>
 
-  <div class="form-group">
-    <label class="form-label">字体大小</label>
-    <div class="flex gap-2">
-      <button class="btn btn-secondary btn-sm font-size-btn" data-size="small" id="fontSmall">小</button>
-      <button class="btn btn-primary btn-sm font-size-btn" data-size="medium" id="fontMedium">中</button>
-      <button class="btn btn-secondary btn-sm font-size-btn" data-size="large" id="fontLarge">大</button>
-      <button class="btn btn-primary btn-sm" onclick="applyFontSize()" style="margin-left: 12px;">应用</button>
-    </div>
-  </div>
+  <div class="settings-body">
 
-  <div class="form-group" style="margin-top: 16px;">
-    <label class="form-label">主题</label>
-    <select class="form-input" id="themeSelect" onchange="changeTheme(this.value)">
-      <option value="light" {% if settings.theme == 'light' %}selected{% endif %}>☀ 暖纸浅色</option>
-      <option value="blue" {% if settings.theme == 'blue' %}selected{% endif %}>💧 清爽蓝白</option>
-      <option value="pureblue" {% if settings.theme == 'pureblue' %}selected{% endif %}>🫧 纯蓝白</option>
-      <option value="sepia" {% if settings.theme == 'sepia' %}selected{% endif %}>📜 复古牛皮</option>
-      <option value="dark" {% if settings.theme == 'dark' %}selected{% endif %}>🌙 深夜书桌</option>
-      <option value="nightblue" {% if settings.theme == 'nightblue' %}selected{% endif %}>✨ 星空午夜</option>
-      <option value="custom" {% if settings.theme == 'custom' %}selected{% endif %}>🖼 自定义壁纸</option>
-    </select>
-    <div class="form-help">点右上角图标可循环切换，这里可精确选择并保存到账号</div>
-  </div>
+    <!-- ============ 显示与主题 ============ -->
+    <div class="card" id="sec-display">
+      <div class="card-header"><i class="ph ph-palette" style="color: var(--c-blue);"></i> 显示与主题</div>
 
-  <div class="form-group" style="margin-top: 16px; display: none;" id="wallpaperGroup">
-    <label class="form-label">壁纸</label>
-    <div class="flex gap-2" style="flex-wrap: wrap;">
-      <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('wallpaperInput').click()">
-        <i class="ph ph-upload"></i> 上传壁纸
-      </button>
-      <button type="button" class="btn btn-secondary btn-sm" id="clearWallpaperBtn" onclick="clearThemeWallpaper()" style="display:none;">
-        <i class="ph ph-arrow-counter-clockwise"></i> 恢复默认
-      </button>
-      <input type="file" id="wallpaperInput" accept="image/*" style="display:none;" onchange="onWallpaperChange(this)">
-    </div>
-    <div id="wallpaperList" class="wallpaper-list" style="margin-top: 12px;"></div>
-    <div class="form-help">壁纸保存在本机浏览器，可上传多张并点击切换，选择「自定义壁纸」主题后生效</div>
-  </div>
-</div>
-
-<!-- Pronunciation Settings -->
-<div class="card">
-  <div class="card-header"><i class="ph ph-speaker-high" style="color: var(--c-blue);"></i> 发音设置</div>
-
-  <div class="form-group">
-    <label class="form-label">发音开关</label>
-    <div class="flex items-center gap-4" style="padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
-      <span>关闭</span>
-      <label class="flex items-center gap-2" style="cursor: pointer;">
-        <input type="checkbox" id="pronunciationToggle" {% if settings.pronunciation_on %}checked{% endif %}>
-        <span>开启单词发音</span>
-      </label>
-    </div>
-  </div>
-
-  <div class="form-group" style="margin-top: 16px;">
-    <label class="form-label">发音类型</label>
-    <div class="flex gap-2">
-      <button class="btn btn-primary voice-btn" data-voice="us" id="voiceUS">美音 🇺🇸</button>
-      <button class="btn btn-secondary voice-btn" data-voice="uk" id="voiceUK">英音 🇬🇧</button>
-    </div>
-  </div>
-
-  <div class="form-group" style="margin-top: 16px;">
-    <label class="form-label">语速：<span id="rateValue">{{ settings.speech_rate }}</span>x</label>
-    <input type="range" class="form-input w-full" id="speechRate" min="0.5" max="2.0" step="0.1" value="{{ settings.speech_rate }}" oninput="document.getElementById('rateValue').textContent = this.value" style="padding: 0; height: 6px;">
-  </div>
-
-  <div class="form-group" style="margin-top: 16px;">
-    <label class="form-label">自动朗读</label>
-    <div class="flex items-center gap-4" style="padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
-      <span>关闭</span>
-      <label class="flex items-center gap-2" style="cursor: pointer;">
-        <input type="checkbox" id="autoReadToggle" {% if settings.auto_read %}checked{% endif %}>
-        <span>翻到单词时自动朗读</span>
-      </label>
-    </div>
-  </div>
-
-  <button class="btn btn-primary" onclick="savePronunciationSettings()" style="margin-top: 16px;">保存发音设置</button>
-</div>
-
-<!-- Daily Targets -->
-<div class="card span-2">
-  <div class="card-header"><i class="ph ph-target" style="color: var(--c-blue);"></i> 每日目标</div>
-
-  <div class="card-grid">
-    <div class="form-group">
-      <label class="form-label">每日新词目标</label>
-      <input type="number" class="form-input" id="dailyNewTarget" value="{{ settings.daily_new_target }}" min="1" max="200">
-      <div class="form-help">建议 20-50 个</div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">每日复习目标</label>
-      <input type="number" class="form-input" id="dailyReviewTarget" value="{{ settings.daily_review_target }}" min="1" max="300">
-      <div class="form-help">建议 40-100 个</div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">每批背诵数量</label>
-      <input type="number" class="form-input" id="batchSize" value="{{ settings.batch_size }}" min="5" max="100">
-      <div class="form-help">背诵/复习时每批 10 个左右，背完一批小结后可休息再继续</div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">高效模式答错后</label>
-      <select class="form-input" id="gateAnswerShow">
-        <option value="1" {% if settings.gate_answer_show %}selected{% endif %}>显示答案后继续重写</option>
-        <option value="0" {% if not settings.gate_answer_show %}selected{% endif %}>先自己重试（连错 3 次才显示答案）</option>
-      </select>
-      <div class="form-help">高效背诵中默写打错时：都需继续重写直到默写正确，才进入下一步</div>
-    </div>
-  </div>
-
-  <div class="save-row">
-    <button class="btn btn-primary" onclick="saveDailyTargets()">保存目标</button>
-  </div>
-</div>
-
-<!-- AI 模型管理 -->
-<div class="card span-2" id="ai-models" style="scroll-margin-top: 16px;">
-  <div class="card-header"><i class="ph ph-cpu" style="color: var(--c-blue);"></i> AI 模型</div>
-  <div class="text-sm text-secondary" style="margin: 4px 0 12px;">
-    <p style="margin: 0 0 4px;">集中管理用于 <strong>AI 单词导入（图片 / 文本 / 文件识别）、AI 复审、速记生成、小助手问答</strong> 的模型，未单独指定时各功能自动使用「已启用」的模型。API 密钥可通过保险箱密码加密存储，重启软件后需重新解锁。</p>
-  </div>
-
-  <div id="vaultBar" class="vault-bar vault-locked" style="margin-bottom: 12px;"></div>
-
-  <div class="flex justify-between items-center" style="margin-bottom: 12px;">
-    <span class="text-sm text-secondary"><span id="modelCount">0</span> 个模型</span>
-    <button class="btn btn-primary btn-sm" onclick="openAddModel()"><i class="ph ph-plus"></i> 添加模型</button>
-  </div>
-
-  <div id="modelList" class="flex flex-col" style="gap: 8px;"></div>
-
-  <!-- 各功能模型 -->
-  <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--c-border-light);">
-    <div class="feat-grid">
-      <div class="feat-item">
-        <div class="feat-head"><i class="ph ph-image" style="color: var(--c-green);"></i> 导入识别模型</div>
-        <div class="feat-desc">AI 单词导入（图片 / 文本 / 文件）识别使用的模型</div>
-        <select id="recognizeModelSelect" class="form-input" onchange="saveFeatureModel('recognize_model', this.value)">
-          <option value="">自动（使用第一个启用的模型）</option>
-        </select>
-      </div>
-      <div class="feat-item">
-        <div class="feat-head"><i class="ph ph-seal-check" style="color: var(--c-green);"></i> 复审模型</div>
-        <div class="feat-desc">AI 复审（二次校验识别结果）使用的模型</div>
-        <select id="reviewModelSelect" class="form-input" onchange="saveFeatureModel('review_model', this.value)">
-          <option value="">自动（使用第一个启用的模型）</option>
-        </select>
-      </div>
-      <div class="feat-item">
-        <div class="feat-head"><i class="ph ph-lightning" style="color: var(--c-green);"></i> 速记生成模型</div>
-        <div class="feat-desc">背诵卡「AI 速记」生成使用的模型</div>
-        <select id="quickMemoryModelSelect" class="form-input" onchange="saveFeatureModel('quick_memory_model', this.value)">
-          <option value="">自动（使用第一个启用的模型）</option>
-        </select>
-      </div>
-      <div class="feat-item">
-        <div class="feat-head"><i class="ph ph-pencil-simple" style="color: var(--c-green);"></i> 释义默写判定模型</div>
-        <div class="feat-desc">「看英文写中文意思」AI 判定使用的模型</div>
-        <select id="meaningCheckModelSelect" class="form-input" onchange="saveFeatureModel('meaning_check_model', this.value)">
-          <option value="">自动（使用第一个启用的模型）</option>
-        </select>
-      </div>
-      <div class="feat-item">
-        <div class="feat-head"><i class="ph ph-chat-circle-text" style="color: var(--c-green);"></i> 小助手模型</div>
-        <div class="feat-desc">背诵 / 复习中小助手问答使用的模型，切换后立即生效</div>
-        <select id="assistantModelSelect" class="form-input" onchange="saveFeatureModel('assistant_model', this.value)">
-          <option value="">自动（使用第一个启用的模型）</option>
-        </select>
-      </div>
-      <div class="feat-item">
-        <div class="feat-head"><i class="ph ph-pen-nib" style="color: var(--c-red);"></i> 考研写作工坊模型</div>
-        <div class="feat-desc">写作工坊「AI 代写 / AI 批改 / 翻译拆解 / 命题规律分析」使用的模型，切换后立即生效</div>
-        <select id="examModelSelect" class="form-input" onchange="saveFeatureModel('exam_model', this.value)">
-          <option value="">自动（使用第一个启用的模型）</option>
-        </select>
-      </div>
-    </div>
-  </div>
-
-  <!-- 释义默写判定方式 -->
-  <div style="margin-top: 12px;">
-    <div class="feat-grid" style="grid-template-columns: 1fr;">
-      <div class="feat-item">
-        <div class="feat-head"><i class="ph ph-pencil-simple" style="color: var(--c-green);"></i> 释义默写判定</div>
-        <div class="feat-desc">「看英文写中文意思」的判定方式：AI 判定更灵活（识别同义词 / 部分正确），本地比对不依赖网络</div>
-        <select id="meaningCheckMode" class="form-input" onchange="saveMeaningCheckMode(this.value)">
-          <option value="ai" {% if settings.use_ai_meaning_check %}selected{% endif %}>AI 判定（推荐）</option>
-          <option value="local" {% if not settings.use_ai_meaning_check %}selected{% endif %}>本地比对（离线）</option>
-        </select>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Data Management -->
-<div class="card span-2">
-  <div class="card-header"><i class="ph ph-database" style="color: var(--c-blue);"></i> 数据管理</div>
-
-  <div class="action-grid">
-    <div class="action-item">
-      <div class="action-head"><i class="ph ph-download-simple"></i> 备份数据</div>
-      <div class="action-desc">下载所有学习进度、设置、打卡记录（含词汇本数据）</div>
-      <button class="btn btn-primary btn-sm" onclick="backupData(event)">下载备份</button>
-    </div>
-
-    <div class="action-item">
-      <div class="action-head"><i class="ph ph-upload-simple"></i> 恢复数据</div>
-      <div class="action-desc">从备份文件恢复学习进度，缺失词库会自动补齐</div>
-      <label class="btn btn-secondary btn-sm" style="cursor: pointer;">
-        选择备份文件
-        <input type="file" id="restoreFile" accept=".json" style="display: none;" onchange="restoreData(this)">
-      </label>
-    </div>
-
-    <div class="action-item">
-      <div class="action-head"><i class="ph ph-chat-circle-dots"></i> 小助手对话记录</div>
-      <div class="action-desc">清空背诵 / 复习中小助手的全部聊天记录</div>
-      <button class="btn btn-danger btn-sm" onclick="clearAssistantHistory()">清空对话</button>
-    </div>
-
-    <div class="action-item danger">
-      <div class="action-head"><i class="ph ph-warning-octagon"></i> 重置学习进度</div>
-      <div class="action-desc">清空所有学习进度、打卡记录和会话数据（单词数据保留）</div>
-      <button class="btn btn-danger btn-sm" onclick="doResetConfirm()">重置进度</button>
-    </div>
-  </div>
-</div>
-
-<!-- About -->
-<div class="card span-2 about-card">
-  <div class="card-header">
-    <i class="ph ph-info" style="color: var(--c-blue); font-size:1.3rem;"></i> 关于
-  </div>
-  <div class="about-body">
-
-    <!-- 关键信息三卡片 -->
-    <div class="card-grid about-stats mb-4">
-      <div class="stat-card">
-        <div class="stat-card-head">
-          <span class="stat-icon stat-icon--red"><i class="ph ph-tag"></i></span>
-          <span class="about-stat-title">版本</span>
+      <div class="form-group">
+        <label class="form-label">字体大小</label>
+        <div class="flex gap-2 items-center">
+          <button class="btn btn-secondary btn-sm font-size-btn" data-size="small" id="fontSmall">小</button>
+          <button class="btn btn-primary btn-sm font-size-btn" data-size="medium" id="fontMedium">中</button>
+          <button class="btn btn-secondary btn-sm font-size-btn" data-size="large" id="fontLarge">大</button>
+          <button class="btn btn-primary btn-sm" onclick="applyFontSize()" style="margin-left: 10px;">应用</button>
         </div>
-        <div class="stat-value">{{ app_version }}</div>
-        <div class="stat-label">
-          <button type="button" class="update-check-btn" id="checkUpdateBtn" onclick="checkUpdate()">
-            <i class="ph ph-arrows-clockwise"></i> 检查更新
+        <div class="form-help">只影响本机显示，保存在浏览器中</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">主题</label>
+        <select class="form-input" id="themeSelect" onchange="changeTheme(this.value)">
+          <option value="light" {% if settings.theme == 'light' %}selected{% endif %}>☀ 暖纸浅色</option>
+          <option value="blue" {% if settings.theme == 'blue' %}selected{% endif %}>💧 清爽蓝白</option>
+          <option value="pureblue" {% if settings.theme == 'pureblue' %}selected{% endif %}>🫧 纯蓝白</option>
+          <option value="sepia" {% if settings.theme == 'sepia' %}selected{% endif %}>📜 复古牛皮</option>
+          <option value="dark" {% if settings.theme == 'dark' %}selected{% endif %}>🌙 深夜书桌</option>
+          <option value="nightblue" {% if settings.theme == 'nightblue' %}selected{% endif %}>✨ 星空午夜</option>
+          <option value="custom" {% if settings.theme == 'custom' %}selected{% endif %}>🖼 自定义壁纸</option>
+        </select>
+        <div class="form-help">点右上角图标可循环切换，这里可精确选择并保存到账号</div>
+      </div>
+
+      <div class="form-group" style="display: none;" id="wallpaperGroup">
+        <label class="form-label">壁纸</label>
+        <div class="flex gap-2" style="flex-wrap: wrap;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('wallpaperInput').click()">
+            <i class="ph ph-upload"></i> 上传壁纸
           </button>
+          <button type="button" class="btn btn-secondary btn-sm" id="clearWallpaperBtn" onclick="clearThemeWallpaper()" style="display:none;">
+            <i class="ph ph-arrow-counter-clockwise"></i> 恢复默认
+          </button>
+          <input type="file" id="wallpaperInput" accept="image/*" style="display:none;" onchange="onWallpaperChange(this)">
         </div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-head">
-          <span class="stat-icon stat-icon--blue"><i class="ph ph-stack"></i></span>
-          <span class="about-stat-title">技术栈</span>
-        </div>
-        <div class="stat-value" style="font-size: 1rem;">Django · Chart.js</div>
-        <div class="stat-label">Browser TTS</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-head">
-          <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
-          <span class="about-stat-title">最后更新</span>
-        </div>
-        <div class="stat-value">2026-10-02</div>
-        <!-- <div class="stat-label">最近一次发布</div> -->
+        <div id="wallpaperList" class="wallpaper-list" style="margin-top: 12px;"></div>
+        <div class="form-help">壁纸保存在本机浏览器，可上传多张并点击切换，选择「自定义壁纸」主题后生效</div>
       </div>
     </div>
 
-    <!-- 简介 -->
-    <div class="text-secondary" style="margin-bottom: 14px; line-height: 1.7;">
-      一个高效的考研单词背诵平台，词源来源于网络传播，一些释义通过AI大模型识别时可能会有偏差错误请自行更改。
-      该系统采用离线存储，不依赖网络，确保在任何环境下都能正常运行，相关ai功能可能需要在网络环境下运行，另外改程序不会上传您的api key相关数据。
+    <!-- ============ 发音 ============ -->
+    <div class="card" id="sec-speech">
+      <div class="card-header"><i class="ph ph-speaker-high" style="color: var(--c-blue);"></i> 发音</div>
+
+      <div class="card-grid">
+        <div class="form-group">
+          <label class="form-label">单词发音</label>
+          <div class="flex items-center gap-2" style="padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+            <input type="checkbox" id="pronunciationToggle" {% if settings.pronunciation_on %}checked{% endif %}>
+            <label for="pronunciationToggle" style="cursor: pointer;">开启单词发音</label>
+          </div>
+          <div class="form-help">关闭后所有页面的单词朗读都不再播放</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">翻到单词时自动朗读</label>
+          <div class="flex items-center gap-2" style="padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);">
+            <input type="checkbox" id="autoReadToggle" {% if settings.auto_read %}checked{% endif %}>
+            <label for="autoReadToggle" style="cursor: pointer;">自动朗读</label>
+          </div>
+          <div class="form-help">背诵 / 复习切换单词时自动播放发音</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">发音类型</label>
+          <div class="flex gap-2">
+            <button class="btn btn-primary voice-btn" data-voice="us" id="voiceUS">美音 🇺🇸</button>
+            <button class="btn btn-secondary voice-btn" data-voice="uk" id="voiceUK">英音 🇬🇧</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">语速：<span id="rateValue">{{ settings.speech_rate }}</span>x</label>
+          <input type="range" class="form-input w-full" id="speechRate" min="0.5" max="2.0" step="0.1" value="{{ settings.speech_rate }}" oninput="document.getElementById('rateValue').textContent = this.value" style="padding: 0; height: 6px;">
+          <div class="form-help">0.5x ～ 2.0x</div>
+        </div>
+      </div>
+
+      <div class="save-row">
+        <button class="btn btn-primary" onclick="savePronunciationSettings()">保存发音设置</button>
+      </div>
     </div>
 
-    <!-- 联系作者 -->
-    <div style="padding: 12px 14px; background: var(--c-surface-2); border-left: 3px solid var(--c-blue); border-radius: 6px; margin-bottom: 14px;">
-      <div style="display:flex; align-items:flex-start; gap:8px;">
-        <i class="ph ph-user-circle" style="color: var(--c-blue); margin-top: 2px;"></i>
-        <div style="flex:1;">
-          <div style="font-weight:500; margin-bottom: 10px;">联系作者</div>
-          <div class="about-links">
-            <a href="mailto:qzx1028918@163.com" class="about-link">
-              <i class="ph ph-envelope-simple"></i> <span>qzx1028918@163.com</span>
-            </a>
-            <a href="https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System" target="_blank" rel="noopener" class="about-link">
-              <i class="ph ph-github-logo"></i> <span>GitHub 项目仓库</span>
-            </a>
-            <a href="https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/issues/new" target="_blank" rel="noopener" class="about-link">
-              <i class="ph ph-chat-circle-text"></i> <span>欢迎反馈 / 提建议</span>
-            </a>
+    <!-- ============ 每日目标 ============ -->
+    <div class="card" id="sec-daily">
+      <div class="card-header"><i class="ph ph-target" style="color: var(--c-blue);"></i> 每日目标</div>
+
+      <div class="card-grid">
+        <div class="form-group">
+          <label class="form-label">每日新词目标</label>
+          <input type="number" class="form-input" id="dailyNewTarget" value="{{ settings.daily_new_target }}" min="1" max="200">
+          <div class="form-help">建议 20-50 个</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">每日复习目标</label>
+          <input type="number" class="form-input" id="dailyReviewTarget" value="{{ settings.daily_review_target }}" min="1" max="300">
+          <div class="form-help">建议 40-100 个</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">每批背诵数量</label>
+          <input type="number" class="form-input" id="batchSize" value="{{ settings.batch_size }}" min="5" max="100">
+          <div class="form-help">背诵 / 复习时每批 10 个左右，背完一批小结后可休息再继续</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">高效模式答错后</label>
+          <select class="form-input" id="gateAnswerShow">
+            <option value="1" {% if settings.gate_answer_show %}selected{% endif %}>显示答案后继续重写</option>
+            <option value="0" {% if not settings.gate_answer_show %}selected{% endif %}>先自己重试（连错 3 次才显示答案）</option>
+          </select>
+          <div class="form-help">高效背诵中默写打错时：都需继续重写直到默写正确，才进入下一步</div>
+        </div>
+      </div>
+
+      <div class="save-row">
+        <button class="btn btn-primary" onclick="saveDailyTargets()">保存目标</button>
+      </div>
+    </div>
+
+    <!-- ============ AI 模型 ============ -->
+    <div class="card" id="sec-ai">
+      <!-- 兼容锚点：AI 导入页、背诵/复习页小助手等 5 处深链 /settings/#ai-models，
+           点击后由 switchTab 自动切到本分区 -->
+      <span id="ai-models" style="display:block; height:0;"></span>
+      <div class="card-header"><i class="ph ph-cpu" style="color: var(--c-blue);"></i> AI 模型</div>
+
+      <p class="settings-sub">
+        集中管理用于 <strong>AI 单词导入（图片 / 文本 / 文件识别）、AI 复审、速记生成、小助手问答</strong> 的模型。
+        未单独指定时各功能自动使用「已启用」的模型。API 密钥可通过保险箱密码加密存储，重启软件后需重新解锁。
+      </p>
+
+      <div id="vaultBar" class="vault-bar vault-locked" style="margin-bottom: 16px;"></div>
+
+      <div class="flex justify-between items-center" style="margin-bottom: 12px;">
+        <span class="text-sm text-secondary"><span id="modelCount">0</span> 个模型</span>
+        <button class="btn btn-primary btn-sm" onclick="openAddModel()"><i class="ph ph-plus"></i> 添加模型</button>
+      </div>
+
+      <div id="modelList" class="flex flex-col" style="gap: 8px;"></div>
+
+      <!-- 各功能指定模型 -->
+      <div style="margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--c-border-light);">
+        <div class="form-label" style="margin-bottom: 10px;">各功能使用的模型</div>
+        <div class="feat-grid">
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-image" style="color: var(--c-green);"></i> 导入识别模型</div>
+            <div class="feat-desc">AI 单词导入（图片 / 文本 / 文件）识别使用的模型</div>
+            <select id="recognizeModelSelect" class="form-input" onchange="saveFeatureModel('recognize_model', this.value)">
+              <option value="">自动（使用第一个启用的模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-seal-check" style="color: var(--c-green);"></i> 复审模型</div>
+            <div class="feat-desc">AI 复审（二次校验识别结果）使用的模型</div>
+            <select id="reviewModelSelect" class="form-input" onchange="saveFeatureModel('review_model', this.value)">
+              <option value="">自动（使用第一个启用的模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-lightning" style="color: var(--c-green);"></i> 速记生成模型</div>
+            <div class="feat-desc">背诵卡「AI 速记」生成使用的模型</div>
+            <select id="quickMemoryModelSelect" class="form-input" onchange="saveFeatureModel('quick_memory_model', this.value)">
+              <option value="">自动（使用第一个启用的模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-pencil-simple" style="color: var(--c-green);"></i> 释义默写判定模型</div>
+            <div class="feat-desc">「看英文写中文意思」AI 判定使用的模型</div>
+            <select id="meaningCheckModelSelect" class="form-input" onchange="saveFeatureModel('meaning_check_model', this.value)">
+              <option value="">自动（使用第一个启用的模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-chat-circle-text" style="color: var(--c-green);"></i> 小助手模型</div>
+            <div class="feat-desc">背诵 / 复习中小助手问答使用的模型，切换后立即生效</div>
+            <select id="assistantModelSelect" class="form-input" onchange="saveFeatureModel('assistant_model', this.value)">
+              <option value="">自动（使用第一个启用的模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-pen-nib" style="color: var(--c-red);"></i> 考研写作工坊模型</div>
+            <div class="feat-desc">写作工坊「AI 代写 / AI 批改 / 翻译拆解 / 命题规律分析」使用的模型，切换后立即生效</div>
+            <select id="examModelSelect" class="form-input" onchange="saveFeatureModel('exam_model', this.value)">
+              <option value="">自动（使用第一个启用的模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-pencil-simple" style="color: var(--c-green);"></i> 释义默写判定方式</div>
+            <div class="feat-desc">AI 判定更灵活（识别同义词 / 部分正确），本地比对不依赖网络</div>
+            <select id="meaningCheckMode" class="form-input" onchange="saveMeaningCheckMode(this.value)">
+              <option value="ai" {% if settings.use_ai_meaning_check %}selected{% endif %}>AI 判定（推荐）</option>
+              <option value="local" {% if not settings.use_ai_meaning_check %}selected{% endif %}>本地比对（离线）</option>
+            </select>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 软件使用、隐私、知识产权及二次创作声明 -->
-    <div style="padding: 12px 14px; background: var(--c-surface-2); border-left: 3px solid var(--c-green); border-radius: 6px; margin-bottom: 14px;">
-      <div style="display:flex; align-items:flex-start; gap:8px;">
-        <i class="ph ph-shield-check" style="color: var(--c-green); margin-top: 2px;"></i>
-        <div style="flex:1;">
-          <div style="font-weight:500; margin-bottom: 4px;">软件使用、隐私、知识产权及二次创作声明</div>
-          <div class="text-secondary text-sm" id="privacyStatusLine" style="margin-bottom: 8px;">
-            {% if privacy_agreed %}您已于本机同意 {{ privacy_version }} 版声明{% else %}您尚未同意最新版声明，部分功能暂不可用{% endif %}
+    <!-- ============ 数据管理 ============ -->
+    <div class="card" id="sec-data">
+      <div class="card-header"><i class="ph ph-database" style="color: var(--c-blue);"></i> 数据管理</div>
+
+      <div class="action-grid">
+        <div class="action-item">
+          <div class="action-head"><i class="ph ph-download-simple"></i> 备份数据</div>
+          <div class="action-desc">下载所有学习进度、设置、打卡记录（含词汇本数据）</div>
+          <button class="btn btn-primary btn-sm" onclick="backupData(event)">下载备份</button>
+        </div>
+
+        <div class="action-item">
+          <div class="action-head"><i class="ph ph-upload-simple"></i> 恢复数据</div>
+          <div class="action-desc">从备份文件恢复学习进度，缺失词库会自动补齐</div>
+          <label class="btn btn-secondary btn-sm" style="cursor: pointer;">
+            选择备份文件
+            <input type="file" id="restoreFile" accept=".json" style="display: none;" onchange="restoreData(this)">
+          </label>
+        </div>
+
+        <div class="action-item">
+          <div class="action-head"><i class="ph ph-chat-circle-dots"></i> 小助手对话记录</div>
+          <div class="action-desc">清空背诵 / 复习中小助手的全部聊天记录</div>
+          <button class="btn btn-danger btn-sm" onclick="clearAssistantHistory()">清空对话</button>
+        </div>
+
+        <div class="action-item danger">
+          <div class="action-head"><i class="ph ph-warning-octagon"></i> 重置学习进度</div>
+          <div class="action-desc">清空所有学习进度、打卡记录和会话数据（单词数据保留）</div>
+          <button class="btn btn-danger btn-sm" onclick="doResetConfirm()">重置进度</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 关于 ============ -->
+    <div class="card" id="sec-about">
+      <div class="card-header"><i class="ph ph-info" style="color: var(--c-blue);"></i> 关于</div>
+
+      <div class="card-grid about-stats mb-4">
+        <div class="stat-card">
+          <div class="stat-card-head">
+            <span class="stat-icon stat-icon--red"><i class="ph ph-tag"></i></span>
+            <span class="about-stat-title">版本</span>
           </div>
+          <div class="stat-value">{{ app_version }}</div>
+          <div class="stat-label">
+            <button type="button" class="update-check-btn" id="checkUpdateBtn" onclick="checkUpdate()">
+              <i class="ph ph-arrows-clockwise"></i> 检查更新
+            </button>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-head">
+            <span class="stat-icon stat-icon--blue"><i class="ph ph-stack"></i></span>
+            <span class="about-stat-title">技术栈</span>
+          </div>
+          <div class="stat-value" style="font-size: 1rem;">Django · Chart.js</div>
+          <div class="stat-label">Browser TTS</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-head">
+            <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
+            <span class="about-stat-title">最后更新</span>
+          </div>
+          <div class="stat-value">2026-10-02</div>
+        </div>
+      </div>
+
+      <div class="text-secondary" style="margin-bottom: 14px; line-height: 1.7;">
+        一个高效的考研单词背诵平台，词源来源于网络传播，一些释义通过AI大模型识别时可能会有偏差错误请自行更改。
+        该系统采用离线存储，不依赖网络，确保在任何环境下都能正常运行，相关ai功能可能需要在网络环境下运行，另外改程序不会上传您的api key相关数据。
+      </div>
+
+      <div class="about-block accent-blue">
+        <div class="about-block-title"><i class="ph ph-user-circle" style="color: var(--c-blue);"></i> 联系作者</div>
+        <div class="about-links">
+          <a href="mailto:qzx1028918@163.com" class="about-link">
+            <i class="ph ph-envelope-simple"></i> <span>qzx1028918@163.com</span>
+          </a>
+          <a href="https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System" target="_blank" rel="noopener" class="about-link">
+            <i class="ph ph-github-logo"></i> <span>GitHub 项目仓库</span>
+          </a>
+          <a href="https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/issues/new" target="_blank" rel="noopener" class="about-link">
+            <i class="ph ph-chat-circle-text"></i> <span>欢迎反馈 / 提建议</span>
+          </a>
+        </div>
+      </div>
+
+      <div class="about-block accent-green">
+        <div class="about-block-title"><i class="ph ph-shield-check" style="color: var(--c-green);"></i> 用户许可与使用协议</div>
+        <div class="text-secondary text-sm" id="privacyStatusLine" style="margin-bottom: 10px;">
+          {% if privacy_agreed %}您已于本机同意 {{ privacy_version }} 版协议{% else %}您尚未同意最新版协议，部分功能暂不可用{% endif %}
+        </div>
+        <div class="flex items-center gap-2" style="flex-wrap: wrap;">
           <a href="javascript:void(0)" class="about-link" onclick="openPrivacy()">
-            <i class="ph ph-file-text"></i> <span>查看完整《软件使用、隐私、知识产权及二次创作声明》</span>
+            <i class="ph ph-file-text"></i> <span>查看完整协议</span>
           </a>
           {% if not privacy_agreed %}
-          <button type="button" class="btn btn-primary btn-xs" style="margin-left:10px;" onclick="openPrivacy()">阅读并同意</button>
+          <button type="button" class="btn btn-primary btn-xs" onclick="openPrivacy()">阅读并同意</button>
           {% endif %}
         </div>
       </div>
+
+      <div class="about-block accent-amber">
+        <div class="about-block-title"><i class="ph ph-heart" style="color: var(--c-amber);"></i> 支持与赞助</div>
+        <div class="flex items-center gap-2" style="flex-wrap: wrap; margin-bottom: 10px;">
+          <span class="text-secondary text-sm">如果 Token 不够用：</span>
+          <a href="https://www.codex2api.com/register?aff=VBXRX8FRRMCR" target="_blank" rel="noopener" class="btn btn-secondary btn-xs">
+            <i class="ph ph-arrow-square-out"></i> 访问 codex2api 购买调用
+          </a>
+          <span class="text-secondary text-sm" style="opacity: .8;">（deepseek 模型约 10 元 / 月）</span>
+        </div>
+        <div class="flex items-center gap-2" style="flex-wrap: wrap;">
+          <span class="text-secondary text-sm">如果觉得本软件对你有帮助：</span>
+          <a href="javascript:void(0)" class="btn btn-secondary btn-xs" onclick="openDonate()">
+            <i class="ph ph-hand-heart"></i> 请作者喝杯咖啡吧
+          </a>
+        </div>
+      </div>
     </div>
 
-    <!-- Token 购买入口 -->
-    <div style="display:flex; align-items:center; gap:10px; padding: 12px 14px; background: var(--c-surface-2); border-radius: 6px; flex-wrap: wrap;">
-      <i class="ph ph-lightning" style="color: var(--c-amber);"></i>
-      <span class="text-secondary text-sm">如果 Token 不够用：</span>
-      <a href="https://www.codex2api.com/register?aff=VBXRX8FRRMCR" target="_blank" rel="noopener" class="btn btn-secondary btn-xs">
-        <i class="ph ph-arrow-square-out"></i> 访问 codex2api 购买调用 （如果使用deepseek模型一个月大概token耗用量在10RMB左右）
-      </a>
-    </div>
-
-    <!-- 请作者喝咖啡 -->
-    <div style="display:flex; align-items:center; gap:10px; padding: 12px 14px; background: var(--c-surface-2); border-left: 3px solid var(--c-amber); border-radius: 6px; flex-wrap: wrap; margin-top: 12px;">
-      <i class="ph ph-coffee" style="color: var(--c-amber); font-size: 1.05rem;"></i>
-      <span class="text-secondary text-sm">如果觉得本软件对你有帮助：</span>
-      <a href="javascript:void(0)" class="btn btn-secondary btn-xs" onclick="openDonate()">
-        <i class="ph ph-hand-heart"></i> 请作者喝杯咖啡吧
-      </a>
-    </div>
-
-  </div>
+  </div><!-- /.settings-body -->
 </div>
 
 <!-- 打赏二维码弹窗（点击入口才显示） -->
@@ -463,7 +396,7 @@
       当前版本 <span id="upCurrent"></span> · 发布于 <span id="upDate"></span>
     </div>
     <pre id="upNotes" class="update-notes"></pre>
-    <div class="donate-footer" style="gap: 10px;">
+    <div class="donate-footer">
       <a id="upLink" href="#" target="_blank" rel="noopener" class="btn btn-primary btn-sm">
         <i class="ph ph-download-simple"></i> 前往下载页面
       </a>
@@ -478,11 +411,11 @@
     <div class="donate-title"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> 备份已保存</div>
     <div class="text-sm text-secondary" style="text-align:center;">备份文件已通过系统对话框保存到您选择的位置，本机同时留有一份副本。</div>
     <div class="dl-done-path">
-      <i class="ph ph-file-json" style="color: var(--c-green); flex-shrink:0;"></i>
+      <i class="ph ph-file-text" style="color: var(--c-green); flex-shrink:0;"></i>
       <code id="dlDonePath"></code>
     </div>
     <div class="text-sm text-secondary" style="text-align:center;">大小：<span id="dlDoneSize"></span></div>
-    <div class="donate-footer" style="gap: 10px;">
+    <div class="donate-footer">
       <button class="btn btn-primary btn-sm" onclick="dlDoneOpenFolder()">
         <i class="ph ph-folder-open"></i> 在文件夹中显示
       </button>
@@ -494,14 +427,16 @@
   </div>
 </div>
 
-</div>
-
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
 // ===== 打赏二维码弹窗 =====
-function openDonate() { document.getElementById('donate-mask').style.display = 'flex'; }
+function openDonate() {
+  var mask = document.getElementById('donate-mask');
+  mask.style.display = 'flex';
+  mask.querySelector('.donate-box').scrollTop = 0;
+}
 function closeDonate() { document.getElementById('donate-mask').style.display = 'none'; }
 function closeUpdate() { document.getElementById('update-mask').style.display = 'none'; }
 
@@ -543,10 +478,63 @@ document.addEventListener('keydown', function (e) {
   }
 });
 
+// ===== 分区标签页：一次只显示一个分区 =====
+// 旧版页面用 URL 锚点直达分区（如 #ai-models），这里统一换成标签切换，
+// 并把上次看的分区记在本机，下次打开直接回到那一个。
+var SETTINGS_TAB_KEY = 'vocab-settings-tab';
+var SETTINGS_TABS = ['sec-display', 'sec-speech', 'sec-daily', 'sec-ai', 'sec-data', 'sec-about'];
+// 兼容旧锚点：其它页面深链过来的 hash 可能不是分区 id
+var SETTINGS_LEGACY_HASH = { 'ai-models': 'sec-ai' };
+
+function switchTab(tabId, opts) {
+  opts = opts || {};
+  if (SETTINGS_TABS.indexOf(tabId) === -1) tabId = SETTINGS_TABS[0];
+  // 卡片显隐
+  SETTINGS_TABS.forEach(function (id) {
+    var card = document.getElementById(id);
+    if (card) card.classList.toggle('active', id === tabId);
+  });
+  // 标签高亮
+  document.querySelectorAll('.settings-nav a').forEach(function (a) {
+    a.classList.toggle('active', a.dataset.tab === tabId);
+  });
+  try { localStorage.setItem(SETTINGS_TAB_KEY, tabId); } catch (e) {}
+  if (opts.updateHash) {
+    // 同步地址栏，便于收藏 / 分享到某个分区（不触发页面跳动）
+    if (history.replaceState) history.replaceState(null, '', '#' + tabId);
+    else location.hash = tabId;
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// 打开页面时定位分区：URL 锚点优先（外部深链），其次上次访问的分区
+function resolveInitialTab() {
+  var hash = (location.hash || '').replace('#', '');
+  if (SETTINGS_LEGACY_HASH[hash]) return SETTINGS_LEGACY_HASH[hash];
+  if (SETTINGS_TABS.indexOf(hash) !== -1) return hash;
+  var saved = null;
+  try { saved = localStorage.getItem(SETTINGS_TAB_KEY); } catch (e) {}
+  return SETTINGS_TABS.indexOf(saved) !== -1 ? saved : SETTINGS_TABS[0];
+}
+
+function initSettingsTabs() {
+  document.querySelectorAll('.settings-nav a').forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      e.preventDefault();
+      switchTab(a.dataset.tab, { updateHash: true });
+    });
+  });
+  switchTab(resolveInitialTab(), { updateHash: false });
+}
+
+// 同一页面内其它脚本改 hash 时同步切换（如小助手「配置模型」跳转）
+window.addEventListener('hashchange', function () { switchTab(resolveInitialTab(), { updateHash: false }); });
+
 // ===== Initialize =====
 document.addEventListener('DOMContentLoaded', function () {
   initVoiceButtons();
   initFontButtons();
+  initSettingsTabs();
   loadAIModels();
   // 主题下拉同步为当前应用的主题
   var themeSel = document.getElementById('themeSelect');
@@ -1040,12 +1028,10 @@ async function testSavedModel(id) {
   } catch (e) {
     btn.innerHTML = '<i class="ph ph-x-circle" style="color: var(--c-red);"></i>';
     status.style.color = 'var(--c-red)';
-    status.innerHTML = '<i class="ph ph-x-circle"></i> 连接失败（' + ts + '）：' + escapeHtml((e && e.error) || '网络或接口异常');
-    showToast((e && e.error) || '连接请求失败', 'error');
+    status.textContent = '请求失败，请检查网络';
   } finally {
     btn.disabled = false;
   }
 }
-
 </script>
 {% endblock %}

@@ -23,7 +23,7 @@ from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
 from .models import (Unit, Word, StudyProgress, StudyPlan,
-                     DailyCheckIn, Favorite, Note, QuickMemory, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, PdfDocument, Music, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog)
+                     DailyCheckIn, Favorite, Note, QuickMemory, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog)
 from .ai_prompts import (
     quick_memory_prompt, ASSISTANT_SYSTEM_PROMPT, assistant_word_context,
     pos_grouping_prompt, examples_prompt, phonetics_prompt,
@@ -2133,13 +2133,31 @@ def api_backup_dir(request):
 
 
 def api_privacy_agree(request):
-    """记录用户同意《隐私与内容声明》。仅写本机数据库，不发起任何网络请求。"""
+    """记录用户同意《用户许可与使用协议》。仅写本机数据库，不发起任何网络请求。
+
+    同时保存正文字本号与正文 SHA-256（由前端对弹窗可见文本计算后回传），
+    用于事后举证"用户同意的是哪一份文本"；hash 无法解析时留空，不影响同意本身生效。
+    """
     if request.method != 'POST':
         return JsonResponse({'error': '仅支持 POST 请求'}, status=405)
+    try:
+        body = json.loads(request.body or b'{}')
+    except (json.JSONDecodeError, TypeError, ValueError):
+        body = {}
+    text_hash = str(body.get('text_hash') or '').strip().lower()
+    # 只接受合法的 SHA-256 十六进制串，避免脏数据落库
+    if not re.fullmatch(r'[0-9a-f]{64}', text_hash):
+        text_hash = ''
+
     user_settings = UserSettings.get_settings()
     user_settings.privacy_agreed_version = settings.PRIVACY_VERSION
-    user_settings.save(update_fields=['privacy_agreed_version'])
-    return JsonResponse({'success': True, 'version': settings.PRIVACY_VERSION})
+    user_settings.privacy_agreed_hash = text_hash
+    user_settings.save(update_fields=['privacy_agreed_version', 'privacy_agreed_hash'])
+    return JsonResponse({
+        'success': True,
+        'version': settings.PRIVACY_VERSION,
+        'text_hash': text_hash,
+    })
 
 
 GITHUB_LATEST_RELEASE_API = (
@@ -5109,381 +5127,6 @@ def api_ai_test(request):
         return JsonResponse({'error': '接口响应异常'}, status=502)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-
-
-# ==================== PDF 资料库 ====================
-
-def pdf_library(request):
-    """资料库列表页：展示已上传的 PDF，支持上传"""
-    pdfs = PdfDocument.objects.all().order_by('-uploaded_at')
-    return render(request, 'pdf_library.html', {'pdfs': pdfs})
-
-
-@require_http_methods(['POST'])
-def pdf_upload(request):
-    """上传 PDF 文件到资料库（按文件内容 MD5 去重）"""
-    try:
-        import hashlib
-        uploaded = request.FILES.get('file')
-        title = request.POST.get('title', '').strip()
-        if not uploaded:
-            return JsonResponse({'error': '请选择 PDF 文件'}, status=400)
-        if not uploaded.name.lower().endswith('.pdf'):
-            return JsonResponse({'error': '只支持 PDF 文件'}, status=400)
-        if uploaded.size > 50 * 1024 * 1024:
-            return JsonResponse({'error': '文件过大，请控制在 50MB 以内'}, status=400)
-
-        # 计算文件内容 MD5（分块读取，避免大文件爆内存）
-        hasher = hashlib.md5()
-        for chunk in uploaded.chunks():
-            hasher.update(chunk)
-        file_hash = hasher.hexdigest()
-        # 重置文件指针，供后续保存使用
-        try:
-            uploaded.seek(0)
-        except Exception:
-            pass
-
-        # 去重：相同内容（MD5 一致）直接拒绝
-        existing = PdfDocument.objects.filter(file_hash=file_hash).first()
-        if existing:
-            return JsonResponse({
-                'error': '该文件已上传过，资料库中已存在相同内容的文件',
-                'duplicate': True,
-                'existing_id': existing.id,
-                'existing_title': existing.title,
-            }, status=409)
-
-        if not title:
-            # 去掉 .pdf 后缀作为标题
-            title = uploaded.name[:-4] if uploaded.name.lower().endswith('.pdf') else uploaded.name
-
-        doc = PdfDocument.objects.create(
-            title=title[:200],
-            file=uploaded,
-            filesize=uploaded.size,
-            file_hash=file_hash,
-        )
-        return JsonResponse({'success': True, 'id': doc.id, 'title': doc.title})
-    except Exception as e:
-        return JsonResponse({'error': f'上传失败：{str(e)}'}, status=500)
-
-
-@require_http_methods(['POST'])
-def pdf_delete(request, doc_id):
-    """删除一个 PDF 资料（同时删除文件）"""
-    try:
-        doc = get_object_or_404(PdfDocument, id=doc_id)
-        if doc.file:
-            try:
-                doc.file.delete(save=False)
-            except Exception:
-                pass
-        doc.delete()
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
-
-@require_http_methods(['POST'])
-def pdf_update(request, doc_id):
-    """更新 PDF 资料：可重命名 title，可替换文件（仍做 MD5 去重）"""
-    try:
-        import hashlib
-        doc = get_object_or_404(PdfDocument, id=doc_id)
-        new_title = request.POST.get('title', '').strip()
-
-        if new_title:
-            doc.title = new_title[:200]
-
-        new_file = request.FILES.get('file')
-        if new_file:
-            if not new_file.name.lower().endswith('.pdf'):
-                return JsonResponse({'error': '只支持 PDF 文件'}, status=400)
-            if new_file.size > 50 * 1024 * 1024:
-                return JsonResponse({'error': '文件过大，请控制在 50MB 以内'}, status=400)
-
-            hasher = hashlib.md5()
-            for chunk in new_file.chunks():
-                hasher.update(chunk)
-            file_hash = hasher.hexdigest()
-            try:
-                new_file.seek(0)
-            except Exception:
-                pass
-
-            existing = PdfDocument.objects.filter(file_hash=file_hash).exclude(id=doc.id).first()
-            if existing:
-                return JsonResponse({
-                    'error': '该文件已存在于资料库中，请勿重复上传',
-                    'duplicate': True,
-                    'existing_id': existing.id,
-                    'existing_title': existing.title,
-                }, status=409)
-
-            if doc.file:
-                try:
-                    doc.file.delete(save=False)
-                except Exception:
-                    pass
-            doc.file = new_file
-            doc.filesize = new_file.size
-            doc.file_hash = file_hash
-
-        doc.save()
-        return JsonResponse({'success': True, 'id': doc.id, 'title': doc.title})
-    except Exception as e:
-        return JsonResponse({'error': f'更新失败：{str(e)}'}, status=500)
-
-
-def pdf_view(request, doc_id):
-    """PDF 在线阅读页：用 object 标签嵌入 PDF 阅读器"""
-    doc = get_object_or_404(PdfDocument, id=doc_id)
-    return render(request, 'pdf_view.html', {'doc': doc})
-
-
-@require_http_methods(['GET'])
-def pdf_serve(request, doc_id):
-    """流式服务 PDF 文件：返回正确的 Content-Type，跳过 X-Frame-Options"""
-    doc = get_object_or_404(PdfDocument, id=doc_id)
-    file_path = doc.file.path
-    try:
-        with open(file_path, 'rb') as f:
-            response = HttpResponse(f.read(), content_type='application/pdf')
-        response['Content-Disposition'] = 'inline; filename="' + doc.title.replace('"', '') + '.pdf"'
-        response['Content-Length'] = str(doc.filesize)
-        response['X-Frame-Options'] = 'SAMEORIGIN'
-        response['Cache-Control'] = 'max-age=3600'
-        return response
-    except FileNotFoundError:
-        raise Http404('文件不存在')
-
-
-# ==================== 音乐播放器 ====================
-
-def _ffmpeg_bin(name):
-    """优先取 settings 中配置的路径，其次从 PATH 查找"""
-    cfg = getattr(settings, name, None)
-    if cfg and os.path.exists(cfg):
-        return cfg
-    found = shutil.which(name.lower())
-    return found or name.lower()
-
-
-_AAC_OK = None
-_FFMPEG_OK = None
-
-
-def _ffmpeg_available():
-    """快速检测 ffmpeg 是否可执行（结果缓存）"""
-    global _FFMPEG_OK
-    if _FFMPEG_OK is not None:
-        return _FFMPEG_OK
-    try:
-        ffmpeg = _ffmpeg_bin('FFMPEG_PATH')
-        r = subprocess.run([ffmpeg, '-version'], capture_output=True, timeout=10)
-        _FFMPEG_OK = (r.returncode == 0)
-    except Exception:
-        _FFMPEG_OK = False
-    return _FFMPEG_OK
-
-
-def _has_aac_encoder():
-    """检测当前 ffmpeg 是否带 AAC 编码器（决定能否转码），结果缓存"""
-    global _AAC_OK
-    if _AAC_OK is not None:
-        return _AAC_OK
-    try:
-        ffmpeg = _ffmpeg_bin('FFMPEG_PATH')
-        r = subprocess.run([ffmpeg, '-encoders'], capture_output=True, text=True, timeout=30)
-        _AAC_OK = bool(re.search(r'\baac\b', r.stdout))
-    except Exception:
-        _AAC_OK = False
-    return _AAC_OK
-
-
-def _extract_audio(video_path, audio_path):
-    """从视频提取音轨生成音频文件。
-
-    优先直接复制音轨（copy，无需编码器，不损音质）；
-    若失败且 ffmpeg 支持 AAC 编码则转码；
-    返回 (成功与否, 诊断信息)。
-    """
-    ffmpeg = _ffmpeg_bin('FFMPEG_PATH')
-    if not os.path.exists(video_path):
-        return False, '源文件不存在'
-
-    def _ok(p):
-        return os.path.exists(p) and os.path.getsize(p) > 0
-
-    # 尝试 1：直接复制音轨（mp4/m4a 内常见 AAC，秒提取不损音质）
-    # 注意：精简版 ffmpeg 可能只启用 mp4 muxer，需显式 -f mp4 指定输出容器
-    cmd_copy = [ffmpeg, '-y', '-loglevel', 'error', '-i', video_path, '-vn', '-c:a', 'copy', '-f', 'mp4', audio_path]
-    try:
-        r = subprocess.run(cmd_copy, capture_output=True, text=True, timeout=120)
-        if r.returncode == 0 and _ok(audio_path):
-            return True, ''
-        copy_err = (r.stderr or r.stdout or 'copy 失败')[:300]
-    except Exception as e:
-        copy_err = str(e)[:300]
-
-    # 尝试 2：转码为 AAC（需要 ffmpeg 支持 AAC 编码器）
-    if _has_aac_encoder():
-        cmd_aac = [ffmpeg, '-y', '-loglevel', 'error', '-i', video_path, '-vn', '-c:a', 'aac', '-b:a', '192k', '-f', 'mp4', audio_path]
-        try:
-            r = subprocess.run(cmd_aac, capture_output=True, text=True, timeout=600)
-            if r.returncode == 0 and _ok(audio_path):
-                return True, ''
-            aac_err = (r.stderr or r.stdout or '转码失败')[:300]
-        except Exception as e:
-            aac_err = str(e)[:300]
-    else:
-        aac_err = '当前 ffmpeg 无 AAC 编码器，无法转码'
-
-    return False, f'{copy_err} | {aac_err}'
-
-
-def _get_duration(video_path):
-    """用 ffprobe 读取视频时长（秒）"""
-    ffprobe = _ffmpeg_bin('FFPROBE_PATH')
-    try:
-        r = subprocess.run(
-            [ffprobe, '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', video_path],
-            capture_output=True, text=True, timeout=60)
-        return float(r.stdout.strip())
-    except Exception:
-        return 0.0
-
-
-# 浏览器（Chromium/WebView2）无需 ffmpeg 即可直接播放其音轨的容器
-_DIRECT_PLAY_EXTS = {'.mp4', '.m4v', '.mov', '.webm'}
-
-
-def music_library(request):
-    """音乐库列表页：支持按歌名搜索 + 分页"""
-    q = request.GET.get('q', '').strip()
-    qs = Music.objects.all()
-    if q:
-        qs = qs.filter(title__icontains=q)
-    paginator = Paginator(qs, 12)
-    page_obj = paginator.get_page(request.GET.get('page'))
-    return render(request, 'music_library.html', {
-        'songs': page_obj,
-        'page_obj': page_obj,
-        'q': q,
-        'total': paginator.count,
-    })
-
-
-def music_player(request):
-    """独立迷你播放器窗口：不继承主站布局，刷新主页面不影响播放"""
-    songs = list(Music.objects.filter(transcode_status__in=['done', 'direct']).order_by('-created_at'))
-    data = [{
-        'id': s.id, 'title': s.title, 'duration': s.duration,
-        'audio_url': s.audio_file.url if s.audio_file else (s.video_file.url if s.video_file else ''),
-        'video_url': s.video_file.url if s.video_file else '',
-        'direct': s.transcode_status == 'direct',
-    } for s in songs]
-    raw_id = request.GET.get('id')
-    current_id = None
-    if raw_id and raw_id.isdigit():
-        current_id = int(raw_id)
-    return render(request, 'music_player.html', {'songs_json': json.dumps(data), 'current_id': current_id})
-
-
-@require_http_methods(['POST'])
-def api_music_upload(request):
-    """上传视频文件并提取音轨"""
-    try:
-        uploaded = request.FILES.get('file')
-        title = request.POST.get('title', '').strip()
-        if not uploaded:
-            return JsonResponse({'error': '请选择视频文件'}, status=400)
-        ext = os.path.splitext(uploaded.name)[1].lower()
-        if ext not in ('.mp4', '.mkv', '.webm', '.mov', '.flv', '.avi', '.m4v'):
-            return JsonResponse({'error': '不支持的视频格式：' + (ext or '无扩展名')}, status=400)
-        if uploaded.size > 500 * 1024 * 1024:
-            return JsonResponse({'error': '文件过大，请控制在 500MB 以内'}, status=400)
-
-        if not title:
-            title = os.path.splitext(uploaded.name)[0]
-
-        song = Music.objects.create(
-            title=title[:200],
-            video_file=uploaded,
-            filesize=uploaded.size,
-        )
-        # 同步转码：提取音轨
-        try:
-            video_path = song.video_file.path
-            if _ffmpeg_available():
-                song.duration = _get_duration(video_path)
-            audio_path = os.path.join(settings.MEDIA_ROOT, 'music', 'audio',
-                                      f'song_{song.id}.mp4')
-            os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-            # ffmpeg 不可用且浏览器可直放：跳过转码，直接用原文件
-            if not _ffmpeg_available() and ext in _DIRECT_PLAY_EXTS:
-                song.transcode_status = 'direct'
-                print(f'[Music] 无 ffmpeg，浏览器直放 id={song.id}')
-            else:
-                ok, diag = _extract_audio(video_path, audio_path)
-                if ok:
-                    from django.core.files import File
-                    with open(audio_path, 'rb') as f:
-                        song.audio_file.save(os.path.basename(audio_path), File(f), save=False)
-                    song.transcode_status = 'done'
-                elif ext in _DIRECT_PLAY_EXTS:
-                    # 兜底：ffmpeg 存在但转码失败，浏览器可直接播放原文件音轨
-                    song.transcode_status = 'direct'
-                    song.transcode_error = ''
-                    print(f'[Music] 未提取音轨，浏览器直放 id={song.id}（{diag[:120]}）')
-                else:
-                    song.transcode_status = 'failed'
-                    song.transcode_error = diag
-                    print(f'[Music] 音轨提取失败 id={song.id}: {diag}')
-        except Exception as e:
-            song.transcode_status = 'failed'
-            song.transcode_error = str(e)[:300]
-            print(f'[Music] 音轨提取失败 id={song.id}: {e}')
-        song.save()
-        return JsonResponse({
-            'success': True, 'id': song.id, 'title': song.title,
-            'status': song.transcode_status, 'duration': song.duration,
-        })
-    except Exception as e:
-        return JsonResponse({'error': f'上传失败：{str(e)}'}, status=500)
-
-
-@require_http_methods(['POST'])
-def api_music_delete(request, song_id):
-    """删除音乐（同时删除视频与音频文件）"""
-    try:
-        song = get_object_or_404(Music, id=song_id)
-        for f in (song.audio_file, song.video_file):
-            if f:
-                try:
-                    f.delete(save=False)
-                except Exception:
-                    pass
-        song.delete()
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
-
-@require_http_methods(['POST'])
-def api_music_update(request, song_id):
-    """编辑歌名"""
-    try:
-        song = get_object_or_404(Music, id=song_id)
-        title = request.POST.get('title', '').strip()
-        if not title:
-            return JsonResponse({'error': '歌名不能为空'}, status=400)
-        song.title = title[:200]
-        song.save()
-        return JsonResponse({'success': True, 'id': song.id, 'title': song.title})
-    except Exception as e:
-        return JsonResponse({'error': f'更新失败：{str(e)}'}, status=500)
 
 
 # ============================================================

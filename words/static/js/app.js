@@ -313,6 +313,28 @@ window.VocabStudyTimer = (function () {
   return { start: start, stop: stop, flush: flush };
 })();
 
+// ===== 刷新当前页 =====
+// 全站共用的刷新按钮（base.html 顶栏）。刷新前先把学习时长同步给服务端，
+// 避免刚计时未上报的几十秒随页面卸载丢掉；随后整页重载，数据全部从服务端重取。
+function refreshPage(btn) {
+  if (btn && btn.disabled) return;      // 连点保护
+  if (btn) {
+    btn.disabled = true;
+    var icon = btn.querySelector('i');
+    if (icon) icon.classList.add('spinning');
+  }
+  var go = function () { location.reload(); };
+  var timer = window.VocabStudyTimer;
+  if (timer && typeof timer.flush === 'function') {
+    try {
+      timer.flush();
+      setTimeout(go, 120);              // 给 flush 的请求一点发出时间
+      return;
+    } catch (e) { /* 计时器异常不阻塞刷新 */ }
+  }
+  go();
+}
+
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', function () {
   initFontSize();

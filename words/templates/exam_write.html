@@ -8,6 +8,8 @@
 {% block content %}
 <form style="display:none;">{% csrf_token %}</form>
 
+{% include 'partials/exam_nav.html' with ws_active='questions' %}
+
 <!-- 题目信息 -->
 <div class="card mb-4">
   <div class="flex justify-between items-center mb-2" style="flex-wrap: wrap; gap: 8px;">
@@ -19,9 +21,14 @@
     </div>
     <a href="{% url 'words:exam_questions' %}?exam_type={{ question.exam_type }}&type={{ question.question_type }}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回列表</a>
   </div>
-  <div class="word-text" style="font-size:1.15rem; margin-bottom: 8px;">{{ question.title }}</div>
+  <div class="ws-head-title" style="margin-bottom: 8px;">{{ question.title }}</div>
   <div class="text-secondary" style="white-space: pre-line;">{{ question.content }}</div>
-  {% if question.prompt %}<div class="mt-2 text-secondary text-sm" style="white-space: pre-line;">要求：{{ question.prompt }}</div>{% endif %}
+  {% if question.prompt %}
+  <div class="ws-section" style="margin: 12px 0 0;">
+    <div class="ws-section-title"><i class="ph ph-info" style="color:var(--c-blue);"></i> 写作要求</div>
+    <div class="text-secondary text-sm" style="white-space: pre-line;">{{ question.prompt }}</div>
+  </div>
+  {% endif %}
   {% if question.tags %}
   <div class="flex gap-2 mt-2">{% for t in question.tags %}<span class="date-chip">{{ t }}</span>{% endfor %}</div>
   {% endif %}
@@ -117,40 +124,17 @@ function gradeCet6Translation() {
 
 function renderCet6GradeResult(r) {
   if (!r || r.raw) return '<div class="markdown-body">' + renderMarkdown(r.raw || '—') + '</div>';
-  var html = '';
-  var scores = r.scores || {};
   var dims = [
     ['accuracy', '忠实度'], ['grammar', '语法'], ['vocabulary', '用词'],
     ['fluency', '通顺度'], ['coherence', '连贯']
   ];
-  html += '<div class="grid-3" style="margin-bottom: 12px;">';
-  dims.forEach(function (d) {
-    var v = scores[d[0]] || 0;
-    html += '<div class="card" style="padding:10px; text-align:center;">'
-      + '<div class="stat-value text-accent">' + v + '</div>'
-      + '<div class="text-secondary text-sm">' + d[1] + '</div></div>';
-  });
-  html += '</div>';
-  if (r.total) html += '<div class="mb-2"><strong>总分：' + r.total + ' / 50</strong></div>';
-  if (r.comments) html += '<div class="mb-2">' + renderMarkdown('**总评：**' + r.comments) + '</div>';
-  if (r.errors && r.errors.length) {
-    html += '<div class="mb-2"><strong>错误修正：</strong></div><ul class="mb-2 error-list">';
-    r.errors.forEach(function (e) {
-      html += '<li style="margin-bottom:6px;"><span style="text-decoration:line-through;">' + escapeHtml(e.original || '') + '</span> → '
-        + '<span class="text-accent">' + escapeHtml(e.corrected || '') + '</span>'
-        + (e.reason ? ' <span class="text-secondary text-sm">(' + escapeHtml(e.reason) + ')</span>' : '') + '</li>';
-    });
-    html += '</ul>';
-  }
-  if (r.suggestions && r.suggestions.length) {
-    html += '<div class="mb-2"><strong>改进建议：</strong></div><ul class="mb-2">';
-    r.suggestions.forEach(function (s) { html += '<li>' + escapeHtml(s) + '</li>'; });
-    html += '</ul>';
-  }
-  if (r.model_translation) {
-    html += '<div class="mb-2"><strong>参考译文：</strong></div><div class="model-box" style="white-space: pre-wrap;">' + escapeHtml(r.model_translation) + '</div>';
-  }
-  return html;
+  var per = 10; // 六级翻译：五维，每维 10 分，满分 50
+  return WS.renderScoreGrid(r.scores, dims, per)
+    + WS.renderTotal(r.total, 50)
+    + WS.renderComments(r.comments)
+    + WS.renderErrors(r.errors)
+    + WS.renderSuggestions(r.suggestions)
+    + WS.renderModelText('参考译文', r.model_translation);
 }
 
 document.getElementById('myCet6Translation').addEventListener('input', function () {
@@ -244,39 +228,16 @@ function gradeTranslation() {
 
 function renderGradeResult(r) {
   if (!r || r.raw) return '<div class="markdown-body">' + renderMarkdown(r.raw || '—') + '</div>';
-  var html = '';
-  var scores = r.scores || {};
   var dims = [
     ['accuracy', '忠实度'], ['fluency', '通顺度'], ['completeness', '完整度']
   ];
-  html += '<div class="grid-3" style="margin-bottom: 12px;">';
-  dims.forEach(function (d) {
-    var v = scores[d[0]] || 0;
-    html += '<div class="card" style="padding:10px; text-align:center;">'
-      + '<div class="stat-value text-accent">' + v + '</div>'
-      + '<div class="text-secondary text-sm">' + d[1] + '</div></div>';
-  });
-  html += '</div>';
-  if (r.total) html += '<div class="mb-2"><strong>总分：' + r.total + ' / 30</strong></div>';
-  if (r.comments) html += '<div class="mb-2">' + renderMarkdown('**总评：**' + r.comments) + '</div>';
-  if (r.errors && r.errors.length) {
-    html += '<div class="mb-2"><strong>错误修正：</strong></div><ul class="mb-2">';
-    r.errors.forEach(function (e) {
-      html += '<li><span style="text-decoration:line-through;">' + escapeHtml(e.original || '') + '</span> → '
-        + '<span class="text-accent">' + escapeHtml(e.corrected || '') + '</span>'
-        + (e.reason ? ' <span class="text-secondary text-sm">(' + escapeHtml(e.reason) + ')</span>' : '') + '</li>';
-    });
-    html += '</ul>';
-  }
-  if (r.suggestions && r.suggestions.length) {
-    html += '<div class="mb-2"><strong>改进建议：</strong></div><ul class="mb-2">';
-    r.suggestions.forEach(function (s) { html += '<li>' + escapeHtml(s) + '</li>'; });
-    html += '</ul>';
-  }
-  if (r.model_translation) {
-    html += '<div class="mb-2"><strong>参考译文：</strong></div><div class="model-box">' + renderMarkdown(r.model_translation) + '</div>';
-  }
-  return html;
+  var per = 10; // 考研翻译：三维，每维 10 分，满分 30
+  return WS.renderScoreGrid(r.scores, dims, per)
+    + WS.renderTotal(r.total, 30)
+    + WS.renderComments(r.comments)
+    + WS.renderErrors(r.errors)
+    + WS.renderSuggestions(r.suggestions)
+    + WS.renderModelText('参考译文', r.model_translation, { markdown: true });
 }
 </script>
 
@@ -396,50 +357,18 @@ function gradeEssay() {
 
 function renderEssayGrade(r) {
   if (!r || r.raw) return '<div class="markdown-body">' + renderMarkdown(r.raw || '—') + '</div>';
-  var html = '';
-  var scores = r.scores || {};
   var dims = [
     ['vocabulary', '词汇'], ['grammar', '语法'], ['coherence', '连贯'],
     ['relevance', '切题'], ['richness', '丰富度']
   ];
-  html += '<div class="grid-3" style="margin-bottom: 12px;">';
-  dims.forEach(function (d) {
-    var v = scores[d[0]] || 0;
-    html += '<div class="card" style="padding:10px; text-align:center;">'
-      + '<div class="stat-value text-accent">' + v + '</div>'
-      + '<div class="text-secondary text-sm">' + d[1] + '</div></div>';
-  });
-  html += '</div>';
-  if (r.total) html += '<div class="mb-2"><strong>总分：' + r.total + ' / 50</strong></div>';
-  if (r.comments) html += '<div class="mb-2">' + renderMarkdown('**总评：**' + r.comments) + '</div>';
-
-  if (r.errors && r.errors.length) {
-    html += '<div class="mb-2"><strong>错误修正：</strong></div><ul class="mb-2 error-list">';
-    r.errors.forEach(function (e) {
-      html += '<li style="margin-bottom:6px;"><span style="text-decoration:line-through;">' + escapeHtml(e.original || '') + '</span> → '
-        + '<span class="text-accent">' + escapeHtml(e.corrected || '') + '</span>'
-        + (e.reason ? ' <span class="text-secondary text-sm">(' + escapeHtml(e.reason) + ')</span>' : '') + '</li>';
-    });
-    html += '</ul>';
-  }
-  if (r.advanced_expressions && r.advanced_expressions.length) {
-    html += '<div class="mb-2"><strong>高级替换表达：</strong></div><ul class="mb-2">';
-    r.advanced_expressions.forEach(function (e) {
-      html += '<li style="margin-bottom:6px;"><span class="text-accent">' + escapeHtml(e.advanced || '') + '</span>'
-        + ' <span class="text-secondary text-sm">(替换 ' + escapeHtml(e.original || '') + ')</span>'
-        + (e.explain ? '<div class="text-secondary text-sm">' + escapeHtml(e.explain) + '</div>' : '') + '</li>';
-    });
-    html += '</ul>';
-  }
-  if (r.suggestions && r.suggestions.length) {
-    html += '<div class="mb-2"><strong>改进建议：</strong></div><ul class="mb-2">';
-    r.suggestions.forEach(function (s) { html += '<li>' + escapeHtml(s) + '</li>'; });
-    html += '</ul>';
-  }
-  if (r.model_essay) {
-    html += '<div class="mb-2"><strong>修改后的范文：</strong></div><div class="model-box" style="white-space: pre-wrap;">' + escapeHtml(r.model_essay) + '</div>';
-  }
-  return html;
+  var per = 10; // 作文五维：每维 10 分，满分 50
+  return WS.renderScoreGrid(r.scores, dims, per)
+    + WS.renderTotal(r.total, 50)
+    + WS.renderComments(r.comments)
+    + WS.renderErrors(r.errors)
+    + WS.renderExpressions(r.advanced_expressions)
+    + WS.renderSuggestions(r.suggestions)
+    + WS.renderModelText('修改后的范文', r.model_essay);
 }
 
 // 词数统计
@@ -451,63 +380,5 @@ document.getElementById('myEssay').addEventListener('input', function () {
 </script>
 {% endif %}
 
-<script>
-function copyText(text) {
-  if (!text) { showToast('暂无内容可复制', 'error'); return; }
-  navigator.clipboard.writeText(text).then(function () {
-    showToast('已复制', 'success');
-  }).catch(function () {
-    var ta = document.createElement('textarea');
-    ta.value = text; document.body.appendChild(ta); ta.select();
-    document.execCommand('copy'); ta.remove();
-    showToast('已复制', 'success');
-  });
-}
-
-function escapeHtml(src) {
-  return String(src || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-function renderMarkdown(src) {
-  if (!src) return '';
-  var lines = escapeHtml(src).split('\n');
-  var html = '', i = 0, para = [];
-  function flushPara() { if (para.length) { html += '<p>' + para.map(inline).join('\n') + '</p>'; para = []; } }
-  function inline(s) {
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, t, u) { return /^(https?:\/\/)/.test(u) ? '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>' : m; });
-    s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
-    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-    return s;
-  }
-  while (i < lines.length) {
-    var line = lines[i];
-    if (/^\s*```/.test(line)) {
-      flushPara(); var buf = []; i++;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i]); i++; }
-      html += '<pre><code>' + buf.join('\n') + '</code></pre>'; i++; continue;
-    }
-    var h = line.match(/^(#{1,4})\s+(.*)$/);
-    if (h) { flushPara(); html += '<h' + h[1].length + '>' + inline(h[2]) + '</h' + h[1].length + '>'; i++; continue; }
-    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { flushPara(); html += '<hr>'; i++; continue; }
-    if (/^\s*>\s?/.test(line)) {
-      flushPara(); var q = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { q.push(inline(lines[i].replace(/^\s*>\s?/, ''))); i++; }
-      html += '<blockquote>' + q.join('<br>') + '</blockquote>'; continue;
-    }
-    if (/^\s*[-*+]\s+/.test(line)) {
-      flushPara(); var ul = [];
-      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { ul.push('<li>' + inline(lines[i].replace(/^\s*[-*+]\s+/, '')) + '</li>'); i++; }
-      html += '<ul>' + ul.join('') + '</ul>'; continue;
-    }
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      flushPara(); var ol = [];
-      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) { ol.push('<li>' + inline(lines[i].replace(/^\s*\d+[.)]\s+/, '')) + '</li>'); i++; }
-      html += '<ol>' + ol.join('') + '</ol>'; continue;
-    }
-    para.push(line); i++;
-  }
-  flushPara();
-  return html;
-}
-</script>
+<!-- copyText / escapeHtml / renderMarkdown 由 static/js/exam_shared.js 全局提供 -->
 {% endblock %}

@@ -1,11 +1,11 @@
-﻿{% load static %}
+{% load static %}
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}考研单词背诵系统{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=333">
+  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=349">
   <!-- Phosphor 图标字体（随程序打包的本地静态资源，离线可用，不发起任何外网请求） -->
   <link rel="stylesheet" href="{% static 'vendor/phosphor/regular/style.css' %}?v=211">
   <link rel="stylesheet" href="{% static 'vendor/phosphor/fill/style.css' %}?v=211">
@@ -118,12 +118,6 @@
           <a href="{% url 'words:ai_chat_page' %}" data-nav="ai-chat">
             <i class="ph ph-sparkle"></i> <span>AI 助手</span>
           </a>
-          <a href="{% url 'words:pdf_library' %}" data-nav="library">
-            <i class="ph ph-stack"></i> <span>资料库</span>
-          </a>
-          <a href="{% url 'words:music_library' %}" data-nav="music">
-            <i class="ph ph-music-notes"></i> <span>音乐库</span>
-          </a>
           <a href="{% url 'words:settings_page' %}" data-nav="settings">
             <i class="ph ph-gear"></i> <span>设置</span>
           </a>
@@ -137,6 +131,11 @@
         <div class="top-bar-title">{% block page_title %}考研单词背诵系统{% endblock %}</div>
         <div class="top-bar-slogan">不要把梦想埋没!</div>
         <div class="top-bar-actions">
+          <!-- 刷新当前页：所有页面共用（设置里改过的主题、壁纸等本地偏好不会丢，页面数据从服务端重新读取） -->
+          <button id="refreshBtn" class="btn btn-secondary btn-sm" onclick="refreshPage(this)"
+                  title="刷新页面">
+            <i class="ph ph-arrow-clockwise"></i>
+          </button>
           <button id="themeToggle" class="btn btn-secondary btn-sm" onclick="toggleTheme()" title="切换主题">
             <i id="themeIcon" class="ph ph-moon"></i>
           </button>
@@ -175,7 +174,7 @@
   <!-- AI 模型配置独立窗口（API 填写，全局可用） -->
   {% include 'partials/ai_model_modal.html' %}
 
-  <!-- 软件使用、隐私、知识产权及二次创作声明：首次使用强制同意；设置页可随时查看 -->
+  <!-- 用户许可与使用协议：首次使用强制同意；设置页可随时查看 -->
   {% include 'partials/privacy_modal.html' %}
 
   <!-- Toast Container -->
@@ -184,7 +183,8 @@
   <button id="mobileNavToggle" class="btn btn-secondary" style="display:none;position:fixed;bottom:16px;right:16px;z-index:60;border-radius:50%;width:48px;height:48px;padding:0;font-size:1.4rem;" onclick="toggleMobileNav()"><i class="ph ph-list"></i></button>
 
   <script src="{% static 'js/tts.js' %}"></script>
-  <script src="{% static 'js/app.js' %}"></script>
+  <script src="{% static 'js/app.js' %}?v=334"></script>
+  <script src="{% static 'js/exam_shared.js' %}?v=347"></script>
   <script src="{% static 'js/ai_model_modal.js' %}?v=332"></script>
   <script src="{% static 'js/vault.js' %}?v=332"></script>
   {% block extra_scripts %}{% endblock %}
@@ -198,7 +198,7 @@
     'pureblue': 'ph-drop-half',
     'sepia': 'ph-scroll',
     'dark': 'ph-moon',
-    'nightblue': 'ph-stars',
+    'nightblue': 'ph-moon-stars',
     'custom': 'ph-image'
   };
   var WALLPAPER_KEY = 'vocab-theme-wallpaper-id'; // 当前选中壁纸 id

@@ -266,6 +266,25 @@ def main_gui():
             except Exception as e:
                 return {'success': False, 'error': str(e)}
 
+        def exit_app(self):
+            """退出整个程序。
+
+            用于首次启动「不同意用户许可与使用协议」等必须退出的场景：
+            浏览器里的 window.close() 对非脚本打开的窗口无效，必须由宿主关闭。
+            先销毁窗口让 webview.start() 返回，再由主线程 os._exit(0) 收尾；
+            销毁失败时直接强制结束进程，保证「不同意」一定能退出。
+            """
+            try:
+                win = webview.active_window()
+                if win is not None:
+                    win.destroy()
+                    return {'success': True}
+            except Exception as e:
+                print(f'exit_app 销毁窗口失败，强制退出: {e}')
+            # 兜底：延迟片刻让返回值先送达前端，再结束进程
+            threading.Timer(0.3, lambda: os._exit(0)).start()
+            return {'success': True}
+
     api = AppApi()
 
     # 先弹加载窗（尤其首启初始化耗时较长，不能让用户对着空气等）

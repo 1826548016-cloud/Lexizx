@@ -8,16 +8,20 @@
 {% block content %}
 <form style="display:none;">{% csrf_token %}</form>
 
+{% include 'partials/exam_nav.html' with ws_active='phrases' %}
+
 <div class="card mb-4">
-  <div class="card-header flex justify-between items-center">
-    <span><i class="ph ph-bookmark-simple"></i> 沉淀的好句 & 错误记录</span>
-    <span class="text-secondary text-sm">批改作文时 AI 自动收集，也可手动收藏</span>
+  <div class="ws-head" style="margin-bottom: 0;">
+    <div>
+      <div class="ws-head-title"><i class="ph ph-bookmark-simple" style="color: var(--c-red);"></i> 沉淀的好句与错误记录</div>
+      <div class="ws-head-sub">批改作文时 AI 自动收集，也可手动收藏；取消收藏后可再次点击恢复</div>
+    </div>
   </div>
 </div>
 
 <div class="grid-3">
   <div class="card mb-4">
-    <div class="card-header">✅ 高级替换表达</div>
+    <div class="card-header ws-phrase-head"><i class="ph ph-arrow-up-right" style="color: var(--c-green);"></i> 高级替换表达</div>
     {% if replaces %}
     <ul class="phrase-list">
       {% for p in replaces %}
@@ -30,7 +34,7 @@
                   class="phrase-collect-btn text-xs {% if p.is_collected %}text-accent{% else %}text-secondary{% endif %}"
                   aria-pressed="{% if p.is_collected %}true{% else %}false{% endif %}"
                   title="{% if p.is_collected %}点击取消收藏{% else %}点击收藏{% endif %}">
-            <i class="ph {% if p.is_collected %}ph-bookmark-simple-fill{% else %}ph-bookmark-simple{% endif %} collect-icon"></i>
+            <i class="ph {% if p.is_collected %}ph-fill ph-bookmark-simple{% else %}ph-bookmark-simple{% endif %} collect-icon"></i>
             <span class="collect-label">{% if p.is_collected %}已收藏{% else %}已取消{% endif %}</span>
           </button>
         </div>
@@ -43,7 +47,7 @@
   </div>
 
   <div class="card mb-4">
-    <div class="card-header">⚠️ 错误点记录</div>
+    <div class="card-header ws-phrase-head"><i class="ph ph-warning-circle" style="color: var(--c-red);"></i> 错误点记录</div>
     {% if errors %}
     <ul class="phrase-list">
       {% for p in errors %}
@@ -56,7 +60,7 @@
                   class="phrase-collect-btn text-xs {% if p.is_collected %}text-accent{% else %}text-secondary{% endif %}"
                   aria-pressed="{% if p.is_collected %}true{% else %}false{% endif %}"
                   title="{% if p.is_collected %}点击取消收藏{% else %}点击收藏{% endif %}">
-            <i class="ph {% if p.is_collected %}ph-bookmark-simple-fill{% else %}ph-bookmark-simple{% endif %} collect-icon"></i>
+            <i class="ph {% if p.is_collected %}ph-fill ph-bookmark-simple{% else %}ph-bookmark-simple{% endif %} collect-icon"></i>
             <span class="collect-label">{% if p.is_collected %}已收藏{% else %}已取消{% endif %}</span>
           </button>
         </div>
@@ -69,7 +73,7 @@
   </div>
 
   <div class="card mb-4">
-    <div class="card-header">📖 收藏好句</div>
+    <div class="card-header ws-phrase-head"><i class="ph ph-quotes" style="color: var(--c-blue);"></i> 收藏好句</div>
     {% if nice %}
     <ul class="phrase-list">
       {% for p in nice %}
@@ -82,7 +86,7 @@
                   class="phrase-collect-btn text-xs {% if p.is_collected %}text-accent{% else %}text-secondary{% endif %}"
                   aria-pressed="{% if p.is_collected %}true{% else %}false{% endif %}"
                   title="{% if p.is_collected %}点击取消收藏{% else %}点击收藏{% endif %}">
-            <i class="ph {% if p.is_collected %}ph-bookmark-simple-fill{% else %}ph-bookmark-simple{% endif %} collect-icon"></i>
+            <i class="ph {% if p.is_collected %}ph-fill ph-bookmark-simple{% else %}ph-bookmark-simple{% endif %} collect-icon"></i>
             <span class="collect-label">{% if p.is_collected %}已收藏{% else %}已取消{% endif %}</span>
           </button>
         </div>
@@ -93,10 +97,6 @@
     <div class="empty-state"><div class="empty-state-title">暂无</div><div>后续批改将自动收集高分句型</div></div>
     {% endif %}
   </div>
-</div>
-
-<div class="mt-3">
-  <a href="{% url 'words:exam_workshop' %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回工坊首页</a>
 </div>
 
 <script>
@@ -112,8 +112,9 @@
 
     var icon = btn.querySelector('.collect-icon');
     if (icon) {
-      icon.classList.toggle('ph-bookmark-simple-fill', collected);
-      icon.classList.toggle('ph-bookmark-simple', !collected);
+      // Phosphor 实心字形：保留基准图标名，仅切换 ph-fill
+      icon.classList.add('ph-bookmark-simple');
+      icon.classList.toggle('ph-fill', collected);
     }
 
     var li = btn.closest('.phrase-item');

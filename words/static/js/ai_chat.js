@@ -157,7 +157,7 @@ window.AIChat = (function () {
     var body = role === 'user'
       ? escapeHtml(content).replace(/\n/g, '<br>')
       : renderMarkdown(content);
-    return '<div class="ai-msg ' + cls + '">' + attachHtml + body +
+    return '<div class="ai-msg md-compact ' + cls + '">' + attachHtml + body +
       (time ? '<span class="ai-msg-meta">' + escapeHtml(time) + '</span>' : '') + '</div>';
   }
 

@@ -1,0 +1,22 @@
+{% comment %}
+写作工坊二级导航：六个工坊页面统一入口。
+用法：{% include 'partials/exam_nav.html' with ws_active='workshop' %}
+可选 ws_active：workshop | questions | phrases | history | logs
+{% endcomment %}
+<nav class="ws-nav" aria-label="写作工坊导航">
+  <a href="{% url 'words:exam_workshop' %}"{% if ws_active == 'workshop' %} class="active"{% endif %}>
+    <i class="ph ph-house"></i> 工坊首页
+  </a>
+  <a href="{% url 'words:exam_questions' %}"{% if ws_active == 'questions' %} class="active"{% endif %}>
+    <i class="ph ph-books"></i> 历年真题
+  </a>
+  <a href="{% url 'words:exam_phrases' %}"{% if ws_active == 'phrases' %} class="active"{% endif %}>
+    <i class="ph ph-bookmark-simple"></i> 好句 / 错题本
+  </a>
+  <a href="{% url 'words:exam_history' %}"{% if ws_active == 'history' %} class="active"{% endif %}>
+    <i class="ph ph-clock-counter-clockwise"></i> 练习历史
+  </a>
+  <a href="{% url 'words:exam_logs' %}"{% if ws_active == 'logs' %} class="active"{% endif %}>
+    <i class="ph ph-list-magnifying-glass"></i> AI 调用日志
+  </a>
+</nav>

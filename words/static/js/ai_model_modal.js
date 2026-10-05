@@ -4,10 +4,69 @@
 // 保存成功后调用 window.aiModelModalOnSaved 钩子（由当前页面注册，用于刷新模型列表/选择框）。
 
 // 模型服务商预设（全部为 OpenAI 兼容接口），models 元素: { id, vision: 是否支持图片识别 }
+// 预置模型 ID 仅为常用推荐，各家新模型可随时通过「使用其他模型」手动填写
 var AI_PROVIDERS = [
-  { id: 'deepseek', name: 'DeepSeek', base: 'https://api.deepseek.com/v1', models: [
+  // ---- 国内 ----
+  { id: 'deepseek', name: 'DeepSeek（深度求索）', base: 'https://api.deepseek.com/v1', models: [
     { id: 'deepseek-chat', vision: false }, { id: 'deepseek-reasoner', vision: false },
   ]},
+  { id: 'qwen', name: '通义千问（阿里云百炼）', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [
+    { id: 'qwen-plus', vision: false }, { id: 'qwen-max', vision: false },
+    { id: 'qwen-turbo', vision: false }, { id: 'qwen-vl-max', vision: true },
+  ]},
+  { id: 'zhipu', name: '智谱 GLM（BigModel）', base: 'https://open.bigmodel.cn/api/paas/v4', models: [
+    { id: 'glm-4-plus', vision: false }, { id: 'glm-4-air', vision: false },
+    { id: 'glm-4-flash', vision: false }, { id: 'glm-4v-plus', vision: true },
+  ]},
+  { id: 'moonshot', name: 'Kimi（月之暗面）', base: 'https://api.moonshot.cn/v1', models: [
+    { id: 'moonshot-v1-8k', vision: false }, { id: 'moonshot-v1-32k', vision: false },
+    { id: 'moonshot-v1-128k', vision: false }, { id: 'moonshot-v1-8k-vision-preview', vision: true },
+  ]},
+  { id: 'doubao', name: '豆包（火山方舟）', base: 'https://ark.cn-beijing.volces.com/api/v3', models: [
+    { id: 'doubao-1-5-pro-32k-250115', vision: false }, { id: 'doubao-1-5-vision-pro-32k-250115', vision: true },
+  ]},
+  { id: 'qianfan', name: '文心一言（百度千帆）', base: 'https://qianfan.baidubce.com/v2', models: [
+    { id: 'ernie-4.0-8k', vision: false }, { id: 'ernie-4.0-turbo-8k', vision: false },
+    { id: 'ernie-speed-128k', vision: false },
+  ]},
+  { id: 'hunyuan', name: '腾讯混元', base: 'https://api.hunyuan.cloud.tencent.com/v1', models: [
+    { id: 'hunyuan-turbos-latest', vision: false }, { id: 'hunyuan-large', vision: false },
+    { id: 'hunyuan-lite', vision: false },
+  ]},
+  { id: 'spark', name: '讯飞星火', base: 'https://spark-api-open.xf-yun.com/v1', models: [
+    { id: 'generalv3.5', vision: false }, { id: '4.0Ultra', vision: false },
+  ]},
+  { id: 'siliconflow', name: '硅基流动 SiliconFlow', base: 'https://api.siliconflow.cn/v1', models: [
+    { id: 'deepseek-ai/DeepSeek-V3', vision: false }, { id: 'deepseek-ai/DeepSeek-R1', vision: false },
+    { id: 'Qwen/Qwen2.5-72B-Instruct', vision: false },
+  ]},
+  { id: 'minimax', name: 'MiniMax', base: 'https://api.minimaxi.com/v1', models: [
+    { id: 'MiniMax-Text-01', vision: false }, { id: 'abab6.5s-chat', vision: false },
+  ]},
+  // ---- 国外（需可访问外网）----
+  { id: 'openai', name: 'OpenAI', base: 'https://api.openai.com/v1', models: [
+    { id: 'gpt-4o', vision: true }, { id: 'gpt-4o-mini', vision: true },
+  ]},
+  { id: 'gemini', name: 'Google Gemini', base: 'https://generativelanguage.googleapis.com/v1beta/openai/', models: [
+    { id: 'gemini-2.5-pro', vision: true }, { id: 'gemini-2.5-flash', vision: true },
+    { id: 'gemini-2.0-flash', vision: true },
+  ]},
+  { id: 'xai', name: 'xAI Grok', base: 'https://api.x.ai/v1', models: [
+    { id: 'grok-3', vision: false }, { id: 'grok-3-mini', vision: false },
+    { id: 'grok-2-vision-1212', vision: true },
+  ]},
+  { id: 'openrouter', name: 'OpenRouter（聚合）', base: 'https://openrouter.ai/api/v1', models: [
+    { id: 'openai/gpt-4o-mini', vision: true }, { id: 'anthropic/claude-3.5-sonnet', vision: true },
+    { id: 'google/gemini-2.0-flash-001', vision: true },
+  ]},
+  { id: 'groq', name: 'Groq', base: 'https://api.groq.com/openai/v1', models: [
+    { id: 'llama-3.3-70b-versatile', vision: false }, { id: 'llama-3.1-8b-instant', vision: false },
+  ]},
+  { id: 'mistral', name: 'Mistral AI', base: 'https://api.mistral.ai/v1', models: [
+    { id: 'mistral-large-latest', vision: false }, { id: 'mistral-small-latest', vision: false },
+    { id: 'pixtral-large-latest', vision: true },
+  ]},
+  // ---- 其他 ----
   { id: 'codex2api', name: 'Codex2API', base: 'https://www.codex2api.com/v1', models: [
     { id: 'gpt-5.6-sol', vision: true }, { id: 'gpt-5.2', vision: true },
     { id: 'gpt-5.2-chat-latest', vision: true }, { id: 'gpt-5.2-pro', vision: true },

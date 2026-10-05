@@ -9,10 +9,10 @@
 <div class="card word-card">
   <div class="flex justify-center gap-4 mb-4">
     <button class="btn btn-secondary btn-sm" onclick="playAudio('en-US')" title="美式发音">
-      <span>🔊</span> US
+      <i class="ph ph-speaker-high"></i> US
     </button>
     <button class="btn btn-secondary btn-sm" onclick="playAudio('en-GB')" title="英式发音">
-      <span>🔊</span> UK
+      <i class="ph ph-speaker-high"></i> UK
     </button>
   </div>
 
@@ -21,7 +21,7 @@
   <div class="flex justify-center items-center gap-4 mb-4">
     <span class="badge badge-{{ progress.status }}">{{ progress.get_status_display }}</span>
     <button id="favoriteBtn" class="btn btn-sm {% if is_favorite %}btn-primary{% else %}btn-secondary{% endif %}" onclick="toggleFavorite()">
-      {% if is_favorite %}<i class="ph ph-star-fill"></i> 已收藏{% else %}<i class="ph ph-star"></i> 收藏{% endif %}
+      {% if is_favorite %}<i class="ph ph-fill ph-star"></i> 已收藏{% else %}<i class="ph ph-star"></i> 收藏{% endif %}
     </button>
   </div>
 
@@ -123,7 +123,7 @@
   <div class="card-header">掌握程度</div>
   <div class="word-card-actions">
     <button id="masteryToggleBtn" class="btn {% if progress.status == 'mastered' %}btn-primary{% else %}btn-secondary{% endif %} btn-lg" onclick="toggleMastery()" style="min-width: 120px;">
-      {% if progress.status == 'mastered' %}✅ 会{% else %}❌ 不会{% endif %}
+      {% if progress.status == 'mastered' %}<i class="ph ph-check-circle"></i> 会{% else %}<i class="ph ph-x-circle"></i> 不会{% endif %}
     </button>
   </div>
 </div>
@@ -193,7 +193,7 @@ async function toggleFavorite() {
     if (data.is_favorite) {
       btn.classList.remove('btn-secondary');
       btn.classList.add('btn-primary');
-      btn.innerHTML = '<i class="ph ph-star-fill"></i> 已收藏';
+      btn.innerHTML = '<i class="ph ph-fill ph-star"></i> 已收藏';
       showToast('已加入收藏', 'success');
     } else {
       btn.classList.remove('btn-primary');
@@ -246,11 +246,11 @@ async function toggleMastery() {
       const btn = document.getElementById('masteryToggleBtn');
       if (data.is_mastered) {
         btn.className = 'btn btn-primary btn-lg';
-        btn.innerHTML = '✅ 会';
+        btn.innerHTML = '<i class="ph ph-check-circle"></i> 会';
         showToast('已标记为"会"', 'success');
       } else {
         btn.className = 'btn btn-secondary btn-lg';
-        btn.innerHTML = '❌ 不会';
+        btn.innerHTML = '<i class="ph ph-x-circle"></i> 不会';
         showToast('已标记为"不会"', 'success');
       }
     } else {

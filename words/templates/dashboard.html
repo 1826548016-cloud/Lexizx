@@ -30,7 +30,7 @@
       <span class="stat-icon stat-icon--red"><i class="ph ph-book-open"></i></span>
       <div class="card-header">今日新词</div>
     </div>
-    <div class="stat-value">{{ today_new }} <span style="font-size: var(--fs-base); font-weight: 400; color: var(--c-text-3);">/ {{ settings.daily_new_target|default:30 }}</span></div>
+    <div class="stat-value">{{ today_new }} <span class="unit">/ {{ settings.daily_new_target|default:30 }}</span></div>
     <div class="progress-bar" style="margin-top: 12px;">
       <div class="progress-bar-fill progress-fill--red" style="width: {% if settings.daily_new_target > 0 %}{% widthratio today_new settings.daily_new_target 100 %}{% else %}0{% endif %}%;"></div>
     </div>
@@ -42,7 +42,7 @@
       <span class="stat-icon stat-icon--blue"><i class="ph ph-arrows-clockwise"></i></span>
       <div class="card-header">今日复习</div>
     </div>
-    <div class="stat-value">{{ today_review }} <span style="font-size: var(--fs-base); font-weight: 400; color: var(--c-text-3);">/ {{ settings.daily_review_target|default:50 }}</span></div>
+    <div class="stat-value">{{ today_review }} <span class="unit">/ {{ settings.daily_review_target|default:50 }}</span></div>
     <div class="progress-bar" style="margin-top: 12px;">
       <div class="progress-bar-fill progress-fill--blue" style="width: {% if settings.daily_review_target > 0 %}{% widthratio today_review settings.daily_review_target 100 %}{% else %}0{% endif %}%;"></div>
     </div>
@@ -54,7 +54,7 @@
       <span class="stat-icon stat-icon--amber"><i class="ph ph-fire"></i></span>
       <div class="card-header">连续打卡</div>
     </div>
-    <div class="stat-value" style="color: var(--c-red);">{{ streak }} <span style="font-size: var(--fs-base); font-weight: 400; color: var(--c-text-3);">天</span></div>
+    <div class="stat-value text-red">{{ streak }} <span class="unit">天</span></div>
     <div class="stat-label" id="checkin-status">
       {% if today_checkin and today_checkin.is_checked %}
         今日已打卡
@@ -82,10 +82,10 @@
 
 <!-- Quick actions -->
 <div class="card" style="margin-bottom: 24px;">
-  <div class="card-header">快捷操作</div>
+  <div class="card-header"><i class="ph ph-lightning text-amber"></i> 快捷操作</div>
   <div class="flex gap-4" style="flex-wrap: wrap;">
     <a href="{% url 'words:learn_start' %}" class="btn btn-primary"><i class="ph ph-target"></i> 开始背新词</a>
-    <a href="{% url 'words:review_session' %}" class="btn btn-primary"><i class="ph ph-arrows-clockwise"></i> 复习已学单词(随机)</a>
+    <a href="{% url 'words:review_session' %}" class="btn btn-primary"><i class="ph ph-arrows-clockwise"></i> 复习已学单词（随机）</a>
     <a href="{% url 'words:history' %}" class="btn btn-secondary"><i class="ph ph-clock-counter-clockwise"></i> 背词记录</a>
   </div>
 </div>
@@ -93,7 +93,7 @@
 {% if plan %}
 <div class="card" style="margin-bottom: 24px;">
   <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
-    <div class="card-header" style="margin: 0;">📅 当前计划：{{ plan.name }}</div>
+    <div class="card-header" style="margin: 0;"><i class="ph ph-calendar-blank text-blue"></i> 当前计划：{{ plan.name }}</div>
     {% if plan_today.days_left is not None %}
       <span class="badge badge-review">距目标 {{ plan_today.days_left }} 天</span>
     {% endif %}
@@ -111,9 +111,9 @@
   <!-- 今日双卡片 -->
   <div class="card-grid" style="margin-bottom: 0;">
     <div class="stat-card today-task-card">
-      <div class="stat-label">🆕 今日新词</div>
+      <div class="stat-label"><i class="ph ph-sparkle"></i> 今日新词</div>
       <div class="stat-value" style="font-size: var(--fs-xl);">
-        {{ plan_today.today_new_done }} <span style="font-size: var(--fs-base); color: var(--c-text-3); font-weight: 400;">/ {{ plan_today.daily_new_target }}</span>
+        {{ plan_today.today_new_done }} <span class="unit">/ {{ plan_today.daily_new_target }}</span>
       </div>
       <div class="progress-bar" style="margin: 6px 0;">
         <div class="progress-bar-fill" style="width: {% widthratio plan_today.today_new_done plan_today.daily_new_target 100 %}%;"></div>
@@ -121,9 +121,9 @@
       <a href="{% url 'words:learn_start' %}" class="btn btn-primary btn-sm" style="width: 100%;">继续背新词 →</a>
     </div>
     <div class="stat-card today-task-card">
-      <div class="stat-label">🔄 今日复习</div>
+      <div class="stat-label"><i class="ph ph-arrow-counter-clockwise"></i> 今日复习</div>
       <div class="stat-value" style="font-size: var(--fs-xl);">
-        {{ plan_today.today_review_done }} <span style="font-size: var(--fs-base); color: var(--c-text-3); font-weight: 400;">/ {{ plan_today.daily_review_target }}</span>
+        {{ plan_today.today_review_done }} <span class="unit">/ {{ plan_today.daily_review_target }}</span>
       </div>
       <div class="progress-bar" style="margin: 6px 0;">
         <div class="progress-bar-fill" style="width: {% if plan_today.daily_review_target > 0 %}{% widthratio plan_today.today_review_done plan_today.daily_review_target 100 %}{% else %}0{% endif %}%;"></div>
@@ -201,13 +201,13 @@
     {% endif %}
   </div>
   <div class="flex text-sm" style="gap: 20px; margin-top: 12px; flex-wrap: wrap;">
-    <span style="display: inline-flex; align-items: center; gap: 6px;">
-      <span style="width: 10px; height: 10px; border-radius: 50%; background: var(--c-green); display: inline-block;"></span>
+    <span class="meta-row">
+      <span class="legend-dot legend-dot--green"></span>
       会 <strong>{{ mastered_words }}</strong>
       <span class="text-secondary">{{ master_percent }}%</span>
     </span>
-    <span style="display: inline-flex; align-items: center; gap: 6px;">
-      <span style="width: 10px; height: 10px; border-radius: 50%; background: var(--c-amber); display: inline-block;"></span>
+    <span class="meta-row">
+      <span class="legend-dot legend-dot--amber"></span>
       不会 <strong>{{ learning_words }}</strong>
       <span class="text-secondary">{{ learning_percent }}%</span>
     </span>
@@ -217,9 +217,9 @@
 <!-- Category progress -->
 <div class="card-grid">
   {% for code, stat in category_stats.items %}
-  <div class="card">
-    <div class="card-header">{{ stat.label }}</div>
-    <div class="stat-value">{{ stat.mastered }} / {{ stat.total }}</div>
+  <div class="card stat-card">
+    <div class="card-header"><i class="ph ph-books text-faint"></i> {{ stat.label }}</div>
+    <div class="stat-value">{{ stat.mastered }} <span class="unit">/ {{ stat.total }}</span></div>
     <div class="progress-bar" style="margin-top: 12px;">
       <div class="progress-bar-fill" style="width: {% if stat.total > 0 %}{% widthratio stat.mastered stat.total 100 %}{% else %}0{% endif %}%;"></div>
     </div>
@@ -235,25 +235,26 @@
 <script>
   var weeklyChart = null;
 
-  // 当前主题配色（跟随明暗模式）
+  // 当前主题配色：直接读 CSS 变量的计算值，自动跟随全部 6 套主题
+  // （原先按 dark/nightblue 写死两份色值，其余 4 套主题取不到正确配色）
   function isDarkTheme() {
     var t = document.documentElement.getAttribute('data-theme');
     return t === 'dark' || t === 'nightblue';
   }
   function chartPalette() {
-    var dark = isDarkTheme();
+    var c = themeColors();
     return {
-      surface: dark ? '#2a251e' : '#fefcf7',
-      border: dark ? '#423a2c' : '#e4ddcc',
-      borderLight: dark ? '#383124' : '#eee8da',
-      text: dark ? '#e9e1d0' : '#2b2721',
-      text2: dark ? '#ab9f8a' : '#6f6859',
-      text3: dark ? '#7d7360' : '#a49c8b',
-      green: dark ? '#e07a6b' : '#c0392b',
-      greenRgb: dark ? '224,122,107' : '192,57,43',
-      purple: dark ? '#b6a5c7' : '#7b6b8f',
-      purpleRgb: dark ? '182,165,199' : '123,107,143',
-      amber: dark ? '#d8a94f' : '#b7791f'
+      surface: c.surface,
+      border: c.border,
+      borderLight: c.borderLight,
+      text: c.text,
+      text2: c.text2,
+      text3: c.text3,
+      green: c.red,      // 保持既有命名：折线主色沿用强调红
+      greenRgb: c.redRgb,
+      purple: c.purple,
+      purpleRgb: c.purpleRgb,
+      amber: c.amber
     };
   }
 

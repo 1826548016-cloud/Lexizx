@@ -65,7 +65,7 @@ window.AssistantPanel = (function () {
   function bubbleHtml(role, content, time) {
     var cls = role === 'user' ? 'user' : 'ai';
     var body = role === 'user' ? escapeHtml(content) : renderMarkdown(content);
-    return '<div class="assistant-msg ' + cls + '">' + body +
+    return '<div class="assistant-msg md-compact ' + cls + '">' + body +
       (time ? '<span class="assistant-msg-time">' + time + '</span>' : '') + '</div>';
   }
 

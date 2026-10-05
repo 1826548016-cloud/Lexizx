@@ -1,5 +1,6 @@
 {% extends 'base.html' %}
 {% load static %}
+{% load custom_filters %}
 
 {% block title %}练习历史 - 考研写作工坊{% endblock %}
 
@@ -8,49 +9,44 @@
 {% block content %}
 <form style="display:none;">{% csrf_token %}</form>
 
+{% include 'partials/exam_nav.html' with ws_active='history' %}
+
 <!-- 统计 -->
-<div class="grid-2 mb-4" style="gap: 14px; grid-template-columns: 1fr 1fr;">
+<div class="card-grid ws-history-stats">
   <div class="card stat-card">
     <div class="stat-value">{{ total }}</div>
     <div class="stat-label">已产生的练习记录</div>
   </div>
   <div class="card stat-card">
-    <div class="stat-value">{% if avg %}{{ avg }} 分{% else %}-{% endif %}</div>
+    <div class="stat-value">{% if avg %}{{ avg }}<span style="font-size:1rem;"> 分</span>{% else %}—{% endif %}</div>
     <div class="stat-label">批改平均分</div>
   </div>
 </div>
 
 <!-- 筛选 -->
 <div class="card mb-4">
-  <div class="flex gap-2" style="flex-wrap: wrap; align-items: center; row-gap: 10px;">
-    <div class="flex gap-2" style="background: var(--c-surface-2); padding: 4px; border-radius: 10px;">
+  <div class="ws-filters">
+    <div class="ws-filter-group">
       <a href="?type={{ current_type }}&source={{ current_source }}"
-         class="btn btn-sm {% if not current_exam_type %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">全部</a>
+         class="{% if not current_exam_type %}active{% endif %}">全部</a>
       <a href="?exam_type=english1&type={{ current_type }}&source={{ current_source }}"
-         class="btn btn-sm {% if current_exam_type == 'english1' %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">英语一</a>
+         class="{% if current_exam_type == 'english1' %}active{% endif %}">英语一</a>
       <a href="?exam_type=english2&type={{ current_type }}&source={{ current_source }}"
-         class="btn btn-sm {% if current_exam_type == 'english2' %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">英语二</a>
+         class="{% if current_exam_type == 'english2' %}active{% endif %}">英语二</a>
     </div>
-    <div class="flex gap-2" style="background: var(--c-surface-2); padding: 4px; border-radius: 10px;">
+    <div class="ws-filter-group">
       {% for t in type_options %}
       <a href="?exam_type={{ current_exam_type }}&type={{ t.0 }}&source={{ current_source }}"
-         class="btn btn-sm {% if current_type == t.0 %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">{{ t.1 }}</a>
+         class="{% if current_type == t.0 %}active{% endif %}">{{ t.1 }}</a>
       {% endfor %}
     </div>
-    <div class="flex gap-2" style="background: var(--c-surface-2); padding: 4px; border-radius: 10px; margin-left: auto;">
+    <div class="ws-filter-group ws-filter-end">
       <a href="?exam_type={{ current_exam_type }}&type={{ current_type }}&source="
-         class="btn btn-sm {% if not current_source %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">全部来源</a>
+         class="{% if not current_source %}active{% endif %}">全部来源</a>
       <a href="?exam_type={{ current_exam_type }}&type={{ current_type }}&source=ai"
-         class="btn btn-sm {% if current_source == 'ai' %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">AI</a>
+         class="{% if current_source == 'ai' %}active{% endif %}">AI 代写</a>
       <a href="?exam_type={{ current_exam_type }}&type={{ current_type }}&source=manual"
-         class="btn btn-sm {% if current_source == 'manual' %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">手动</a>
+         class="{% if current_source == 'manual' %}active{% endif %}">手动 / 批改</a>
     </div>
   </div>
 </div>
@@ -59,54 +55,76 @@
 <div class="card">
   {% if practices %}
   <div class="table-wrap">
-    <table class="word-table">
+    <table class="word-table ws-rec-table">
       <thead>
-        <tr><th>时间</th><th>年份</th><th>科目</th><th>题型</th><th>来源</th><th>得分</th><th>操作</th></tr>
+        <tr>
+          <th style="width:112px;">时间</th>
+          <th>题目</th>
+          <th style="width:118px;">来源</th>
+          <th style="width:96px;">得分</th>
+          <th style="width:150px;">操作</th>
+        </tr>
       </thead>
       <tbody>
         {% for p in practices %}
         {% with s=p.get_score %}
         {% if p.question %}
-        <tr>
-          <td class="text-secondary text-sm">{{ p.created_at|date:"Y-m-d H:i" }}</td>
-          <td>{{ p.question.year }}</td>
-          <td>{{ p.question.get_exam_type_display }}</td>
-          <td>{{ p.question.get_question_type_display }}</td>
+        <tr class="ws-rec-row">
+          <td class="text-secondary text-xs">{{ p.created_at|date:"Y-m-d" }}<br>{{ p.created_at|date:"H:i" }}</td>
           <td>
-            {% if p.source == 'ai' %}<span class="badge badge-master">AI</span>
-            {% elif p.source == 'manual' %}<span class="badge badge-review">手动/批改</span>
-            {% else %}{{ p.source }}{% endif %}
+            <div class="ws-rec-title">
+              <span class="date-chip ws-year-chip">{{ p.question.year }}</span>
+              {{ p.question.get_exam_type_display }} · {{ p.question.get_question_type_display }}
+            </div>
+            {% if p.question.genre %}<div class="ws-rec-sub">{{ p.question.genre }}</div>{% endif %}
           </td>
           <td>
-            {% if s.total %}<span class="text-accent" style="font-weight:600;">{{ s.total }} 分</span>
-            {% elif s.raw %}—{% else %}-{% endif %}
+            {% if p.source == 'ai' %}<span class="badge badge-review">AI 代写</span>
+            {% elif p.source == 'manual' %}<span class="badge badge-new">手动 / 批改</span>
+            {% else %}<span class="badge">{{ p.source }}</span>{% endif %}
           </td>
           <td>
-            <a href="{% url 'words:exam_write' p.question.id %}" class="btn btn-secondary btn-xs">重练</a>
-            <button class="btn btn-secondary btn-xs" onclick="viewDetail({{ p.id }})">详情</button>
+            {% if s.total %}
+            <span class="ws-score-chip ws-score-chip--{{ s|score_tone }}">
+              {{ s.total }}<small>/{{ s|score_max }}</small>
+            </span>
+            {% elif s.raw %}
+            <span class="ws-score-chip ws-score-chip--none">已批改</span>
+            {% else %}
+            <span class="ws-score-chip ws-score-chip--none">未批改</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="flex gap-2" style="flex-wrap: wrap;">
+              <a href="{% url 'words:exam_write' p.question.id %}" class="btn btn-secondary btn-xs">重练</a>
+              <button type="button" class="btn btn-secondary btn-xs ws-toggle-btn"
+                      onclick="viewDetail({{ p.id }}, this)" aria-expanded="false">
+                详情 <i class="ph ph-caret-down"></i>
+              </button>
+            </div>
           </td>
         </tr>
-        <tr id="detail-{{ p.id }}" style="display:none;">
-          <td colspan="7" style="padding: 0;">
-            <div style="padding: 16px 20px; background: var(--c-surface-2);">
-              <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <tr id="detail-{{ p.id }}" class="ws-detail-row" style="display:none;">
+          <td colspan="5" style="padding: 0;">
+            <div class="ws-detail">
+              <div class="ws-detail-grid">
                 <div>
-                  <div class="text-secondary text-sm" style="margin-bottom:6px;">{% if p.mode == 'translation' %}我的译文{% else %}我的作答{% endif %}</div>
+                  <div class="ws-detail-label">{% if p.mode == 'translation' %}我的译文{% else %}我的作答{% endif %}</div>
                   {% if p.user_input %}
-                  <pre style="white-space:pre-wrap; margin:0; font-family:inherit; font-size:var(--fs-sm);">{{ p.user_input }}</pre>
+                  <pre class="ws-pre">{{ p.user_input }}</pre>
                   {% else %}
                   <div class="text-secondary text-sm">（AI 代写模式，无手动输入）</div>
                   {% endif %}
                 </div>
                 <div>
-                  <div class="text-secondary text-sm" style="margin-bottom:6px;">AI 输出 / 批改</div>
-                  <pre style="white-space:pre-wrap; margin:0; font-family:inherit; font-size:var(--fs-sm); max-height:260px; overflow:auto;">{{ p.ai_output|truncatechars:1200 }}</pre>
+                  <div class="ws-detail-label">AI 输出 / 批改</div>
+                  <pre class="ws-pre ws-pre-scroll">{{ p.ai_output|truncatechars:1200 }}</pre>
                 </div>
               </div>
               {% if s.comments %}
-              <div class="mt-3" style="margin-top:12px;">
-                <div class="text-secondary text-sm" style="margin-bottom:6px;">综合评语</div>
-                <div style="font-size:var(--fs-sm);">{{ s.comments }}</div>
+              <div class="ws-section" style="margin-top:14px;">
+                <div class="ws-detail-label">综合评语</div>
+                <div style="font-size:var(--fs-sm); line-height:1.8;">{{ s.comments }}</div>
               </div>
               {% endif %}
             </div>
@@ -120,8 +138,9 @@
   </div>
   {% else %}
   <div class="empty-state">
+    <i class="ph ph-clock-counter-clockwise"></i>
     <div class="empty-state-title">暂无练习记录</div>
-    <div>去工坊开始一篇练习吧</div>
+    <div class="empty-state-hint">去工坊写一篇作文或翻译，记录会出现在这里</div>
   </div>
   {% endif %}
 </div>
@@ -129,9 +148,16 @@
 
 {% block extra_scripts %}
 <script>
-function viewDetail(id) {
+// 展开/收起某条记录的作答与批改详情
+function viewDetail(id, btn) {
   var tr = document.getElementById('detail-' + id);
-  if (tr) tr.style.display = tr.style.display === 'none' ? '' : 'none';
+  if (!tr) return;
+  var open = tr.style.display === 'none';
+  tr.style.display = open ? '' : 'none';
+  if (btn) {
+    btn.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
 }
 </script>
 {% endblock %}

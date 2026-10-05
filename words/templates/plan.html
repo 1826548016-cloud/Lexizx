@@ -18,7 +18,7 @@
 <div class="card plan-today-card" style="margin-bottom: 16px;">
   <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
     <div>
-      <span class="card-header" style="margin: 0;">📅 {{ plan_today.plan_name }}</span>
+      <span class="card-header" style="margin: 0;"><i class="ph ph-calendar-blank text-blue"></i> {{ plan_today.plan_name }}</span>
       {% if plan_today.days_left is not None %}
         <span class="badge badge-review" style="margin-left: 8px;">距目标 {{ plan_today.days_left }} 天</span>
       {% endif %}
@@ -46,7 +46,7 @@
       <a href="{% url 'words:learn_start' %}" class="btn btn-primary btn-sm" style="width: 100%;">继续背新词 →</a>
     </div>
     <div class="stat-card today-task-card">
-      <div class="stat-label">🔄 今日复习</div>
+      <div class="stat-label"><i class="ph ph-arrow-counter-clockwise"></i> 今日复习</div>
       <div class="stat-value" style="font-size: var(--font-xl);">
         {{ plan_today.today_review_done }} <span style="font-size: var(--fs-base); color: var(--c-text-3); font-weight: 400;">/ {{ plan_today.daily_review_target }}</span>
       </div>
@@ -59,7 +59,7 @@
 
   <!-- 本周学习日历 -->
   <div style="margin-top: 20px;">
-    <div class="text-sm" style="font-weight: 600; margin-bottom: 10px;">📌 本周学习</div>
+    <div class="subhead" style="margin-bottom: 10px;"><i class="ph ph-push-pin text-blue"></i> 本周学习</div>
     <div class="weekly-calendar">
       {% for day in plan_today.weekly %}
       <div class="weekday-cell weekday-{{ day.status }}">

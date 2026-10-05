@@ -10,7 +10,7 @@
 <!-- 页面头部 -->
 <div class="flex justify-between items-center" style="margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
   <div style="min-width: 0;">
-    <h3 style="margin: 0;"><i class="ph ph-sparkle" style="color: var(--c-green);"></i> AI 单词导入</h3>
+    <h3 style="margin: 0;"><i class="ph ph-sparkle text-green"></i> AI 单词导入</h3>
     <p class="text-sm text-secondary" style="margin: 4px 0 0;">支持 <strong>图片 / 纯文本 / 文件</strong> 三种方式识别单词。识别结果需依次通过 <strong>AI 复审、人工复审、随机抽审</strong> 三道校验，全部通过后才能导入，防止识别错误。</p>
   </div>
   <div class="flex gap-2">
@@ -23,7 +23,7 @@
 <div class="card hidden" id="aiDraftBar" style="margin-bottom: 16px; border-left: 3px solid var(--c-green);">
   <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 8px;">
     <div class="flex items-center" style="gap: 8px; min-width: 0;">
-      <i class="ph ph-clock-countdown" style="color: var(--c-green); font-size: 20px;"></i>
+      <i class="ph ph-clock-countdown text-green fs-20"></i>
       <div>
         <div style="font-weight: 600;">检测到上次未完成的导入草稿</div>
         <div class="text-sm text-secondary" id="aiDraftInfo"></div>
@@ -95,7 +95,7 @@
   </div>
 
   <div class="form-group" style="margin-top: 14px;">
-    <label class="form-label">选择模型 <a class="text-sm" onclick="openAddModel()" style="color: var(--c-green); margin-left: 4px; cursor: pointer;">添加模型 →</a></label>
+    <label class="form-label">选择模型 <a class="text-sm text-green" onclick="openAddModel()" style="margin-left: 4px; cursor: pointer;">添加模型 →</a></label>
     <div class="flex gap-2">
       <select id="aiModelSelect" class="form-input" onchange="onAIModelSelectChange()"></select>
       <button class="btn btn-secondary btn-sm" onclick="openAddModel()" style="white-space: nowrap;" title="直接在弹窗中填写 API 密钥并添加模型"><i class="ph ph-plus"></i> 添加模型</button>
@@ -203,7 +203,7 @@
 <div id="aiReviewModal" class="modal-overlay hidden" onclick="if (event.target === this) closeAIReviewModal()">
   <div class="modal" style="max-width: 560px;">
     <div class="flex justify-between items-center" style="margin-bottom: 12px;">
-      <h3 style="margin: 0; font-size: var(--fs-lg);" id="aiReviewModalTitle"><i class="ph ph-robot" style="color: var(--c-green);"></i> 复审核对</h3>
+      <h3 style="margin: 0; font-size: var(--fs-lg);" id="aiReviewModalTitle"><i class="ph ph-robot text-green"></i> 复审核对</h3>
       <button class="btn btn-ghost" onclick="closeAIReviewModal()" title="关闭"><i class="ph ph-x"></i></button>
     </div>
 
@@ -559,11 +559,11 @@
     var info = document.getElementById('aiModelInfo');
     if (!m) { info.innerHTML = ''; return; }
     var keyState = m.api_key
-      ? '<span style="color: var(--c-green);">已配置密钥</span>'
+      ? '<span class="text-green">已配置密钥</span>'
       : '<span style="color: var(--c-text-3);">无密钥</span>';
     var addr = m.endpoint || m.base_url || '未填写接口地址';
     info.innerHTML = visionTag(m) + ' ' + escapeHtml(addr) + ' · ' + keyState +
-      ' <a class="text-sm" href="' + AI_SETTINGS_URL + '" style="color: var(--c-green);">去设置管理 →</a>';
+      ' <a class="text-sm text-green" href="' + AI_SETTINGS_URL + '">去设置管理 →</a>';
   }
 
   // 模型管理已迁移至「设置 → AI 模型」，本页仅保留模型选择
@@ -687,7 +687,7 @@
 
     var btn = document.getElementById('aiRecognizeBtn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 识别中…';
+    btn.innerHTML = '<i class="ph ph-circle-notch spin"></i> 识别中…';
     clearAILog();
 
     try {
@@ -842,7 +842,7 @@
     var ready = aiReviewState.ai && aiReviewState.human && aiReviewState.sample;
     document.getElementById('aiImportBtn').disabled = !ready || aiWords.filter(function (w) { return w.checked; }).length === 0;
     document.getElementById('aiReviewNote').innerHTML = ready
-      ? '<span style="color: var(--c-green);"><i class="ph ph-check-circle"></i> 三级复审全部通过，可以导入</span>'
+      ? '<span class="text-green"><i class="ph ph-check-circle"></i> 三级复审全部通过，可以导入</span>'
       : '请依次完成「AI 复审 → 人工复审 → 随机抽审」后即可导入。识别结果表格可直接编辑，修改后请重新点击对应复审。';
   }
 
@@ -953,7 +953,7 @@
 
     var btn = document.getElementById('aiReviewAIBtn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> AI 复审中…';
+    btn.innerHTML = '<i class="ph ph-circle-notch spin"></i> AI 复审中…';
 
     clearAILog();
     var total = aiWords.length;
@@ -1045,11 +1045,11 @@
   // 展示 AI 复审修正报告
   function renderAIReviewReport(fixed) {
     var body = document.getElementById('aiReviewReportBody');
-    document.getElementById('aiReviewModalTitle').innerHTML = '<i class="ph ph-robot" style="color: var(--c-green);"></i> AI 复审结果';
+    document.getElementById('aiReviewModalTitle').innerHTML = '<i class="ph ph-robot text-green"></i> AI 复审结果';
     document.getElementById('aiReviewItemPane').classList.add('hidden');
     document.getElementById('aiReviewReportPane').classList.remove('hidden');
     if (!fixed.length) {
-      body.innerHTML = '<div style="color: var(--c-green); padding: 12px 0;"><i class="ph ph-check-circle"></i> AI 复核了全部 ' + aiReviewResult.length + ' 个单词，拼写与中文释义均正确，未发现需要修正的内容。</div>';
+      body.innerHTML = '<div class="text-green" style="padding: 12px 0;"><i class="ph ph-check-circle"></i> AI 复核了全部 ' + aiReviewResult.length + ' 个单词，拼写与中文释义均正确，未发现需要修正的内容。</div>';
       return;
     }
     body.innerHTML = '<div style="margin-bottom: 8px;">AI 共发现并<strong style="color: var(--c-red);">自动修正</strong>了 <strong style="color: var(--c-red);">' + fixed.length + '</strong> 处问题（对应表格已标红，请继续人工复审确认）：</div>' +
@@ -1068,7 +1068,7 @@
     aiReviewQueue = aiWords.map(function (_, i) { return i; });
     aiReviewCurrent = 0;
     currentReviewMode = 'human';
-    document.getElementById('aiReviewModalTitle').innerHTML = '<i class="ph ph-user-check" style="color: var(--c-green);"></i> 人工复审';
+    document.getElementById('aiReviewModalTitle').innerHTML = '<i class="ph ph-user-check text-green"></i> 人工复审';
     document.getElementById('aiReviewTypeHint').textContent = '逐条核对，可编辑修正或删除';
     document.getElementById('aiReviewItemPane').classList.remove('hidden');
     document.getElementById('aiReviewReportPane').classList.add('hidden');
@@ -1090,7 +1090,7 @@
     aiReviewQueue = idxs;
     aiReviewCurrent = 0;
     currentReviewMode = 'sample';
-    document.getElementById('aiReviewModalTitle').innerHTML = '<i class="ph ph-shuffle" style="color: var(--c-green);"></i> 随机抽审';
+    document.getElementById('aiReviewModalTitle').innerHTML = '<i class="ph ph-shuffle text-green"></i> 随机抽审';
     document.getElementById('aiReviewTypeHint').textContent = '随机抽查 ' + n + ' 个单词（' + aiWords.length + ' 个中的 ' + Math.round(n / aiWords.length * 100) + '%），全部确认即完成';
     document.getElementById('aiReviewItemPane').classList.remove('hidden');
     document.getElementById('aiReviewReportPane').classList.add('hidden');
@@ -1211,7 +1211,7 @@
 
     var btn = document.getElementById('aiImportBtn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite;"></i> 导入中…';
+    btn.innerHTML = '<i class="ph ph-circle-notch spin"></i> 导入中…';
     appendAILog('开始导入：共 ' + selected.length + ' 个单词 → 单元「' + (unit.name || unitNumber) + '」…');
     setAIProgress(0, 1, '正在导入…');
 

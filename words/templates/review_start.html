@@ -7,47 +7,19 @@
 
 {% block extra_head %}
 <style>
-  .learn-setup { max-width: 980px; margin: 0 auto; }
-  .setup-title { margin: 0 0 6px; font-size: var(--fs-xl); }
-  .setup-subtitle { margin: 0; color: var(--c-text-2); }
-  .custom-setup { padding: 18px; }
-  .setup-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-  .choice-group { padding: 13px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
-  .choice-group-title { display: block; margin-bottom: 9px; color: var(--c-text-2); font-size: var(--fs-sm); font-weight: 600; }
-  .choice-option { display: inline-flex; align-items: center; gap: 7px; margin-right: 14px; padding: 7px 0; cursor: pointer; }
-  .unit-picker { margin-top: 14px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
-  .unit-picker summary { padding: 12px 14px; cursor: pointer; list-style: none; }
-  .unit-picker summary::-webkit-details-marker { display: none; }
-  .unit-picker[open] summary { border-bottom: 1px solid var(--c-border); }
-  .unit-picker-content { padding: 14px; }
-  .unit-choice { padding: 12px !important; cursor: pointer; transition: transform .15s, border-color .15s; }
-  .unit-choice:hover { transform: translateY(-1px); border-color: var(--c-purple, #8a6f9e); }
-  .learn-start-submit { margin-top: 16px; display: flex; justify-content: flex-end; }
-  @media (max-width: 640px) { .setup-row { grid-template-columns: 1fr; } .learn-start-submit .btn { width: 100%; } }
 
   /* 快速开始 */
-  .quick-start-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-  .quick-card, button.quick-card { display: block; width: 100%; text-align: left; padding: 18px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-surface); text-decoration: none; color: inherit; font: inherit; transition: transform .15s, border-color .15s, box-shadow .15s; cursor: pointer; }
-  .quick-card:hover { transform: translateY(-2px); border-color: var(--c-purple, #8a6f9e); box-shadow: var(--shadow-md); }
-  button.quick-card:hover { background: var(--c-surface); }
-  .preset-card { position: relative; }
-  .preset-delete { opacity: 0.7; padding: 4px 6px; }
-  .preset-delete:hover { opacity: 1; }
-  .quick-icon { font-size: 1.75rem; color: var(--c-purple, #8a6f9e); margin-bottom: 8px; }
-  .quick-title { font-weight: 700; font-size: var(--fs-lg); margin-bottom: 4px; }
-  .quick-desc { font-size: var(--fs-sm); color: var(--c-text-2); line-height: 1.5; }
+
   .custom-setup-details { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-surface); }
   .custom-setup-details > summary { padding: 14px 18px; cursor: pointer; list-style: none; font-weight: 600; margin-bottom: 0; }
   .custom-setup-details > summary::-webkit-details-marker { display: none; }
   .custom-setup-details > summary::after { content: '+'; float: right; color: var(--c-text-2); }
   .custom-setup-details[open] > summary::after { content: '−'; }
-  .custom-setup-details > .custom-setup { border: none; border-radius: 0; }
-  @media (max-width: 640px) { .quick-start-grid { grid-template-columns: 1fr; } }
-</style>
+  .custom-setup-details > .custom-setup { border: none; border-radius: 0; }</style>
 {% endblock %}
 
 {% block content %}
-<form id="reviewForm" class="learn-setup" action="{% url 'words:review_session' %}" method="get">
+<form id="reviewForm" class="learn-setup setup-scope--review" action="{% url 'words:review_session' %}" method="get">
   {% csrf_token %}
 
   <h2 class="setup-title">开始复习</h2>

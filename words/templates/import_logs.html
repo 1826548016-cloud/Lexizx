@@ -47,17 +47,17 @@
           </td>
           <td style="padding: 10px 16px; white-space: nowrap;">
             {% if log.source == 'image' %}
-<span class="badge" style="background: rgba(138,111,158,0.1); color: #8a6f9e;"><i class="ph ph-image"></i> 图片识别</span>
+<span class="badge" style="background: var(--c-purple-bg); color: var(--c-purple);"><i class="ph ph-image"></i> 图片识别</span>
             {% elif log.source == 'text' %}
-<span class="badge" style="background: rgba(63,92,69,0.1); color: #3f5c45;"><i class="ph ph-text-align-left"></i> 纯文本</span>
+<span class="badge" style="background: var(--c-green-bg); color: var(--c-green);"><i class="ph ph-text-align-left"></i> 纯文本</span>
             {% elif log.source == 'file' %}
-<span class="badge" style="background: rgba(79,111,147,0.1); color: #4f6f93;"><i class="ph ph-file-text"></i> 文件导入</span>
+<span class="badge" style="background: var(--c-blue-bg); color: var(--c-blue);"><i class="ph ph-file-text"></i> 文件导入</span>
             {% elif log.source == 'manual' %}
-<span class="badge" style="background: rgba(169,123,36,0.1); color: #a97b24;"><i class="ph ph-pencil-simple"></i> 手动添加</span>
+<span class="badge" style="background: var(--c-amber-bg); color: var(--c-amber);"><i class="ph ph-pencil-simple"></i> 手动添加</span>
             {% elif log.source == 'command' %}
-<span class="badge" style="background: rgba(122,112,93,0.1); color: #7a705d;"><i class="ph ph-terminal"></i> 命令行</span>
+<span class="badge" style="background: var(--c-surface-2); color: var(--c-text-2);"><i class="ph ph-terminal"></i> 命令行</span>
             {% else %}
-<span class="badge" style="background: rgba(122,112,93,0.1); color: #7a705d;">{{ log.source }}</span>
+<span class="badge" style="background: var(--c-surface-2); color: var(--c-text-2);">{{ log.source }}</span>
             {% endif %}
           </td>
           <td style="padding: 10px 16px; white-space: nowrap; font-size: 0.875rem;">

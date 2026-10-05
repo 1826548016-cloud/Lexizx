@@ -8,25 +8,24 @@
 {% block content %}
 <form style="display:none;">{% csrf_token %}</form>
 
+{% include 'partials/exam_nav.html' with ws_active='questions' %}
+
 <!-- 筛选栏 -->
 <div class="card mb-4">
-  <div class="flex gap-2" style="flex-wrap: wrap; align-items: center; row-gap: 10px;">
-    <div class="flex gap-2" style="background: var(--c-surface-2); padding: 4px; border-radius: 10px;">
+  <div class="ws-filters">
+    <div class="ws-filter-group">
       <a href="?exam_type=english1&type={{ current_type }}&year={{ current_year }}"
-         class="btn btn-sm {% if current_exam_type == 'english1' %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">英语一</a>
+         class="{% if current_exam_type == 'english1' %}active{% endif %}">英语一</a>
       <a href="?exam_type=english2&type={{ current_type }}&year={{ current_year }}"
-         class="btn btn-sm {% if current_exam_type == 'english2' %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">英语二</a>
+         class="{% if current_exam_type == 'english2' %}active{% endif %}">英语二</a>
     </div>
-    <div class="flex gap-2" style="background: var(--c-surface-2); padding: 4px; border-radius: 10px;">
+    <div class="ws-filter-group">
       {% for t in type_options %}
       <a href="?exam_type={{ current_exam_type }}&type={{ t.0 }}&year={{ current_year }}"
-         class="btn btn-sm {% if current_type == t.0 %}btn-primary{% else %}btn-secondary{% endif %}"
-         style="border:none; box-shadow:none;">{{ t.1 }}</a>
+         class="{% if current_type == t.0 %}active{% endif %}">{{ t.1 }}</a>
       {% endfor %}
     </div>
-    <select class="form-input" style="width:130px; margin-left: auto;"
+    <select class="form-input ws-filter-end" style="width:130px;"
             onchange="location.href='?exam_type={{ current_exam_type }}&type={{ current_type }}&year=' + this.value">
       <option value="">全部年份</option>
       {% for y in years %}
@@ -40,18 +39,18 @@
 <!-- 翻译题分组视图 -->
 <div class="grid-2">
   {% for q in questions %}
-  <div class="card mb-4">
-    <div class="flex justify-between items-center mb-2">
-      <div>
+  <div class="card mb-4 ws-qcard">
+    <div class="flex justify-between items-center">
+      <div class="ws-qcard-tags">
         <span class="btn btn-xs btn-secondary">{{ q.year }} 年</span>
         <span class="btn btn-xs btn-secondary">{{ q.exam_type }}</span>
         <span class="text-secondary text-sm">{{ q.genre }}</span>
       </div>
       <a href="{% url 'words:exam_write' q.id %}" class="btn btn-primary btn-sm">开始练习 <i class="ph ph-arrow-right"></i></a>
     </div>
-    <div class="word-text" style="font-size:1.02rem;">{{ q.title }}</div>
-    <div class="text-secondary text-sm mt-2" style="white-space: pre-line;">{{ q.content|slice:":280" }}{% if q.content|length > 280 %}…{% endif %}</div>
-    {% if q.tags %}<div class="flex gap-2 mt-2">{% for t in q.tags %}<span class="date-chip">{{ t }}</span>{% endfor %}</div>{% endif %}
+    <div class="ws-qcard-title">{{ q.title }}</div>
+    <div class="ws-qcard-excerpt">{{ q.content|slice:":280" }}{% if q.content|length > 280 %}…{% endif %}</div>
+    {% if q.tags %}<div class="ws-qcard-tags">{% for t in q.tags %}<span class="date-chip">{{ t }}</span>{% endfor %}</div>{% endif %}
   </div>
   {% endfor %}
 </div>
@@ -71,9 +70,8 @@
           <td>{{ q.question_type }}</td>
           <td>{{ q.genre|default:"-" }}</td>
           <td>
-            <div style="max-width:360px;">
-              <strong>{{ q.title }}</strong>
-              <div class="text-secondary text-sm" style="white-space: normal;">{{ q.content|slice:":90" }}{% if q.content|length > 90 %}…{% endif %}</div>
+            <div class="ws-cell-title">{{ q.title }}
+              <div class="ws-cell-excerpt">{{ q.content|slice:":90" }}{% if q.content|length > 90 %}…{% endif %}</div>
             </div>
           </td>
           <td>
@@ -93,8 +91,4 @@
   </div>
 </div>
 {% endif %}
-
-<div class="mt-3">
-  <a href="{% url 'words:exam_workshop' %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回工坊首页</a>
-</div>
 {% endblock %}

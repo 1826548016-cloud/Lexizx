@@ -239,6 +239,7 @@ function formatStudyDuration(seconds) {
 
 // ===== Trend Chart (Stacked Smooth Line + Duration) =====
 function renderTrendChart(days) {
+  var C = themeColors();   // 图表配色跟随当前主题
   var dom = document.getElementById('trendChart');
   if (trendChart) trendChart.dispose();
   trendChart = echarts.init(dom);
@@ -267,7 +268,7 @@ function renderTrendChart(days) {
             html += p.marker + ' ' + p.seriesName + ': ' + val + '<br/>';
           }
         });
-  html += '<hr style="margin:4px 0;border:none;border-top:1px solid #e3d8c1"/>';
+  html += '<hr style="margin:4px 0;border:none;border-top:1px solid ' + C.borderLight + '"/>';
         html += '<strong>单词总计: ' + wordTotal + '</strong>';
         return html;
       }
@@ -300,9 +301,9 @@ function renderTrendChart(days) {
         type: 'line',
         stack: 'total',
         smooth: true,
-          lineStyle: { color: '#3f5c45', width: 2 },
-          itemStyle: { color: '#3f5c45' },
-          areaStyle: { color: 'rgba(63,92,69,0.2)' },
+          lineStyle: { color: C.green, width: 2 },
+          itemStyle: { color: C.green },
+          areaStyle: { color: 'rgba(' + C.greenRgb + ',0.2)' },
         symbolSize: 6,
         data: newData
       },
@@ -311,9 +312,9 @@ function renderTrendChart(days) {
         type: 'line',
         stack: 'total',
         smooth: true,
-          lineStyle: { color: '#8a6f9e', width: 2 },
-          itemStyle: { color: '#8a6f9e' },
-          areaStyle: { color: 'rgba(138,111,158,0.2)' },
+          lineStyle: { color: C.purple, width: 2 },
+          itemStyle: { color: C.purple },
+          areaStyle: { color: 'rgba(' + C.purpleRgb + ',0.2)' },
         symbolSize: 6,
         data: reviewData
       },
@@ -322,8 +323,8 @@ function renderTrendChart(days) {
         type: 'line',
         smooth: true,
         yAxisIndex: 1,
-        lineStyle: { color: '#d97706', width: 2, type: 'dashed' },
-        itemStyle: { color: '#d97706' },
+        lineStyle: { color: C.amber, width: 2, type: 'dashed' },
+        itemStyle: { color: C.amber },
         symbolSize: 5,
         data: durationData
       }
@@ -335,12 +336,13 @@ function renderTrendChart(days) {
 
 // ===== Category Pie Chart (ECharts) =====
 function renderCategoryChart(catProgress) {
+  var C = themeColors();   // 图表配色跟随当前主题
   var dom = document.getElementById('categoryChart');
   if (categoryChart) categoryChart.dispose();
   categoryChart = echarts.init(dom);
 
   var pieData = [];
-  var colors = ['#3f5c45', '#4f6f93', '#a97b24'];
+  var colors = [C.green, C.blue, C.amber];
   var i = 0;
   for (var code in catProgress) {
     var c = catProgress[code];
@@ -374,13 +376,14 @@ function renderCategoryChart(catProgress) {
 
 // ===== Level Distribution Bar Chart (ECharts) =====
 function renderLevelChart(levelDist) {
+  var C = themeColors();   // 图表配色跟随当前主题
   var dom = document.getElementById('levelChart');
   if (levelChart) levelChart.dispose();
   levelChart = echarts.init(dom);
 
   var labels = levelDist.map(function (d) { return d.label; });
   var data = levelDist.map(function (d) { return d.count; });
-  var colors = ['#a89d87', '#d4a64f', '#4f6f93', '#3f5c45'];
+  var colors = [C.text3, C.amber, C.blue, C.green];
 
   levelChart.setOption({
     tooltip: { trigger: 'axis' },
@@ -396,7 +399,7 @@ function renderLevelChart(levelDist) {
     series: [{
       type: 'bar',
       data: data.map(function(v, i) {
-    return { value: v, itemStyle: { color: colors[i] || '#a89d87', borderRadius: [4, 4, 0, 0] } };
+    return { value: v, itemStyle: { color: colors[i] || C.text3, borderRadius: [4, 4, 0, 0] } };
       }),
       barWidth: '50%'
     }]

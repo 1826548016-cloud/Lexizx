@@ -6,35 +6,7 @@
 
 {% block extra_head %}
 <style>
-  .history-wrap { max-width: 900px; margin: 0 auto; }
-  .stat-value-sm { font-size: var(--font-2xl); font-weight: 700; }
-  .filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .filter-bar select, .filter-bar .btn { margin: 0; }
-  .trend-chart { display: flex; align-items: flex-end; gap: 3px; height: 130px; padding: 10px 4px 0; }
-  .trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; min-width: 0; }
-  .trend-bar-wrap { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
-  .trend-bar { width: 60%; border-radius: 3px 3px 0 0; background: var(--c-purple, #8a6f9e); opacity: .85; min-height: 2px; transition: opacity .15s; }
-  .trend-bar:hover { opacity: 1; }
-  .trend-bar.zero { background: var(--c-border); opacity: .5; }
-  .trend-num { font-size: var(--fs-xs); color: var(--c-text-2); }
-  .trend-label { font-size: var(--fs-xs); color: var(--c-text-3); }
-  .day-group { margin-bottom: 14px; }
-  .day-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; background: var(--c-surface-2); border-radius: var(--radius-sm); margin-bottom: 8px; flex-wrap: wrap; gap: 6px; }
-  .record-row { display: flex; align-items: center; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--c-border); flex-wrap: wrap; }
-  .record-row:last-child { border-bottom: none; }
-  .record-time { font-size: var(--fs-xs); color: var(--c-text-3); min-width: 46px; }
-  .record-word { font-weight: 600; min-width: 110px; }
-  .record-word a { color: var(--c-text); text-decoration: none; }
-  .record-word a:hover { color: var(--c-purple, #8a6f9e); }
-  .record-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-  .tag { font-size: var(--fs-xs); padding: 2px 9px; border-radius: 99px; }
-  .tag-ok { background: var(--c-green-bg); color: var(--c-green); }
-  .tag-bad { background: var(--c-red-bg); color: var(--c-red); }
-  .tag-skip { background: var(--c-surface-2); color: var(--c-text-2); }
-  .tag-neutral { background: var(--c-amber-bg); color: var(--c-amber); }
-  .pagination { display: flex; justify-content: center; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
-  .pagination .page-link { padding: 6px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); color: var(--c-text-2); text-decoration: none; }
-  .pagination .page-link.active { background: var(--c-purple, #8a6f9e); color: #fff; border-color: var(--c-purple, #8a6f9e); }
+                                                          
 </style>
 {% endblock %}
 
@@ -160,10 +132,11 @@
       {% endif %}
     </div>
   {% else %}
-  <div class="card text-center" style="padding: 48px 24px;">
-    <div style="font-size: 3rem; margin-bottom: 16px;">🗒️</div>
-    <div style="font-size: var(--font-xl); font-weight: 600; margin-bottom: 8px;">还没有背词记录</div>
-    <p class="text-secondary">去背诵或复习一些单词吧，每次 会/不会、拼写/释义检测都会被记录在这里。</p>
+  <div class="card empty-state">
+      <i class="ph ph-note-pencil"></i>
+      <div class="empty-state-title">还没有背词记录</div>
+      <div class="empty-state-hint">去背诵或复习一些单词吧，每次 会/不会、拼写/释义检测都会被记录在这里。</div>
+    
     <a href="{% url 'words:learn_start' %}" class="btn btn-primary" style="margin-top: 8px;"><i class="ph ph-play"></i> 开始背诵</a>
   </div>
   {% endif %}
