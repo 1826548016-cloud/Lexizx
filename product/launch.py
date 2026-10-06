@@ -308,7 +308,9 @@ def main_gui():
 
     threading.Thread(target=boot, daemon=True).start()
     # webview.start() 阻塞到窗口关闭；关窗即退出整个进程
-    webview.start()
+    # private_mode=False + storage_path：让 WebView2 的 cookie / localStorage / IndexedDB
+    # 持久化到 data/webview2，否则每次关闭窗口都会丢失会话与本地缓存（壁纸、考试进度等）
+    webview.start(private_mode=False, storage_path=str(DATA_DIR / 'webview2'))
     os._exit(0)
 
 
