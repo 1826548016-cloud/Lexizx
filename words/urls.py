@@ -15,7 +15,6 @@ urlpatterns = [
     path('review/', views.review_start, name='review_start'),
     path('review/session/', views.review_session, name='review_session'),
     path('stats/', views.statistics, name='statistics'),
-    path('history/', views.history, name='history'),
     path('plan/', views.study_plan, name='study_plan'),
     path('plan/create/', views.plan_create, name='plan_create'),
     path('settings/', views.settings_page, name='settings_page'),

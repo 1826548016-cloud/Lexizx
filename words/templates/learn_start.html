@@ -27,14 +27,14 @@
   <div class="card plan-quick-start today-mission" style="margin-bottom: 20px;">
     <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 16px;">
       <div>
-        <div style="font-weight: 700; font-size: var(--fs-lg); margin-bottom: 4px;"><i class="ph ph-sun-horizon"></i> 今日任务</div>
-        <div class="text-sm text-secondary">
-          按计划「{{ plan_today.plan_name }}」今日需背
-          <strong>{{ plan_today.daily_new_target }}</strong> 新词 + 复习 <strong>{{ plan_today.daily_review_target }}</strong> 词
-          {% if plan_today.days_left is not None %}· 距目标 {{ plan_today.days_left }} 天{% endif %}
+        <div class="mission-title">
+          <i class="ph ph-sun-horizon"></i> 今日任务
+          <span class="mission-plan">计划「{{ plan_today.plan_name }}」</span>
         </div>
-        <div class="text-sm" style="margin-top: 4px; color: var(--c-text-3);">
-          今日已学新词 {{ plan_today.today_new_done }} / {{ plan_today.daily_new_target }}，复习 {{ plan_today.today_review_done }} / {{ plan_today.daily_review_target }}
+        <div class="mission-chips">
+          <span class="mission-chip">新学 <strong>{{ plan_today.today_new_done }}</strong>/{{ plan_today.daily_new_target }}</span>
+          <span class="mission-chip">复习 <strong>{{ plan_today.today_review_done }}</strong>/{{ plan_today.daily_review_target }}</span>
+          {% if plan_today.days_left is not None %}<span class="mission-chip"><i class="ph ph-timer"></i> 距目标 {{ plan_today.days_left }} 天</span>{% endif %}
         </div>
       </div>
       <div class="flex gap-2">
@@ -85,15 +85,13 @@
       </a>
       {% for preset in presets %}
       <div class="quick-card preset-card" data-url="{% url 'words:learn_session' %}?scope={{ preset.params.scope|default:'unknown' }}&mode={{ preset.params.mode|default:'sequential' }}&batch={{ preset.params.batch|default:batch_size }}&check={{ preset.params.check|default:'none' }}{% if preset.params.check == 'gates' %}&repeats={{ preset.params.repeats|default:3 }}&interleave={{ preset.params.interleave|default:1 }}{% endif %}{% if preset.params.count %}&count={{ preset.params.count }}{% endif %}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
-        <div class="flex justify-between items-start">
-          <div class="quick-icon"><i class="ph ph-lightning"></i></div>
-          <div class="flex gap-1">
-            <button type="button" class="btn btn-ghost btn-sm preset-edit" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="编辑（载入到配置面板修改）" onclick="event.stopPropagation(); editPreset(this)"><i class="ph ph-note-pencil"></i></button>
-            <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
-          </div>
-        </div>
+        <div class="quick-icon"><i class="ph ph-lightning"></i></div>
         <div class="quick-title">{{ preset.name }}</div>
         <div class="quick-desc">{{ preset.params.scope|default:'未掌握' }} · {{ preset.params.mode|default:'顺序' }} · {{ preset.params.check|default:'纯背诵' }}</div>
+        <div class="preset-actions">
+          <button type="button" class="btn btn-ghost btn-sm preset-edit" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="编辑（载入到配置面板修改）" onclick="event.stopPropagation(); editPreset(this)"><i class="ph ph-note-pencil"></i></button>
+          <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
+        </div>
       </div>
       {% endfor %}
     </div>

@@ -10,96 +10,105 @@
 
 <!-- ========== 阶段一：考试配置 ========== -->
 <div id="examConfig" class="exam-phase">
-  <div class="card mb-4">
-    <div class="card-header">考试范围</div>
-    <div class="flex flex-col gap-2">
-      <label class="flex items-center gap-2"><input type="radio" name="examScope" value="all" checked><span>全部单词</span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examScope" value="unknown"><span>不会的词 <span class="text-secondary text-sm">（未掌握）</span></span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examScope" value="mastered"><span>会的词 <span class="text-secondary text-sm">（已掌握）</span></span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examScope" value="favorites"><span>收藏的单词</span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examScope" value="errors"><span>易错词 <span class="text-secondary text-sm">（曾经答错过的）</span></span></label>
-    </div>
-  </div>
+  <div class="exam-setup">
+    <h2 class="setup-title setup-title--exam">开始模拟考试</h2>
+    <p class="setup-subtitle exam-setup-sub">选择题库范围、题型方向与题目数量，系统将随机组卷。</p>
 
-  <div class="card mb-4">
-    <div class="card-header">词汇类别</div>
-    <div class="flex flex-col gap-2">
-      <label class="flex items-center gap-2"><input type="radio" name="examCategory" value="" checked><span>全部类别</span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examCategory" value="required"><span>必考词</span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examCategory" value="basic"><span>基础词</span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examCategory" value="advanced"><span>超纲词</span></label>
-    </div>
-  </div>
-
-  <div class="card mb-4">
-    <div class="card-header">题型方向</div>
-    <div class="flex flex-col gap-2">
-      <label class="flex items-center gap-2"><input type="radio" name="examDirection" value="en2zh" checked><span>英译中 <span class="text-secondary text-sm">（看单词选中文释义）</span></span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examDirection" value="zh2en"><span>中译英 <span class="text-secondary text-sm">（看中文释义选单词）</span></span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examDirection" value="spelling"><span>拼写默写 <span class="text-secondary text-sm">（看中文写英文）</span></span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examDirection" value="meaning"><span>释义默写 <span class="text-secondary text-sm">（看英文写中文，AI 判定）</span></span></label>
-    </div>
-  </div>
-
-  <div class="card mb-4">
-    <div class="flex justify-between items-center mb-4">
-      <div class="card-header">单元范围</div>
-      <div class="flex gap-2">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="examSelectAllUnits()">全选</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="examInvertUnits()">反选</button>
-      </div>
-    </div>
-    <div class="flex flex-col gap-2 mb-4">
-      <label class="flex items-center gap-2"><input type="radio" name="examUnitMode" value="all" checked onchange="onExamUnitMode()"><span>全部单元</span></label>
-      <label class="flex items-center gap-2"><input type="radio" name="examUnitMode" value="select" onchange="onExamUnitMode()"><span>指定单元</span></label>
-    </div>
-    <div id="examUnitGrid" class="card-grid hidden">
-      {% for unit in units %}
-      <label class="card">
-        <div class="flex justify-between items-center mb-2">
-          <div>
-            <div>Unit {{ unit.number }} - {{ unit.name }}</div>
-            <div class="text-sm text-secondary">{{ unit.word_count }} 词</div>
-          </div>
-          <input type="checkbox" name="examUnits" value="{{ unit.number }}" class="exam-unit-checkbox">
+    <div class="exam-config-grid">
+      <div class="card exam-card exam-card--scope">
+        <div class="card-header exam-section-title"><i class="ph ph-target"></i>考试范围</div>
+        <div class="exam-choice-grid exam-choice-grid--1">
+          <label class="exam-choice"><input type="radio" name="examScope" value="all" checked><span>全部单词</span></label>
+          <label class="exam-choice"><input type="radio" name="examScope" value="unknown"><span>不会的词<span class="text-secondary text-sm">未掌握的词</span></span></label>
+          <label class="exam-choice"><input type="radio" name="examScope" value="mastered"><span>会的词<span class="text-secondary text-sm">已掌握的词</span></span></label>
+          <label class="exam-choice"><input type="radio" name="examScope" value="favorites"><span>收藏的单词</span></label>
+          <label class="exam-choice"><input type="radio" name="examScope" value="errors"><span>易错词<span class="text-secondary text-sm">曾经答错过的</span></span></label>
         </div>
-      </label>
-      {% endfor %}
-    </div>
-    <div id="examUnitHint" class="mt-2 text-secondary text-sm" style="display:none;">请至少选择一个单元</div>
-  </div>
-
-  <div class="card mb-4">
-    <div class="card-header">题目数量</div>
-    <div class="flex items-center gap-3">
-      <input type="number" id="examCount" class="form-input" style="width:120px;" min="1" max="200" value="20">
-      <div class="flex gap-2">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="setExamCount(10)">10</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="setExamCount(20)">20</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="setExamCount(30)">30</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="setExamCount(50)">50</button>
       </div>
-      <span class="text-secondary text-sm">道题</span>
-    </div>
-  </div>
 
-  <button type="button" class="btn btn-primary btn-lg w-full" onclick="startExam()">
-    <i class="ph ph-note-pencil"></i> 开始考试
-  </button>
+      <div class="card exam-card">
+        <div class="card-header exam-section-title"><i class="ph ph-tag"></i>词汇类别</div>
+        <div class="exam-choice-grid">
+          <label class="exam-choice"><input type="radio" name="examCategory" value="" checked><span>全部类别</span></label>
+          <label class="exam-choice"><input type="radio" name="examCategory" value="required"><span>必考词</span></label>
+          <label class="exam-choice"><input type="radio" name="examCategory" value="basic"><span>基础词</span></label>
+          <label class="exam-choice"><input type="radio" name="examCategory" value="advanced"><span>超纲词</span></label>
+        </div>
+      </div>
+
+      <div class="card exam-card">
+        <div class="card-header exam-section-title"><i class="ph ph-list-checks"></i>题型方向</div>
+        <div class="exam-choice-grid">
+          <label class="exam-choice"><input type="radio" name="examDirection" value="en2zh" checked><span>英译中<span class="text-secondary text-sm">看单词选中文释义</span></span></label>
+          <label class="exam-choice"><input type="radio" name="examDirection" value="zh2en"><span>中译英<span class="text-secondary text-sm">看中文释义选单词</span></span></label>
+          <label class="exam-choice"><input type="radio" name="examDirection" value="spelling"><span>拼写默写<span class="text-secondary text-sm">看中文写英文</span></span></label>
+          <label class="exam-choice"><input type="radio" name="examDirection" value="meaning"><span>释义默写<span class="text-secondary text-sm">看英文写中文 · AI 判定</span></span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card exam-card">
+      <div class="flex justify-between items-center exam-card-head">
+        <div class="card-header exam-section-title"><i class="ph ph-books"></i>单元范围</div>
+        <div class="flex gap-2">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="examSelectAllUnits()">全选</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="examInvertUnits()">反选</button>
+        </div>
+      </div>
+      <div class="exam-choice-grid exam-choice-grid--2col">
+        <label class="exam-choice"><input type="radio" name="examUnitMode" value="all" checked onchange="onExamUnitMode()"><span>全部单元</span></label>
+        <label class="exam-choice"><input type="radio" name="examUnitMode" value="select" onchange="onExamUnitMode()"><span>指定单元</span></label>
+      </div>
+      <div id="examUnitGrid" class="card-grid exam-unit-grid hidden">
+        {% for unit in units %}
+        <label class="card exam-unit-card">
+          <div class="flex justify-between items-center">
+            <div>
+              <div>Unit {{ unit.number }} - {{ unit.name }}</div>
+              <div class="text-sm text-secondary">{{ unit.word_count }} 词</div>
+            </div>
+            <input type="checkbox" name="examUnits" value="{{ unit.number }}" class="exam-unit-checkbox">
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+      <div id="examUnitHint" class="exam-unit-hint" style="display:none;">请至少选择一个单元</div>
+    </div>
+
+    <div class="card exam-card">
+      <div class="card-header exam-section-title"><i class="ph ph-hash"></i>题目数量</div>
+      <div class="exam-count-row">
+        <div class="exam-count-field">
+          <input type="number" id="examCount" class="form-input" min="1" max="200" value="20">
+          <span class="exam-count-suffix">道题</span>
+        </div>
+        <div class="exam-count-chips">
+          <button type="button" class="exam-count-chip" data-n="10" onclick="setExamCount(10)">10</button>
+          <button type="button" class="exam-count-chip" data-n="20" onclick="setExamCount(20)">20</button>
+          <button type="button" class="exam-count-chip" data-n="30" onclick="setExamCount(30)">30</button>
+          <button type="button" class="exam-count-chip" data-n="50" onclick="setExamCount(50)">50</button>
+        </div>
+      </div>
+    </div>
+
+    <button type="button" class="btn btn-primary btn-lg exam-start-btn" onclick="startExam()">
+      <i class="ph ph-note-pencil"></i> 开始考试
+    </button>
+  </div>
 </div>
 
 <!-- ========== 阶段二：答题 ========== -->
 <div id="examAnswer" class="exam-phase hidden">
   <div class="card mb-4">
     <div class="flex justify-between items-center">
-      <div class="text-lg font-bold">第 <span id="examQIndex">1</span> / <span id="examQTotal">0</span> 题</div>
-      <div class="flex items-center gap-4">
-        <span id="examTimer" class="font-bold text-accent" style="font-family:monospace;font-size:1.15rem;">00:00</span>
+      <div class="exam-qpos">第 <span id="examQIndex">1</span> / <span id="examQTotal">0</span> 题</div>
+      <div class="flex items-center gap-3">
+        <span class="exam-timer-pill"><i class="ph ph-timer"></i><span id="examTimer">00:00</span></span>
         <button type="button" class="btn btn-danger btn-sm" onclick="submitExam()">交卷</button>
       </div>
     </div>
     <div class="progress-bar mt-2">
-      <div class="progress-bar-fill" id="examProgress" style="width:0%"></div>
+      <div class="progress-bar-fill exam-progress" id="examProgress" style="width:0%"></div>
     </div>
   </div>
 
@@ -174,7 +183,16 @@ const examUnitWordCounts = {
   {% endfor %}
 };
 
-function setExamCount(n) { document.getElementById('examCount').value = n; }
+function setExamCount(n) {
+  document.getElementById('examCount').value = n;
+  syncExamCountChips();
+}
+function syncExamCountChips() {
+  const v = parseInt(document.getElementById('examCount').value, 10);
+  document.querySelectorAll('.exam-count-chip').forEach(function (b) {
+    b.classList.toggle('active', parseInt(b.dataset.n, 10) === v);
+  });
+}
 
 function onExamUnitMode() {
   const mode = document.querySelector('input[name=examUnitMode]:checked').value;
@@ -569,13 +587,16 @@ async function submitExam() {
 // ===== 成绩 =====
 function renderResult(res) {
   if (window.VocabStudyTimer) VocabStudyTimer.stop();
+  document.getElementById('examConfig').classList.add('hidden');
   document.getElementById('examAnswer').classList.add('hidden');
   document.getElementById('examResult').classList.remove('hidden');
 
   const rate = res.correct_rate;
+  const ringColor = rate >= 80 ? 'var(--c-green)' : rate >= 60 ? 'var(--c-amber)' : 'var(--c-red)';
   document.getElementById('examScoreNum').textContent = rate + '%';
+  document.getElementById('examScoreNum').style.color = ringColor;
   const ring = document.getElementById('examScoreRing');
-  ring.style.background = 'conic-gradient(var(--c-accent) ' + rate + '%, var(--c-border) 0)';
+  ring.style.background = 'conic-gradient(' + ringColor + ' ' + rate + '%, var(--c-border) 0)';
   document.getElementById('examCorrectCount').textContent = res.correct_count;
   document.getElementById('examWrongCount').textContent = res.wrong_count;
   document.getElementById('examTimeUsed').textContent = formatTime(res.duration);
@@ -739,6 +760,8 @@ function escapeHtml(s) {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
+  syncExamCountChips();
+  document.getElementById('examCount').addEventListener('input', syncExamCountChips);
   restoreExamState();
 });
 </script>

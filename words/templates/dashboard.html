@@ -4,10 +4,6 @@
 {% block title %}仪表盘 - 考研单词背诵系统{% endblock %}
 {% block page_title %}仪表盘{% endblock %}
 
-{% block extra_head %}
-<script src="{% static 'echarts.min.js' %}"></script>
-{% endblock %}
-
 {% block content %}
 {% csrf_token %}
 
@@ -84,9 +80,8 @@
 <div class="card" style="margin-bottom: 24px;">
   <div class="card-header"><i class="ph ph-lightning text-amber"></i> 快捷操作</div>
   <div class="flex gap-4" style="flex-wrap: wrap;">
-    <a href="{% url 'words:learn_start' %}" class="btn btn-primary"><i class="ph ph-target"></i> 开始背新词</a>
-    <a href="{% url 'words:review_session' %}" class="btn btn-primary"><i class="ph ph-arrows-clockwise"></i> 复习已学单词（随机）</a>
-    <a href="{% url 'words:history' %}" class="btn btn-secondary"><i class="ph ph-clock-counter-clockwise"></i> 背词记录</a>
+    <a href="{% url 'words:learn_start' %}" class="btn btn-primary"><i class="ph ph-target"></i> 开始背诵</a>
+    <a href="{% url 'words:review_start' %}" class="btn btn-secondary"><i class="ph ph-arrows-clockwise"></i> 去复习</a>
   </div>
 </div>
 
@@ -140,12 +135,6 @@
   <a href="{% url 'words:study_plan' %}" class="btn btn-primary btn-sm">去制定计划</a>
 </div>
 {% endif %}
-
-<!-- Weekly Trend Chart -->
-<div class="card" style="margin-bottom: 24px;">
-  <div class="card-header">本周学习趋势</div>
-  <div id="weeklyTrendChart" style="height: 280px;"></div>
-</div>
 
 <!-- 刷题打卡热力图 -->
 <div class="card" style="margin-bottom: 24px;">
@@ -213,51 +202,10 @@
     </span>
   </div>
 </div>
-
-<!-- Category progress -->
-<div class="card-grid">
-  {% for code, stat in category_stats.items %}
-  <div class="card stat-card">
-    <div class="card-header"><i class="ph ph-books text-faint"></i> {{ stat.label }}</div>
-    <div class="stat-value">{{ stat.mastered }} <span class="unit">/ {{ stat.total }}</span></div>
-    <div class="progress-bar" style="margin-top: 12px;">
-      <div class="progress-bar-fill" style="width: {% if stat.total > 0 %}{% widthratio stat.mastered stat.total 100 %}{% else %}0{% endif %}%;"></div>
-    </div>
-    <div class="stat-label" style="margin-top: 8px;">
-      掌握率 {% if stat.total > 0 %}{% widthratio stat.mastered stat.total 100 %}{% else %}0{% endif %}%
-    </div>
-  </div>
-  {% endfor %}
-</div>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
-  var weeklyChart = null;
-
-  // 当前主题配色：直接读 CSS 变量的计算值，自动跟随全部 6 套主题
-  // （原先按 dark/nightblue 写死两份色值，其余 4 套主题取不到正确配色）
-  function isDarkTheme() {
-    var t = document.documentElement.getAttribute('data-theme');
-    return t === 'dark' || t === 'nightblue';
-  }
-  function chartPalette() {
-    var c = themeColors();
-    return {
-      surface: c.surface,
-      border: c.border,
-      borderLight: c.borderLight,
-      text: c.text,
-      text2: c.text2,
-      text3: c.text3,
-      green: c.red,      // 保持既有命名：折线主色沿用强调红
-      greenRgb: c.redRgb,
-      purple: c.purple,
-      purpleRgb: c.purpleRgb,
-      amber: c.amber
-    };
-  }
-
   // Today's date in Chinese
   (function () {
     var options = { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' };
@@ -267,161 +215,6 @@
       year: 'numeric', month: 'long', day: 'numeric'
     });
   })();
-
-  // Load weekly trend chart
-  async function loadWeeklyTrend() {
-    try {
-      var res = await VOCAB_API.get('/api/stats/7/');
-      var days = res.days || [];
-      var labels = days.map(function(d) { return d.date; });
-      var newData = days.map(function(d) { return d.new_words; });
-      var reviewData = days.map(function(d) { return d.reviewed; });
-      var durationData = days.map(function(d) { return Math.round((d.duration || 0) / 60); }); // 秒→分钟
-
-      var dom = document.getElementById('weeklyTrendChart');
-      if (weeklyChart) weeklyChart.dispose();
-      weeklyChart = echarts.init(dom);
-      var P = chartPalette();
-
-      weeklyChart.setOption({
-        tooltip: {
-          trigger: 'axis',
-          backgroundColor: P.surface,
-          borderColor: P.border,
-          borderWidth: 1,
-          padding: [10, 14],
-          textStyle: { color: P.text, fontSize: 13 },
-          extraCssText: 'box-shadow: 0 6px 24px rgba(0,0,0,0.08); border-radius: 10px;',
-          axisPointer: {
-            type: 'line',
-            lineStyle: { color: P.border, width: 1 }
-          },
-          formatter: function (params) {
-            var date = params[0].axisValue;
-            var wordTotal = 0;
-            var html = '<strong>' + date + '</strong><br/>';
-            params.forEach(function (p) {
-              var val = p.value;
-              if (p.seriesName === '学习时长') {
-                var h = Math.floor(val / 60);
-                var m = val % 60;
-                var durStr = h > 0 ? h + '时' + m + '分' : m + '分';
-                html += p.marker + ' ' + p.seriesName + ': ' + durStr + '<br/>';
-              } else {
-                wordTotal += val;
-                html += p.marker + ' ' + p.seriesName + ': ' + val + '<br/>';
-              }
-            });
-            html += '<hr style="margin:4px 0;border:none;border-top:1px solid ' + P.border + '"/>';
-            html += '<strong>单词总计: ' + wordTotal + '</strong>';
-            return html;
-          }
-        },
-        legend: {
-          top: 0,
-          right: 0,
-          icon: 'circle',
-          itemWidth: 10,
-          itemHeight: 10,
-          itemGap: 20,
-          textStyle: { color: P.text2, fontSize: 13 }
-        },
-        grid: { left: 10, right: 10, top: 36, bottom: 8, containLabel: true },
-        xAxis: {
-          type: 'category',
-          data: labels,
-          boundaryGap: false,
-          axisLine: { lineStyle: { color: P.border } },
-          axisTick: { show: false },
-          axisLabel: {
-            color: P.text3,
-            fontSize: 12,
-            rotate: labels.length > 7 ? 45 : 0
-          }
-        },
-        yAxis: [
-          {
-            type: 'value',
-            name: '单词数',
-            nameTextStyle: { color: P.text3, fontSize: 11, padding: [0, 0, 0, 4] },
-            minInterval: 1,
-            axisLine: { show: false },
-            axisTick: { show: false },
-            axisLabel: { color: P.text3, fontSize: 12 },
-            splitLine: { lineStyle: { color: P.borderLight, type: 'dashed' } }
-          },
-          {
-            type: 'value',
-            name: '分钟',
-            nameTextStyle: { color: P.text3, fontSize: 11, padding: [0, 4, 0, 0] },
-            minInterval: 1,
-            position: 'right',
-            axisLine: { show: false },
-            axisTick: { show: false },
-            axisLabel: { color: P.text3, fontSize: 12 },
-            splitLine: { show: false }
-          }
-        ],
-        series: [
-          {
-            name: '新学词数',
-            type: 'line',
-            data: newData,
-            smooth: true,
-            stack: 'total',
-            symbol: 'circle',
-            symbolSize: 6,
-            showSymbol: false,
-            lineStyle: { width: 2, color: P.green },
-            itemStyle: { color: P.green, borderColor: '#fff', borderWidth: 2 },
-            areaStyle: {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: 'rgba(' + P.greenRgb + ',0.35)' },
-                { offset: 1, color: 'rgba(' + P.greenRgb + ',0.02)' }
-              ])
-            },
-            emphasis: { focus: 'series' }
-          },
-          {
-            name: '复习词数',
-            type: 'line',
-            data: reviewData,
-            smooth: true,
-            stack: 'total',
-            symbol: 'circle',
-            symbolSize: 6,
-            showSymbol: false,
-            lineStyle: { width: 2, color: P.purple },
-            itemStyle: { color: P.purple, borderColor: '#fff', borderWidth: 2 },
-            areaStyle: {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: 'rgba(' + P.purpleRgb + ',0.35)' },
-                { offset: 1, color: 'rgba(' + P.purpleRgb + ',0.02)' }
-              ])
-            },
-            emphasis: { focus: 'series' }
-          },
-          {
-            name: '学习时长',
-            type: 'line',
-            data: durationData,
-            smooth: true,
-            yAxisIndex: 1,
-            symbol: 'circle',
-            symbolSize: 5,
-            showSymbol: false,
-            lineStyle: { width: 2, color: P.amber, type: 'dashed' },
-            itemStyle: { color: P.amber },
-            emphasis: { focus: 'series' }
-          }
-        ]
-      });
-
-      window.addEventListener('resize', function() { weeklyChart.resize(); });
-    } catch (e) {
-      console.error('加载趋势图失败', e);
-    }
-  }
 
   // 打卡已改为自动：每日学习满 {{ checkin_threshold }} 词自动打卡，无需手动操作
 
@@ -588,15 +381,12 @@
     });
   });
 
-  // Load chart on page ready
-  // 主题切换时重绘图表与热力图
+  // 主题切换时重绘热力图
   window.addEventListener('vocab-theme-change', function () {
-    loadWeeklyTrend();
     renderCheckinHeatmap();
   });
 
   document.addEventListener('DOMContentLoaded', function () {
-    loadWeeklyTrend();
     renderCheckinHeatmap();
     updateTodayDuration();
     // 每 30 秒刷新一次今日时长显示

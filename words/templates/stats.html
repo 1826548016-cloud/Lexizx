@@ -159,10 +159,10 @@
 
     <!-- 薄弱环节 -->
     <div class="card-grid">
-      <div class="card">
-        <div class="card-header">本周薄弱词 Top10</div>
+      <a href="{% url 'words:weak_words' %}" class="card weak-entry-card" style="text-decoration: none; color: inherit; display: flex; flex-direction: column; justify-content: center; gap: 6px;">
+        <div class="card-header" style="margin: 0; display: flex; align-items: center; gap: 6px;"><i class="ph ph-warning-circle" style="color: var(--c-red);"></i> 薄弱词</div>
         <div id="repWeakWords" class="text-secondary text-sm"></div>
-      </div>
+      </a>
       <div class="card">
         <div class="card-header">陌生词性统计</div>
         <div id="repWeakPos" class="text-secondary text-sm"></div>
@@ -486,18 +486,14 @@ function renderReportContent(summary, comment) {
     '按当前速度，约还需 <strong>' + summary.days_to_finish + '</strong> 天背完全部单词<br>' +
     '预计完成日期：<strong>' + summary.finish_date + '</strong>';
 
-  // 薄弱词
-  var weakHtml = '';
-  if (summary.weak_words && summary.weak_words.length > 0) {
-    weakHtml = '<table class="data-table"><thead><tr><th>#</th><th>单词</th><th>错误次数</th></tr></thead><tbody>';
-    summary.weak_words.forEach(function (w, i) {
-      weakHtml += '<tr><td>' + (i + 1) + '</td><td><strong>' + w.word + '</strong></td><td>' + w.error_count + '</td></tr>';
-    });
-    weakHtml += '</tbody></table>';
+  // 薄弱词：改为入口，显示数量并引导至薄弱词页
+  var weakCount = (summary.weak_words && summary.weak_words.length) || 0;
+  if (weakCount > 0) {
+    document.getElementById('repWeakWords').innerHTML =
+      '本周共 <strong style="color: var(--c-red); font-size: 1.1rem;">' + weakCount + '</strong> 个易错词，去薄弱词页查看并专项复习 <i class="ph ph-caret-right" style="vertical-align: middle;"></i>';
   } else {
-    weakHtml = '<p class="text-secondary">本周没有易错词，表现很好！</p>';
+    document.getElementById('repWeakWords').innerHTML = '本周没有易错词，表现很好！';
   }
-  document.getElementById('repWeakWords').innerHTML = weakHtml;
 
   // 陌生词性
   var posHtml = '';

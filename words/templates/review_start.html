@@ -42,7 +42,7 @@
         <div class="quick-desc">昨天新学 {{ new_yesterday }} 个词，今天专项巩固（今天新学 {{ new_today }} 个，明天可复习）</div>
       </a>
       {% else %}
-      <div class="quick-card" style="opacity: .55; cursor: default;">
+      <div class="quick-card is-disabled">
         <div class="quick-icon"><i class="ph ph-sun-horizon"></i></div>
         <div class="quick-title">昨日新学</div>
         <div class="quick-desc">昨天没有新学单词（今天新学 {{ new_today }} 个，明天出现在这里）</div>
@@ -65,15 +65,13 @@
       </a>
       {% for preset in presets %}
       <div class="quick-card preset-card" data-url="{% url 'words:review_session' %}?scope={{ preset.params.scope|default:'all' }}&mode={{ preset.params.mode|default:'random' }}&batch={{ preset.params.batch|default:batch_size }}&count={{ preset.params.count|default:daily_review_target|default:50 }}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
-        <div class="flex justify-between items-start">
-          <div class="quick-icon"><i class="ph ph-lightning"></i></div>
-          <div class="flex gap-1">
-            <button type="button" class="btn btn-ghost btn-sm preset-edit" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="编辑（载入到配置面板修改）" onclick="event.stopPropagation(); editPreset(this)"><i class="ph ph-note-pencil"></i></button>
-            <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
-          </div>
-        </div>
+        <div class="quick-icon"><i class="ph ph-lightning"></i></div>
         <div class="quick-title">{{ preset.name }}</div>
         <div class="quick-desc">{{ preset.params.scope|default:'全部' }} · {{ preset.params.count|default:daily_review_target|default:50 }} 个</div>
+        <div class="preset-actions">
+          <button type="button" class="btn btn-ghost btn-sm preset-edit" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="编辑（载入到配置面板修改）" onclick="event.stopPropagation(); editPreset(this)"><i class="ph ph-note-pencil"></i></button>
+          <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
+        </div>
       </div>
       {% endfor %}
       <button type="button" class="quick-card" onclick="toggleCustomReview()">
