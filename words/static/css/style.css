@@ -1610,13 +1610,14 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 .note-paper textarea {
     width: 100%; border: none; background: transparent;
     font-family: var(--font-sans); font-size: var(--fs-base);
-    line-height: 1.8; color: var(--c-text); resize: vertical;
-    min-height: 90px; padding: 0;
+    line-height: 1.8; color: var(--c-text); resize: none;
+    min-height: 18dvh; max-height: 52dvh; overflow-y: auto; padding: 0;
   }
 .note-paper textarea:focus { outline: none; }
 .note-paper textarea::placeholder { color: var(--c-text-3); font-style: italic; }
 .qm-deck {
-    background: var(--c-sidebar);
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
     border-radius: var(--radius-sm);
     padding: 16px;
     position: relative;
@@ -1630,7 +1631,7 @@ textarea.form-input { resize: vertical; min-height: 80px; }
     width: 100%; border: none; background: transparent;
     font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
     font-size: var(--fs-sm); line-height: 1.8; color: var(--c-text);
-    resize: vertical; min-height: 140px; padding: 0;
+    resize: none; min-height: 34dvh; max-height: 62dvh; overflow-y: auto; padding: 0;
   }
 .qm-deck textarea:focus { outline: none; }
 .qm-deck textarea::placeholder { color: var(--c-text-3); }

@@ -63,6 +63,11 @@
   <div class="card" style="margin-bottom: 20px;">
     <div class="card-header">快速开始</div>
     <div class="quick-start-grid">
+      <a href="{% url 'words:daily_pick' %}" class="quick-card">
+        <div class="quick-icon"><i class="ph ph-calendar-check"></i></div>
+        <div class="quick-title">今日自选</div>
+        <div class="quick-desc">{% if daily_pick_count %}已选 <strong>{{ daily_pick_count }}</strong> 个词，点此增减或开始背诵{% else %}自己勾选今天要背的词，没背完明天自动顺延{% endif %}</div>
+      </a>
       <button type="button" class="quick-card" onclick="openLearnConfig('sequential')">
         <div class="quick-icon"><i class="ph ph-play-circle"></i></div>
         <div class="quick-title">顺序背新词</div>

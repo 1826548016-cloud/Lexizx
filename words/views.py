@@ -23,7 +23,7 @@ from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
 from .models import (Unit, Word, StudyProgress, StudyPlan,
-                     DailyCheckIn, Favorite, Note, QuickMemory, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog)
+                     DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog)
 from .ai_prompts import (
     quick_memory_prompt, ASSISTANT_SYSTEM_PROMPT, assistant_word_context,
     pos_grouping_prompt, examples_prompt, phonetics_prompt,
@@ -205,9 +205,43 @@ def word_detail(request, word_id):
     })
 
 
+def rollover_daily_picks(today=None):
+    """今日自选清单跨天顺延：
+
+    历史日期的自选词——已掌握或被标记「永不忘记」的视为背完，自动移除；
+    其余顺延到当天（当天已存在的不重复添加），保持原有加入顺序。
+    """
+    today = today or timezone.localdate()
+    old_ids = list(
+        DailyPick.objects.filter(date__lt=today)
+        .order_by('id').values_list('word_id', flat=True)
+    )
+    if not old_ids:
+        return
+    finished_ids = set(
+        StudyProgress.objects.filter(word_id__in=old_ids)
+        .filter(Q(status='mastered') | Q(is_excluded=True))
+        .values_list('word_id', flat=True)
+    )
+    carry = [wid for wid in dict.fromkeys(old_ids) if wid not in finished_ids]
+    if carry:
+        existing = set(
+            DailyPick.objects.filter(date=today).values_list('word_id', flat=True)
+        )
+        new_picks = [
+            DailyPick(date=today, word_id=wid)
+            for wid in carry if wid not in existing
+        ]
+        if new_picks:
+            DailyPick.objects.bulk_create(new_picks)
+    DailyPick.objects.filter(date__lt=today).delete()
+
+
 def learn_start(request):
     units = Unit.objects.all()
     today = timezone.localdate()
+    rollover_daily_picks(today)
+    daily_pick_count = DailyPick.objects.filter(date=today).count()
     plan_today = None
     active_plan = StudyPlan.objects.filter(is_active=True).first()
     if active_plan:
@@ -219,6 +253,7 @@ def learn_start(request):
     return render(request, 'learn_start.html', {
         'units': units, 'plan_today': plan_today, 'batch_size': settings_obj.batch_size,
         'batch_options': [10, 20, 30, 50], 'presets': presets,
+        'daily_pick_count': daily_pick_count,
     })
 
 
@@ -256,26 +291,41 @@ def learn_session(request):
             count_limit = None
 
     query = Word.objects.all()
-    if unit_ids:
+    daily_pick_ids = None
+    if scope == 'daily':
+        # 今日自选：以当天勾选清单为准（跨天未背完的自动顺延），忽略单元参数
+        rollover_daily_picks()
+        daily_pick_ids = list(
+            DailyPick.objects.filter(date=timezone.localdate())
+            .order_by('id').values_list('word_id', flat=True)
+        )
+        query = query.filter(id__in=daily_pick_ids)
+    elif unit_ids:
         query = query.filter(unit__number__in=unit_ids)
 
-    # 永不忘记的词（is_excluded）不再出现
-    query = query.exclude(progress__is_excluded=True)
+    # 自选清单「选了就背」，不做掌握状态/永不忘记过滤；其余范围沿用旧规则
+    if scope != 'daily':
+        # 永不忘记的词（is_excluded）不再出现
+        query = query.exclude(progress__is_excluded=True)
 
-    if scope == 'mastered':
-        # 会的词：已掌握
-        query = query.filter(progress__status='mastered')
-    elif scope == 'all':
-        # 所有的词：不会 + 会全部出现（永不忘记的词已在上面排除）
-        pass
-    else:
-        # 不会的词：未掌握（默认）
-        query = query.exclude(progress__status='mastered')
+        if scope == 'mastered':
+            # 会的词：已掌握
+            query = query.filter(progress__status='mastered')
+        elif scope == 'all':
+            # 所有的词：不会 + 会全部出现（永不忘记的词已在上面排除）
+            pass
+        else:
+            # 不会的词：未掌握（默认）
+            query = query.exclude(progress__status='mastered')
 
     words = list(query)
 
     if mode in ('random', 'cover_en', 'cover_zh'):
         random.shuffle(words)
+    elif scope == 'daily' and daily_pick_ids:
+        # 顺序模式下按用户勾选的先后排列
+        pick_order = {wid: i for i, wid in enumerate(daily_pick_ids)}
+        words.sort(key=lambda w: pick_order.get(w.id, 1 << 30))
     else:
         words = sorted(words, key=lambda w: (w.unit.number, w.list_number))
 
@@ -319,6 +369,77 @@ def learn_session(request):
         'gate_interleave': gate_interleave,
         'words_json': json.dumps(word_data, ensure_ascii=False),
     })
+
+
+def daily_pick_page(request):
+    """今日自选选词页：按单元浏览 + 搜索勾选，选完直接进入背诵。"""
+    today = timezone.localdate()
+    rollover_daily_picks(today)
+    units = Unit.objects.all().order_by('number')
+    picked_ids = list(
+        DailyPick.objects.filter(date=today).order_by('id').values_list('word_id', flat=True)
+    )
+    progress_map = {
+        p.word_id: p
+        for p in StudyProgress.objects.only('word_id', 'status', 'is_excluded')
+    }
+    word_items = []
+    for w in Word.objects.select_related('unit').only(
+            'id', 'word', 'phonetic_us', 'meanings', 'meanings_by_pos',
+            'unit__number', 'list_number'):
+        p = progress_map.get(w.id)
+        meaning = w.meanings_display()
+        if len(meaning) > 40:
+            meaning = meaning[:40] + '…'
+        word_items.append({
+            'id': w.id,
+            'w': w.word,
+            'ph': w.phonetic_us,
+            'm': meaning,
+            'u': w.unit.number if w.unit else 0,
+            'n': w.list_number,
+            's': p.status if p else 'new',
+            'x': bool(p and p.is_excluded),
+        })
+    settings_obj = UserSettings.get_settings()
+    return render(request, 'daily_pick.html', {
+        'units': units,
+        'picked_ids_json': json.dumps(picked_ids, ensure_ascii=False),
+        'words_json': json.dumps(word_items, ensure_ascii=False),
+        'picked_count': len(picked_ids),
+        'batch_size': settings_obj.batch_size,
+    })
+
+
+@require_http_methods(["POST"])
+def api_daily_pick_toggle(request):
+    """加入 / 移出今日自选清单。"""
+    try:
+        data = json.loads(request.body or '{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'success': False, 'error': '请求数据格式错误'}, status=400)
+    word = get_object_or_404(Word, id=data.get('word_id'))
+    today = timezone.localdate()
+    rollover_daily_picks(today)
+    existing = DailyPick.objects.filter(date=today, word=word).first()
+    if existing:
+        existing.delete()
+        picked = False
+    else:
+        try:
+            DailyPick.objects.create(date=today, word=word)
+        except IntegrityError:
+            pass
+        picked = True
+    total = DailyPick.objects.filter(date=today).count()
+    return JsonResponse({'success': True, 'picked': picked, 'total': total})
+
+
+@require_http_methods(["POST"])
+def api_daily_pick_clear(request):
+    """清空今日自选清单。"""
+    DailyPick.objects.filter(date=timezone.localdate()).delete()
+    return JsonResponse({'success': True, 'total': 0})
 
 
 def review_start(request):
@@ -2208,6 +2329,12 @@ def _build_backup_payload(settings_obj):
              'created_at': qm.created_at.isoformat()}
             for qm in QuickMemory.objects.all()
         ],
+        'daily_picks': [
+            {'word_id': dp.word_id,
+             'word': dp.word.word if dp.word else None,
+             'date': dp.date.isoformat()}
+            for dp in DailyPick.objects.all()
+        ],
         'presets': [
             {'name': p.name, 'preset_type': p.preset_type, 'params': p.params,
              'created_at': p.created_at.isoformat()}
@@ -2639,6 +2766,23 @@ def api_restore(request):
                             word_id=new_wid, content=qm.get('content', ''),
                         )
 
+                # --- 8.5) 今日自选（按单词字符串映射，查不到跳过）---
+                if data.get('daily_picks'):
+                    DailyPick.objects.all().delete()
+                    for dp in data['daily_picks']:
+                        new_wid = _resolve_word_id(dp, 'daily_picks')
+                        if new_wid is None:
+                            continue
+                        try:
+                            pick_date = dp.get('date')
+                            if pick_date:
+                                pick_date = datetime.strptime(pick_date[:10], '%Y-%m-%d').date()
+                            else:
+                                pick_date = timezone.localdate()
+                            DailyPick.objects.get_or_create(date=pick_date, word_id=new_wid)
+                        except (ValueError, TypeError):
+                            continue
+
                 # --- 9) 计划（无 Word 引用）---
                 if 'plans' in data:
                     StudyPlan.objects.all().delete()
@@ -2904,7 +3048,8 @@ def api_quick_memory_generate(request, word_id):
     payload = {
         'model': model,
         'temperature': 0.4,
-        'max_tokens': 500,
+        # 六段式速记（拆解/串义/联想/同族词/例句/总记），500 会被截断
+        'max_tokens': 1200,
         'messages': [{'role': 'user', 'content': prompt}],
     }
 
@@ -3318,26 +3463,39 @@ def api_learn_words(request):
     """返回按 scope+units 筛选的单词列表（与 learn_session 逻辑一致）"""
     scope = request.GET.get('scope', 'unknown')
     unit_ids = request.GET.getlist('units')
+    mode = request.GET.get('mode', 'sequential')
 
     query = Word.objects.all()
     if unit_ids:
         query = query.filter(unit__number__in=unit_ids)
 
-    # 永不忘记的词不再出现
-    query = query.exclude(progress__is_excluded=True)
-
-    if scope == 'mastered':
-        query = query.filter(progress__status='mastered')
+    today = timezone.localdate()
+    if scope == 'daily':
+        # 今日自选：以当天清单为准（选了就背，含已掌握/永不忘记）
+        pick_ids = list(
+            DailyPick.objects.filter(date=today).order_by('id').values_list('word_id', flat=True)
+        )
+        words = list(Word.objects.filter(id__in=pick_ids))
+        if mode != 'random':
+            order = {wid: i for i, wid in enumerate(pick_ids)}
+            words.sort(key=lambda w: order.get(w.id, 0))
+        else:
+            random.shuffle(words)
     else:
-        query = query.exclude(progress__status='mastered')
+        # 永不忘记的词不再出现
+        query = query.exclude(progress__is_excluded=True)
 
-    mode = request.GET.get('mode', 'sequential')
-    words = list(query)
+        if scope == 'mastered':
+            query = query.filter(progress__status='mastered')
+        else:
+            query = query.exclude(progress__status='mastered')
 
-    if mode == 'random':
-        random.shuffle(words)
-    else:
-        words = sorted(words, key=lambda w: (w.unit.number, w.list_number))
+        words = list(query)
+
+        if mode == 'random':
+            random.shuffle(words)
+        else:
+            words = sorted(words, key=lambda w: (w.unit.number, w.list_number))
 
     # 批量预取进度，避免 N+1
     word_ids = [w.id for w in words]

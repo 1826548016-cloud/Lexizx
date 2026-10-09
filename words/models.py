@@ -267,6 +267,27 @@ class QuickMemory(models.Model):
         return f'{self.word.word} - 速记'
 
 
+class DailyPick(models.Model):
+    """今日自选背诵清单：用户手动勾选、按日期保存的单词。
+
+    跨天规则（rollover_daily_picks）：历史日期未掌握的词自动顺延到当天，
+    已掌握 / 永不忘记的词视为背完，自动移除。
+    """
+    date = models.DateField(verbose_name='日期', db_index=True)
+    word = models.ForeignKey(Word, on_delete=models.CASCADE,
+        related_name='daily_picks', verbose_name='单词')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='加入时间')
+
+    class Meta:
+        unique_together = [('date', 'word')]
+        ordering = ['date', 'id']
+        verbose_name = '今日自选'
+        verbose_name_plural = '今日自选'
+
+    def __str__(self):
+        return f'{self.date} - {self.word.word}'
+
+
 class StudySession(models.Model):
     MODE_CHOICES = [
         ('sequential', '顺序背诵'),

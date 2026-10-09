@@ -16,6 +16,29 @@
     if (el) el.classList.toggle('hidden', !!hidden);
   }
 
+  // textarea 随内容自动撑高（CSS max-height 兜底，超高时内部滚动），
+  // 省去手动拖拽右下角；空内容回落到 CSS min-height
+  function autoGrow(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }
+
+  function autoGrowAll() {
+    autoGrow($('qmContent'));
+    autoGrow($('noteContent'));
+  }
+
+  // 面板展开/内容变化后，若底部超出视口则最小幅度滚入视野
+  function ensurePanelVisible() {
+    var panel = $('wordExtPanel');
+    if (!panel || panel.classList.contains('hidden')) return;
+    var r = panel.getBoundingClientRect();
+    if (r.bottom > window.innerHeight - 12) {
+      panel.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }
+
   function cardEl() {
     return $('wordCard') || $('focusCard');
   }
@@ -42,6 +65,8 @@
     }
     var panel = $('wordExtPanel');
     if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // 面板显示后按内容撑高（hidden 状态量不到高度）
+    requestAnimationFrame(autoGrowAll);
   }
 
   function closeExtPanel() {
@@ -66,6 +91,7 @@
     $('noteWordTitle').textContent = '· ' + (word.word || '');
     $('noteMeta').textContent = '加载中…';
     $('noteContent').value = '';
+    autoGrow($('noteContent'));
     $('notePage').value = '';
     toggleHidden('noteDeleteBtn', true);
 
@@ -73,6 +99,7 @@
       .then(function (res) {
         if (res && res.success) {
           $('noteContent').value = res.content || '';
+          autoGrow($('noteContent'));
           $('notePage').value = res.page_number || '';
           var meta = res.content ? '查看之前的笔记' : '暂无笔记，记录你的记忆方法吧';
           if (res.updated_at) meta += ' · 更新于 ' + res.updated_at;
@@ -116,6 +143,7 @@
           showToast('笔记已删除', 'success');
           toggleHidden('noteDeleteBtn', true);
           $('noteContent').value = '';
+          autoGrow($('noteContent'));
           $('notePage').value = '';
           $('noteMeta').textContent = '暂无笔记，记录你的记忆方法吧';
         }
@@ -138,6 +166,7 @@
     $('qmWordTitle').textContent = '· ' + (word.word || '');
     $('qmMeta').textContent = '加载中…';
     $('qmContent').value = '';
+    autoGrow($('qmContent'));
     toggleHidden('qmGenerateBtn', true);
     toggleHidden('qmRegenBtn', true);
     toggleHidden('qmDeleteBtn', true);
@@ -147,6 +176,8 @@
       .then(function (res) {
         if (res && res.success && res.content) {
           $('qmContent').value = res.content;
+          autoGrow($('qmContent'));
+          ensurePanelVisible();
           var meta = '已保存的速记（来自数据库，无需重新调用 AI）';
           if (res.updated_at) meta += ' · 更新于 ' + res.updated_at;
           $('qmMeta').textContent = meta;
@@ -157,6 +188,7 @@
           checkAIModelConfigured().then(function (ok) {
             if (ok) {
               $('qmContent').value = '';
+              autoGrow($('qmContent'));
               $('qmMeta').textContent = '还没有速记，点击「生成速记」让 AI 为你创作（结果保存到数据库，下次直接查看）';
               toggleHidden('qmGenerateBtn', false);
             } else {
@@ -200,6 +232,7 @@
         if (res && res.success) {
           showToast('速记已删除', 'success');
           $('qmContent').value = '';
+          autoGrow($('qmContent'));
           $('qmMeta').textContent = '还没有速记，点击「生成速记」让 AI 为你创作';
           toggleHidden('qmGenerateBtn', false);
           toggleHidden('qmRegenBtn', true);
@@ -228,6 +261,8 @@
       .then(function (res) {
         if (res && res.success) {
           $('qmContent').value = res.content || '';
+          autoGrow($('qmContent'));
+          ensurePanelVisible();
           $('qmMeta').textContent = res.cached
             ? '已使用数据库中的速记（无需重新调用 AI）'
             : 'AI 生成完成，已保存到数据库（下次直接查看，不再调用 AI）';
@@ -267,6 +302,17 @@
     var qmBtn = $('quickMemoryBtn');
     if (noteBtn) noteBtn.addEventListener('click', function () { openExtPanel('note'); });
     if (qmBtn) qmBtn.addEventListener('click', function () { openExtPanel('qm'); });
+
+    // 手动编辑时随输入实时撑高；窗口尺寸变化（旋转/缩放）时重算
+    ['qmContent', 'noteContent'].forEach(function (id) {
+      var el = $(id);
+      if (el) el.addEventListener('input', function () { autoGrow(el); });
+    });
+    var resizeTimer = null;
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(autoGrowAll, 120);
+    });
   }
 
   // 暴露给页面（内联 onclick 与键盘逻辑使用）

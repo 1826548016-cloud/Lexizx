@@ -1,0 +1,352 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}今日自选 - 考研单词背诵系统{% endblock %}
+{% block page_title %}今日自选{% endblock %}
+
+{% block extra_head %}
+<style>
+  .pick-summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .pick-count-badge {
+    display: inline-flex; align-items: baseline; gap: 4px;
+    background: var(--c-blue-bg); color: var(--c-blue);
+    font-weight: 800; font-size: 1.3rem; padding: 6px 16px; border-radius: 999px;
+  }
+  .pick-count-badge small { font-size: .8rem; font-weight: 600; }
+  .pick-tip { color: var(--c-text-3); font-size: var(--fs-sm); }
+
+  .pick-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+  .pick-search {
+    flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 999px; padding: 8px 16px;
+  }
+  .pick-search:focus-within { border-color: var(--c-blue); box-shadow: 0 0 0 3px var(--c-blue-bg); }
+  .pick-search input {
+    flex: 1; border: none; background: transparent; outline: none;
+    color: var(--c-text); font-size: var(--fs-base);
+  }
+  .pick-search i { color: var(--c-text-3); font-size: 18px; }
+
+  .unit-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .unit-chip {
+    padding: 6px 14px; border-radius: 999px; cursor-pointer; user-select: none;
+    border: 1px solid var(--c-border); background: var(--c-surface);
+    color: var(--c-text-2); font-size: var(--fs-sm); font-weight: 600;
+    transition: all .15s;
+  }
+  .unit-chip:hover { border-color: var(--c-blue); color: var(--c-blue); }
+  .unit-chip.active { background: var(--c-blue); border-color: var(--c-blue); color: #fff; }
+  .unit-chip small { opacity: .75; font-weight: 400; margin-left: 2px; }
+
+  .pick-list { max-height: 52dvh; overflow-y: auto; border: 1px solid var(--c-border-light); border-radius: var(--radius-lg); }
+  .pick-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; cursor: pointer;
+    border-bottom: 1px solid var(--c-border-light);
+    transition: background .12s;
+  }
+  .pick-row:last-child { border-bottom: none; }
+  .pick-row:hover { background: var(--c-surface-2); }
+  .pick-check {
+    width: 22px; height: 22px; border-radius: 50%; flex: none;
+    border: 2px solid var(--c-border); display: inline-flex;
+    align-items: center; justify-content: center;
+    color: transparent; font-size: 13px; transition: all .15s;
+  }
+  .pick-row.picked { background: var(--c-blue-bg); }
+  .pick-row.picked:hover { background: var(--c-blue-bg); }
+  .pick-row.picked .pick-check { background: var(--c-blue); border-color: var(--c-blue); color: #fff; }
+  .pick-word { font-weight: 700; font-size: var(--fs-base); min-width: 110px; color: var(--c-text); }
+  .pick-phonetic { color: var(--c-text-3); font-size: var(--fs-sm); min-width: 120px; }
+  .pick-meaning { flex: 1; color: var(--c-text-2); font-size: var(--fs-sm);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pick-unit-tag { color: var(--c-text-3); font-size: .72rem; flex: none; }
+  .pick-status { font-size: .72rem; padding: 2px 8px; border-radius: 999px; flex: none; }
+  .pick-status.mastered { background: var(--c-green-bg); color: var(--c-green); }
+  .pick-status.excluded { background: var(--c-surface-2); color: var(--c-text-3); }
+  .pick-speak {
+    border: none; background: transparent; color: var(--c-text-3);
+    cursor: pointer; font-size: 18px; padding: 4px; flex: none; border-radius: 50%;
+  }
+  .pick-speak:hover { color: var(--c-blue); background: var(--c-surface); }
+  .pick-empty { padding: 40px 20px; text-align: center; color: var(--c-text-3); }
+
+  .pick-setup { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+  .pick-setup .choice-group { flex: 1; min-width: 260px; }
+  .gates-inline { margin-top: 8px; display: none; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--c-surface-2); border-radius: var(--radius-sm); }
+  .gates-inline.show { display: flex; }
+  .gates-inline input { width: 64px; padding: 4px 8px; }
+  .pick-start-row { margin-top: 16px; }
+  @media (max-width: 640px) {
+    .pick-phonetic { display: none; }
+    .pick-list { max-height: 46dvh; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2 class="setup-title">今日自选</h2>
+<p class="setup-subtitle" style="margin-bottom: 20px;">从词库里勾选今天要背的词，没背完的明天自动顺延，背完的自动移出清单。</p>
+
+<!-- 今日清单 + 背诵设置 -->
+<div class="card" style="margin-bottom: 20px;">
+  <div class="pick-summary">
+    <span class="pick-count-badge"><span id="pickedNum">{{ picked_count }}</span><small>个词</small></span>
+    <span class="pick-tip">按勾选顺序背诵；清单每天独立保存，可随时增减</span>
+    <span style="flex:1;"></span>
+    <button type="button" class="btn btn-ghost" id="clearBtn"><i class="ph ph-trash"></i> 清空清单</button>
+  </div>
+
+  <div class="pick-setup">
+    <div class="choice-group">
+      <span class="choice-group-title">背诵顺序</span>
+      <label class="choice-option">
+        <input type="radio" name="pMode" value="sequential" checked>
+        <span>勾选顺序</span>
+      </label>
+      <label class="choice-option">
+        <input type="radio" name="pMode" value="random">
+        <span>乱序</span>
+      </label>
+    </div>
+    <div class="choice-group">
+      <span class="choice-group-title">检测方式</span>
+      <label class="choice-option">
+        <input type="radio" name="pCheck" value="none" checked>
+        <span>纯背诵</span>
+      </label>
+      <label class="choice-option">
+        <input type="radio" name="pCheck" value="spelling">
+        <span>拼写检测</span>
+      </label>
+      <label class="choice-option">
+        <input type="radio" name="pCheck" value="meaning">
+        <span>释义默写</span>
+      </label>
+      <label class="choice-option">
+        <input type="radio" name="pCheck" value="gates">
+        <span>高效背诵</span>
+      </label>
+      <div class="gates-inline" id="gatesInline">
+        <label>每个词连续背
+          <input type="number" id="pRepeats" value="3" min="1" max="10" class="form-input"> 遍</label>
+        <label>穿插重现
+          <input type="number" id="pInterleave" value="1" min="0" max="5" class="form-input"> 次</label>
+      </div>
+    </div>
+    <div class="choice-group">
+      <span class="choice-group-title">每批数量</span>
+      <input type="number" id="pBatch" value="{{ batch_size }}" min="1" max="1000" class="form-input" style="width: 110px;">
+    </div>
+  </div>
+
+  <div class="pick-start-row">
+    <button type="button" class="btn btn-primary btn-lg" id="startBtn" style="width: 100%;">
+      <i class="ph ph-play"></i> 开始背诵今日自选（<span id="pickedNum2">{{ picked_count }}</span> 词）
+    </button>
+  </div>
+</div>
+
+<!-- 选词区 -->
+<div class="card">
+  <div class="pick-toolbar">
+    <div class="pick-search">
+      <i class="ph ph-magnifying-glass"></i>
+      <input type="text" id="searchInput" placeholder="搜索单词或释义，跨全部单元…" autocomplete="off">
+    </div>
+  </div>
+  <div class="unit-chips" id="unitChips">
+    <span class="unit-chip active" data-unit="all">全部单元</span>
+    {% for unit in units %}
+    <span class="unit-chip" data-unit="{{ unit.number }}">U{{ unit.number }}<small> {{ unit.word_count }}</small></span>
+    {% endfor %}
+    <span class="unit-chip" data-unit="picked"><i class="ph ph-check"></i> 只看已选</span>
+  </div>
+  <div class="pick-list" id="pickList"></div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function () {
+  var WORDS = {{ words_json|safe }};
+  var picked = new Set({{ picked_ids_json|safe }});
+  var currentUnit = 'all';
+  var RENDER_LIMIT = 300;
+
+  var listEl = document.getElementById('pickList');
+  var numEl = document.getElementById('pickedNum');
+  var num2El = document.getElementById('pickedNum2');
+  var startBtn = document.getElementById('startBtn');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function statusTag(item) {
+    if (item.x) return '<span class="pick-status excluded">永不忘记</span>';
+    if (item.s === 'mastered') return '<span class="pick-status mastered">已会</span>';
+    return '';
+  }
+
+  function rowHtml(item) {
+    return '<div class="pick-row' + (picked.has(item.id) ? ' picked' : '') + '" data-id="' + item.id + '">' +
+      '<span class="pick-check"><i class="ph ph-check"></i></span>' +
+      '<span class="pick-word">' + esc(item.w) + '</span>' +
+      '<span class="pick-phonetic">' + esc(item.ph || '') + '</span>' +
+      '<span class="pick-meaning">' + esc(item.m || '') + '</span>' +
+      statusTag(item) +
+      '<span class="pick-unit-tag">U' + item.u + '</span>' +
+      '<button type="button" class="pick-speak" title="朗读"><i class="ph ph-speaker-high"></i></button>' +
+      '</div>';
+  }
+
+  function render() {
+    var keyword = document.getElementById('searchInput').value.trim().toLowerCase();
+    var items;
+    if (keyword) {
+      items = WORDS.filter(function (w) {
+        return w.w.toLowerCase().indexOf(keyword) !== -1 ||
+               (w.m || '').toLowerCase().indexOf(keyword) !== -1;
+      }).slice(0, RENDER_LIMIT);
+    } else if (currentUnit === 'picked') {
+      items = WORDS.filter(function (w) { return picked.has(w.id); });
+    } else if (currentUnit === 'all') {
+      items = WORDS.slice(0, RENDER_LIMIT);
+    } else {
+      var u = parseInt(currentUnit, 10);
+      items = WORDS.filter(function (w) { return w.u === u; });
+    }
+    if (!items.length) {
+      listEl.innerHTML = '<div class="pick-empty">' +
+        (keyword ? '没有匹配的单词' : (currentUnit === 'picked' ? '还没有勾选任何词，点其他单元挑几个吧' : '该单元暂无单词')) +
+        '</div>';
+      return;
+    }
+    var html = items.map(rowHtml).join('');
+    if (keyword && WORDS.filter(function (w) {
+        return w.w.toLowerCase().indexOf(keyword) !== -1 ||
+               (w.m || '').toLowerCase().indexOf(keyword) !== -1;
+      }).length > RENDER_LIMIT) {
+      html += '<div class="pick-empty">结果较多，仅显示前 ' + RENDER_LIMIT + ' 条，请输入更完整的关键词</div>';
+    } else if (!keyword && currentUnit === 'all' && WORDS.length > RENDER_LIMIT) {
+      html += '<div class="pick-empty">词库共 ' + WORDS.length + ' 词，当前显示前 ' + RENDER_LIMIT +
+        ' 条，请选择单元或搜索定位</div>';
+    }
+    listEl.innerHTML = html;
+  }
+
+  function refreshCount() {
+    var n = picked.size;
+    numEl.textContent = n;
+    num2El.textContent = n;
+    startBtn.disabled = n === 0;
+    startBtn.style.opacity = n === 0 ? '.55' : '1';
+  }
+
+  // 事件委托：勾选行 / 朗读
+  listEl.addEventListener('click', function (e) {
+    var speakBtn = e.target.closest('.pick-speak');
+    var row = e.target.closest('.pick-row');
+    if (!row) return;
+    var id = parseInt(row.getAttribute('data-id'), 10);
+    if (speakBtn) {
+      e.stopPropagation();
+      var item = WORDS.find(function (w) { return w.id === id; });
+      if (item && window.VOCAB_SPEAK) window.VOCAB_SPEAK(item.w);
+      return;
+    }
+    togglePick(id, row);
+  });
+
+  function togglePick(id, row) {
+    var willPick = !picked.has(id);
+    if (willPick) picked.add(id); else picked.delete(id);
+    if (row) row.classList.toggle('picked', willPick);
+    refreshCount();
+    VOCAB_API.post('/api/daily-picks/toggle/', { word_id: id }).then(function (res) {
+      if (!res || !res.success) throw new Error('fail');
+      // 单次勾选本地乐观态与服务端一致，无需同步；total 仅用于异常排查
+    }).catch(function () {
+      // 回滚
+      if (willPick) picked.delete(id); else picked.add(id);
+      if (row) row.classList.toggle('picked', !willPick);
+      refreshCount();
+      if (window.appToast) appToast('操作失败，请检查网络后重试', 'error');
+      // 「只看已选」下移除后需重渲染
+      if (currentUnit === 'picked') render();
+    });
+  }
+
+  // 单元切换
+  document.getElementById('unitChips').addEventListener('click', function (e) {
+    var chip = e.target.closest('.unit-chip');
+    if (!chip) return;
+    currentUnit = chip.getAttribute('data-unit');
+    document.querySelectorAll('.unit-chip').forEach(function (c) {
+      c.classList.toggle('active', c === chip);
+    });
+    document.getElementById('searchInput').value = '';
+    render();
+  });
+
+  // 搜索（防抖）
+  var searchTimer = null;
+  document.getElementById('searchInput').addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(render, 180);
+  });
+
+  // 高效背诵配置展开
+  var gatesInline = document.getElementById('gatesInline');
+  document.querySelectorAll('input[name="pCheck"]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      gatesInline.classList.toggle('show', r.checked && r.value === 'gates');
+      document.querySelectorAll('input[name="pCheck"]').forEach(function (x) {
+        if (x.value === 'gates') gatesInline.classList.toggle('show', x.checked);
+      });
+    });
+  });
+
+  // 清空清单
+  document.getElementById('clearBtn').addEventListener('click', async function () {
+    if (!picked.size) { if (window.appToast) appToast('清单已经是空的', 'info'); return; }
+    if (!window.appConfirm || !await appConfirm('确定清空今天的全部自选词吗？')) return;
+    try {
+      var res = await VOCAB_API.post('/api/daily-picks/clear/', {});
+      if (res && res.success) {
+        picked.clear();
+        refreshCount();
+        render();
+        if (window.appToast) appToast('已清空今日清单', 'success');
+      }
+    } catch (e) {
+      if (window.appToast) appToast('清空失败，请重试', 'error');
+    }
+  });
+
+  // 开始背诵
+  startBtn.addEventListener('click', function () {
+    if (!picked.size) { if (window.appToast) appToast('请先勾选今天要背的词', 'error'); return; }
+    var mode = document.querySelector('input[name="pMode"]:checked').value;
+    var check = document.querySelector('input[name="pCheck"]:checked').value;
+    var batch = parseInt(document.getElementById('pBatch').value, 10) || 10;
+    var url = '{% url "words:learn_session" %}?scope=daily&mode=' + mode +
+              '&check=' + check + '&batch=' + batch;
+    if (check === 'gates') {
+      var repeats = Math.max(1, Math.min(10, parseInt(document.getElementById('pRepeats').value, 10) || 3));
+      var interleave = Math.max(0, Math.min(5, parseInt(document.getElementById('pInterleave').value, 10) || 0));
+      url += '&repeats=' + repeats + '&interleave=' + interleave;
+    }
+    window.location.href = url;
+  });
+
+  render();
+  refreshCount();
+})();
+</script>
+{% endblock %}
