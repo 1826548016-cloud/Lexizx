@@ -54,14 +54,14 @@
       toggleHidden('notePanel', false);
       toggleHidden('qmPanel', true);
       loadNoteForPanel(word);
-      if (noteBtn) { noteBtn.classList.add('active-note'); noteBtn.classList.remove('active-quick'); }
-      if (qmBtn) qmBtn.classList.remove('active-quick');
+      if (noteBtn) { noteBtn.classList.add('active-note'); noteBtn.classList.remove('active-quick'); noteBtn.setAttribute('aria-pressed', 'true'); }
+      if (qmBtn) { qmBtn.classList.remove('active-quick'); qmBtn.setAttribute('aria-pressed', 'false'); }
     } else {
       toggleHidden('qmPanel', false);
       toggleHidden('notePanel', true);
       loadQuickMemoryForPanel(word);
-      if (qmBtn) { qmBtn.classList.add('active-quick'); qmBtn.classList.remove('active-note'); }
-      if (noteBtn) noteBtn.classList.remove('active-note');
+      if (qmBtn) { qmBtn.classList.add('active-quick'); qmBtn.classList.remove('active-note'); qmBtn.setAttribute('aria-pressed', 'true'); }
+      if (noteBtn) { noteBtn.classList.remove('active-note'); noteBtn.setAttribute('aria-pressed', 'false'); }
     }
     var panel = $('wordExtPanel');
     if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -76,8 +76,8 @@
     toggleHidden('notePanel', true);
     toggleHidden('qmPanel', true);
     var noteBtn = $('noteBtn'), qmBtn = $('quickMemoryBtn');
-    if (noteBtn) noteBtn.classList.remove('active-note');
-    if (qmBtn) qmBtn.classList.remove('active-quick');
+    if (noteBtn) { noteBtn.classList.remove('active-note'); noteBtn.setAttribute('aria-pressed', 'false'); }
+    if (qmBtn) { qmBtn.classList.remove('active-quick'); qmBtn.setAttribute('aria-pressed', 'false'); }
   }
 
   function isOpen() {

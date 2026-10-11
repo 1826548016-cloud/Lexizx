@@ -28,6 +28,7 @@ var AppDialog = (function () {
   // 同时只显示一个；新弹窗入队
   var queue = [];
   var active = false;
+  var seq = 0;
 
   function next() {
     active = false;
@@ -41,14 +42,19 @@ var AppDialog = (function () {
     opts = opts || {};
     active = true;
     ensureCss();
+    var prevFocus = document.activeElement; // 关闭后焦点返回触发元素
     var mask = document.createElement('div');
     mask.className = 'app-dialog-mask';
     var dlg = document.createElement('div');
     dlg.className = 'app-dialog';
     dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    var bodyId = 'app-dlg-body-' + (++seq);
+    dlg.setAttribute('aria-labelledby', bodyId);
 
     var body = document.createElement('div');
     body.className = 'app-dialog-body';
+    body.id = bodyId;
     body.textContent = message == null ? '' : String(message);
     dlg.appendChild(body);
 
@@ -69,6 +75,10 @@ var AppDialog = (function () {
       document.removeEventListener('keydown', onKey, true);
       mask.remove();
       resolve(result);
+      // 无后续排队弹窗时，焦点归还给打开前的触发元素
+      if (queue.length === 0) {
+        try { if (prevFocus && typeof prevFocus.focus === 'function') prevFocus.focus(); } catch (e) {}
+      }
       next();
     }
 
@@ -90,8 +100,16 @@ var AppDialog = (function () {
     document.body.appendChild(mask);
 
     function onKey(e) {
-      if (e.key === 'Enter') { e.preventDefault(); close(input ? input.value : true); }
-      else if (e.key === 'Escape' && showCancel) { e.preventDefault(); close(input ? null : false); }
+      if (e.key === 'Enter') { e.preventDefault(); close(input ? input.value : true); return; }
+      if (e.key === 'Escape') { e.preventDefault(); close(input ? null : (showCancel ? false : true)); return; }
+      if (e.key === 'Tab') {
+        // 焦点圈定：Tab 在弹窗内可聚焦元素间循环
+        var focusables = dlg.querySelectorAll('button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])');
+        if (!focusables.length) return;
+        var first = focusables[0], last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
     }
     document.addEventListener('keydown', onKey, true);
     setTimeout(function () { if (input) { input.focus(); input.select(); } else { okBtn.focus(); } }, 30);

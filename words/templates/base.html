@@ -1,11 +1,11 @@
-﻿{% load static %}
+{% load static %}
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}考研单词背诵系统{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=350">
+  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=355">
   <!-- Phosphor 图标字体（随程序打包的本地静态资源，离线可用，不发起任何外网请求） -->
   <link rel="stylesheet" href="{% static 'vendor/phosphor/regular/style.css' %}?v=211">
   <link rel="stylesheet" href="{% static 'vendor/phosphor/fill/style.css' %}?v=211">
@@ -48,7 +48,7 @@
   })();
   </script>
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
   <!--
   THESIS: 把每天的复习变成“订正昨天的错”——现代克制的界面骨架 + 红笔批注的笔记本气质，拒绝扁平工具脸与过度装饰。
   OWN-WORLD: 暖纸底 + 墨色文字 + 红笔红主强调；衬线标题、纸感卡片、红笔印章、蓝色圆珠笔次级强调；明暗双主题。
@@ -60,6 +60,8 @@
   <div class="app-layout">
     <!-- 自定义主题壁纸层 -->
     <div id="themeWallpaper" class="theme-wallpaper"></div>
+    <!-- 内容遮罩：垫在壁纸之上、内容之下，抵消高亮/花纹区域，保证文字始终可读 -->
+    <div id="themeWallpaperMask" class="theme-wallpaper-mask" aria-hidden="true"></div>
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-logo">
@@ -129,7 +131,6 @@
     <main class="main-content">
       <div class="top-bar">
         <div class="top-bar-title">{% block page_title %}考研单词背诵系统{% endblock %}</div>
-        <div class="top-bar-slogan">不要把梦想埋没!</div>
         <div class="top-bar-actions">
           <!-- 刷新当前页：所有页面共用（设置里改过的主题、壁纸等本地偏好不会丢，页面数据从服务端重新读取） -->
           <button id="refreshBtn" class="btn btn-secondary btn-sm" onclick="refreshPage(this)"
@@ -143,29 +144,6 @@
       </div>
 
       <div class="page-content">
-        <div class="quote-bar mb-4" aria-label="励志语录">
-          <div class="quote-track">
-            <span class="quote-item"><i class="ph ph-sparkle"></i> 不要把梦想埋没！</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> 星光不问赶路人，时光不负有心人。</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> Success is the sum of small efforts, repeated day in and day out.</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> The harder you work, the luckier you get.</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> 每一个不曾起舞的日子，都是对生命的辜负。</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> Believe you can and you're halfway there.</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> 路虽远，行则将至；事虽难，做则必成。</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> Don't watch the clock; do what it does. Keep going.</span>
-            <span class="quote-item"><i class="ph ph-sparkle"></i> 念念不忘，必有回响。</span>
-            <!-- duplicate for seamless loop -->
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> 不要把梦想埋没！</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> 星光不问赶路人，时光不负有心人。</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> Success is the sum of small efforts, repeated day in and day out.</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> The harder you work, the luckier you get.</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> 每一个不曾起舞的日子，都是对生命的辜负。</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> Believe you can and you're halfway there.</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> 路虽远，行则将至；事虽难，做则必成。</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> Don't watch the clock; do what it does. Keep going.</span>
-            <span class="quote-item" aria-hidden="true"><i class="ph ph-sparkle"></i> 念念不忘，必有回响。</span>
-          </div>
-        </div>
         {% block content %}{% endblock %}
       </div>
     </main>
@@ -178,9 +156,33 @@
   {% include 'partials/privacy_modal.html' %}
 
   <!-- Toast Container -->
-  <div id="toast-container" class="toast-container"></div>
+  <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
 
-  <button id="mobileNavToggle" class="btn btn-secondary" style="display:none;position:fixed;bottom:16px;right:16px;z-index:60;border-radius:50%;width:48px;height:48px;padding:0;font-size:1.4rem;" onclick="toggleMobileNav()"><i class="ph ph-list"></i></button>
+  <!-- 移动端底部导航：收束为五项（今日 / 学习 / 词库 / 进度 / 更多），低频入口收入「更多」抽屉 -->
+  <nav class="mobile-tabbar" aria-label="移动端主导航">
+    <a href="{% url 'words:dashboard' %}" data-mnav="dashboard"><i class="ph ph-house"></i><span>今日</span></a>
+    <a href="{% url 'words:learn_start' %}" data-mnav="learn"><i class="ph ph-target"></i><span>学习</span></a>
+    <a href="{% url 'words:word_list' %}" data-mnav="words"><i class="ph ph-books"></i><span>词库</span></a>
+    <a href="{% url 'words:statistics' %}" data-mnav="stats"><i class="ph ph-trend-up"></i><span>进度</span></a>
+    <button type="button" id="mobileMoreBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="mobileMorePanel"><i class="ph ph-dots-three-outline"></i><span>更多</span></button>
+  </nav>
+
+  <div id="mobileMorePanel" class="mobile-more" role="dialog" aria-modal="true" aria-label="更多功能" hidden>
+    <div class="mobile-more-head">
+      <span>更多功能</span>
+      <button type="button" class="mobile-more-close" onclick="closeMobileMore()" aria-label="关闭"><i class="ph ph-x"></i></button>
+    </div>
+    <div class="mobile-more-grid">
+      <a href="{% url 'words:review_start' %}" data-mnav="review"><i class="ph ph-arrows-clockwise"></i><span>复习</span></a>
+      <a href="{% url 'words:weak_words' %}" data-mnav="weak"><i class="ph ph-warning-circle"></i><span>薄弱词</span></a>
+      <a href="{% url 'words:favorites_list' %}" data-mnav="favorites"><i class="ph ph-star"></i><span>收藏词汇</span></a>
+      <a href="{% url 'words:study_plan' %}" data-mnav="plan"><i class="ph ph-calendar-blank"></i><span>计划</span></a>
+      <a href="{% url 'words:exam' %}" data-mnav="exam"><i class="ph ph-note-pencil"></i><span>模拟考试</span></a>
+      <a href="{% url 'words:exam_workshop' %}" data-mnav="workshop"><i class="ph ph-pen-nib"></i><span>写作工坊</span></a>
+      <a href="{% url 'words:ai_chat_page' %}" data-mnav="ai-chat"><i class="ph ph-sparkle"></i><span>AI 助手</span></a>
+      <a href="{% url 'words:settings_page' %}" data-mnav="settings"><i class="ph ph-gear"></i><span>设置</span></a>
+    </div>
+  </div>
 
   <script src="{% static 'js/tts.js' %}"></script>
   <script src="{% static 'js/app.js' %}?v=334"></script>
@@ -287,6 +289,40 @@
     }
     _wallpaperUrl = url || null;
     layer.style.backgroundImage = url ? 'url(' + url + ')' : '';
+    // 内容遮罩与自动前景色跟随壁纸显示状态
+    var mask = document.getElementById('themeWallpaperMask');
+    if (mask) mask.classList.toggle('active', !!url);
+    _applyWallpaperForeground(url);
+  }
+
+  // 分析壁纸平均亮度，决定文字前景色（浅色壁纸→黑字，深色壁纸→白字）
+  function _applyWallpaperForeground(url) {
+    var root = document.documentElement;
+    if (!url) {
+      root.removeAttribute('data-wall-fg');
+      return;
+    }
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var s = 32;
+        var canvas = document.createElement('canvas');
+        canvas.width = s; canvas.height = s;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, s, s);
+        var d = ctx.getImageData(0, 0, s, s).data;
+        var r = 0, g = 0, b = 0, n = 0;
+        for (var i = 0; i < d.length; i += 4) {
+          r += d[i]; g += d[i + 1]; b += d[i + 2]; n++;
+        }
+        var lum = (0.299 * r + 0.587 * g + 0.114 * b) / n;
+        root.setAttribute('data-wall-fg', lum < 128 ? 'light' : 'dark');
+      } catch (e) {
+        root.removeAttribute('data-wall-fg');
+      }
+    };
+    img.onerror = function () { root.removeAttribute('data-wall-fg'); };
+    img.src = url;
   }
 
   function _currentWallpaperId() {
@@ -487,19 +523,64 @@
     if (path === '/') navEls[0].classList.add('active');
   })();
 
-  // Mobile nav
-  function toggleMobileNav() {
-    document.getElementById('sidebar').classList.toggle('show');
-  }
-
-  (function checkMobile() {
-    var t = document.getElementById('mobileNavToggle');
-    t.style.display = window.innerWidth <= 768 ? 'flex' : 'none';
+  // ===== 移动端底部导航：五项 tabbar + 「更多」抽屉 =====
+  (function() {
+    // 按路径为 tabbar 与「更多」抽屉里的条目点亮 active
+    var mnavEls = document.querySelectorAll('[data-mnav]');
+    var path = location.pathname;
+    var best = null, bestScore = 0;
+    mnavEls.forEach(function(a) { a.classList.remove('active'); });
+    for (var i = 0; i < mnavEls.length; i++) {
+      var href = mnavEls[i].getAttribute('href');
+      if (!href) continue;
+      var score = 0;
+      if (path === href) score = 3;
+      else if (href !== '/' && path.indexOf(href) === 0) score = path.length >= href.length ? 2 : 1;
+      if (score > bestScore) { bestScore = score; best = mnavEls[i]; }
+    }
+    if (best) best.classList.add('active');
   })();
-  window.addEventListener('resize', function() {
-    var t = document.getElementById('mobileNavToggle');
-    t.style.display = window.innerWidth <= 768 ? 'flex' : 'none';
-  });
+
+  var _mobileMoreTrigger = null;
+  function closeMobileMore() {
+    var panel = document.getElementById('mobileMorePanel');
+    var btn = document.getElementById('mobileMoreBtn');
+    if (panel) {
+      panel.hidden = true;
+      panel.classList.remove('open');
+    }
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    // 关闭后焦点返回触发按钮（若仍可见）
+    if (_mobileMoreTrigger && _mobileMoreTrigger.isConnected) _mobileMoreTrigger.focus();
+  }
+  function openMobileMore() {
+    var panel = document.getElementById('mobileMorePanel');
+    var btn = document.getElementById('mobileMoreBtn');
+    if (panel) {
+      _mobileMoreTrigger = document.activeElement;
+      panel.hidden = false;
+      requestAnimationFrame(function () { panel.classList.add('open'); });
+      btn.setAttribute('aria-expanded', 'true');
+      var closeBtn = panel.querySelector('.mobile-more-close');
+      if (closeBtn) closeBtn.focus();
+    }
+  }
+  (function() {
+    var btn = document.getElementById('mobileMoreBtn');
+    var panel = document.getElementById('mobileMorePanel');
+    if (!btn || !panel) return;
+    btn.addEventListener('click', function () {
+      if (panel.hidden) openMobileMore(); else closeMobileMore();
+    });
+    panel.addEventListener('click', function (e) {
+      if (e.target === panel) closeMobileMore();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !panel.hidden) closeMobileMore();
+    });
+  })();
+
+  // 主题切换（会话页通过 body_class 隐藏顶栏，toggleTheme 由页面自带按钮触发）
   </script>
 </body>
 </html>

@@ -260,7 +260,7 @@ def learn_start(request):
 def learn_session(request):
     mode = request.GET.get('mode', 'sequential')
     check = request.GET.get('check', 'none')
-    unit_ids = request.GET.getlist('units')
+    unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     scope = request.GET.get('scope', 'unknown')
 
     settings_obj = UserSettings.get_settings()
@@ -292,6 +292,7 @@ def learn_session(request):
 
     query = Word.objects.all()
     daily_pick_ids = None
+    fav_ids = None
     if scope == 'daily':
         # 今日自选：以当天勾选清单为准（跨天未背完的自动顺延），忽略单元参数
         rollover_daily_picks()
@@ -300,11 +301,17 @@ def learn_session(request):
             .order_by('id').values_list('word_id', flat=True)
         )
         query = query.filter(id__in=daily_pick_ids)
+    elif scope == 'favorites':
+        # 收藏词汇：以收藏表为准，忽略单元参数；顺序与收藏列表一致（最新收藏在前）
+        fav_ids = list(
+            Favorite.objects.order_by('-created_at').values_list('word_id', flat=True)
+        )
+        query = query.filter(id__in=fav_ids)
     elif unit_ids:
         query = query.filter(unit__number__in=unit_ids)
 
-    # 自选清单「选了就背」，不做掌握状态/永不忘记过滤；其余范围沿用旧规则
-    if scope != 'daily':
+    # 今日自选 / 收藏词汇均为「选了就背」，不做掌握状态/永不忘记过滤；其余范围沿用旧规则
+    if scope not in ('daily', 'favorites'):
         # 永不忘记的词（is_excluded）不再出现
         query = query.exclude(progress__is_excluded=True)
 
@@ -326,6 +333,10 @@ def learn_session(request):
         # 顺序模式下按用户勾选的先后排列
         pick_order = {wid: i for i, wid in enumerate(daily_pick_ids)}
         words.sort(key=lambda w: pick_order.get(w.id, 1 << 30))
+    elif scope == 'favorites' and fav_ids:
+        # 顺序模式与收藏列表一致（最新收藏在前）
+        fav_order = {wid: i for i, wid in enumerate(fav_ids)}
+        words.sort(key=lambda w: fav_order.get(w.id, 1 << 30))
     else:
         words = sorted(words, key=lambda w: (w.unit.number, w.list_number))
 
@@ -338,6 +349,9 @@ def learn_session(request):
     progress_map = {
         p.word_id: p for p in StudyProgress.objects.filter(word_id__in=word_ids)
     }
+    favorite_ids = set(
+        Favorite.objects.filter(word_id__in=word_ids).values_list('word_id', flat=True)
+    )
 
     word_data = []
     for w in words:
@@ -353,6 +367,7 @@ def learn_session(request):
             'example_zh': w.example_zh,
             'unit_number': w.unit.number if w.unit else None,
             'uncommon_pos': parse_uncommon_pos(p.uncommon_pos if p else None),
+            'is_favorite': w.id in favorite_ids,
         })
 
     # 用 session 记录词 ID 列表（供复习页用）
@@ -442,6 +457,54 @@ def api_daily_pick_clear(request):
     return JsonResponse({'success': True, 'total': 0})
 
 
+@require_http_methods(["POST"])
+def api_daily_pick_random(request):
+    """随机抽取：从「没背过 / 背过」的词里各抽指定数量，加入今日清单。
+
+    已会按 StudyProgress.status == 'mastered' 判定，其余算没背过；
+    永不忘记（is_excluded）与已在今日清单中的词不参与抽取。
+    """
+    try:
+        data = json.loads(request.body or '{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'success': False, 'error': '请求数据格式错误'}, status=400)
+    try:
+        unknown_count = max(0, min(int(data.get('unknown_count') or 0), 1000))
+        mastered_count = max(0, min(int(data.get('mastered_count') or 0), 1000))
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': '数量格式错误'}, status=400)
+    if unknown_count == 0 and mastered_count == 0:
+        return JsonResponse({'success': False, 'error': '请至少设置一个抽取数量'}, status=400)
+
+    today = timezone.localdate()
+    rollover_daily_picks(today)
+    picked_ids = list(DailyPick.objects.filter(date=today).values_list('word_id', flat=True))
+
+    base = Word.objects.exclude(progress__is_excluded=True)
+    pools = []
+    if mastered_count > 0:
+        pools.append((base.filter(progress__status='mastered'), mastered_count))
+    if unknown_count > 0:
+        pools.append((base.exclude(progress__status='mastered'), unknown_count))
+
+    added_ids = []
+    for qs, n in pools:
+        picked = list(qs.exclude(id__in=picked_ids).order_by('?')[:n])
+        DailyPick.objects.bulk_create(
+            [DailyPick(date=today, word_id=w.id) for w in picked],
+            ignore_conflicts=True,
+        )
+        added_ids.extend(w.id for w in picked)
+
+    total = DailyPick.objects.filter(date=today).count()
+    return JsonResponse({
+        'success': True,
+        'added_ids': added_ids,
+        'added': len(added_ids),
+        'total': total,
+    })
+
+
 def review_start(request):
     """复习：选择单元与范围（与背诵入口一致）"""
     units = Unit.objects.annotate(
@@ -488,7 +551,7 @@ def review_session(request):
     settings_obj = UserSettings.get_settings()
 
     # 范围参数：units 多选单元编号；scope 掌握状态
-    unit_ids = request.GET.getlist('units')
+    unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     scope = request.GET.get('scope', 'all')
 
     # 随机复习模式
@@ -570,6 +633,11 @@ def review_session(request):
         done_ids.extend(p.id for p in batch)
         request.session['random_review_done'] = done_ids[-2000:]
 
+    favorite_ids = set(
+        Favorite.objects.filter(word_id__in=[p.word_id for p in batch])
+        .values_list('word_id', flat=True)
+    )
+
     word_data = []
     for p in batch:
         w = p.word
@@ -587,6 +655,7 @@ def review_session(request):
             'status': p.status,
             'uncommon_pos': parse_uncommon_pos(p.uncommon_pos),
             'yesterday': p.learned_date == yesterday,
+            'is_favorite': w.id in favorite_ids,
         })
 
     mastered_count = len([p for p in batch if p.status == 'mastered'])
@@ -987,6 +1056,7 @@ def api_mark_word(request, action, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
+@require_http_methods(['POST'])
 def api_mark_skip(request, word_id):
     """标记单词为「永不忘记」：之后不再出现在背诵/复习中。"""
     try:
@@ -1011,6 +1081,7 @@ def api_mark_skip(request, word_id):
         return JsonResponse({'error': str(e)}, status=400)
 
 
+@require_http_methods(['POST'])
 def api_mark_unskip(request, word_id):
     """取消「永不忘记」标记：恢复出现在背诵/复习中。"""
     try:
@@ -2010,6 +2081,11 @@ def api_export_pdf(request):
     elif export_type == 'favorites':
         words = Word.objects.filter(favorite__isnull=False).order_by('unit__number')
         title_text = '考研单词表（收藏单词）'
+    elif export_type == 'pick':
+        today = timezone.localdate()
+        rollover_daily_picks(today)
+        words = Word.objects.filter(daily_picks__date=today).order_by('daily_picks__id')
+        title_text = '今日自选背诵清单'
     elif export_type == 'errors':
         words = Word.objects.filter(progress__error_count__gt=0).order_by('-progress__error_count')
         title_text = '考研单词表（易错词）'
@@ -3462,7 +3538,7 @@ def api_favorite(request, word_id):
 def api_learn_words(request):
     """返回按 scope+units 筛选的单词列表（与 learn_session 逻辑一致）"""
     scope = request.GET.get('scope', 'unknown')
-    unit_ids = request.GET.getlist('units')
+    unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     mode = request.GET.get('mode', 'sequential')
 
     query = Word.objects.all()
@@ -3481,6 +3557,17 @@ def api_learn_words(request):
             words.sort(key=lambda w: order.get(w.id, 0))
         else:
             random.shuffle(words)
+    elif scope == 'favorites':
+        # 收藏词汇：以收藏表为准（收藏了就背，含已掌握/永不忘记）
+        fav_ids = list(
+            Favorite.objects.order_by('-created_at').values_list('word_id', flat=True)
+        )
+        words = list(Word.objects.filter(id__in=fav_ids))
+        if mode == 'random':
+            random.shuffle(words)
+        else:
+            order = {wid: i for i, wid in enumerate(fav_ids)}
+            words.sort(key=lambda w: order.get(w.id, 0))
     else:
         # 永不忘记的词不再出现
         query = query.exclude(progress__is_excluded=True)
@@ -3502,6 +3589,9 @@ def api_learn_words(request):
     progress_map = {
         p.word_id: p for p in StudyProgress.objects.filter(word_id__in=word_ids)
     }
+    favorite_ids = set(
+        Favorite.objects.filter(word_id__in=word_ids).values_list('word_id', flat=True)
+    )
 
     word_data = []
     for w in words:
@@ -3517,6 +3607,7 @@ def api_learn_words(request):
             'example_zh': w.example_zh,
             'unit_number': w.unit.number if w.unit else None,
             'uncommon_pos': parse_uncommon_pos(p.uncommon_pos if p else None),
+            'is_favorite': w.id in favorite_ids,
         })
 
     return JsonResponse({'words': word_data, 'total': len(word_data)})
@@ -3525,7 +3616,7 @@ def api_learn_words(request):
 def api_exam_words(request):
     """生成模拟考试题目（4选1选择题，不返回答案给前端）"""
     scope = request.GET.get('scope', 'all')
-    unit_ids = request.GET.getlist('units')
+    unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     category = request.GET.get('category', '')
     direction = request.GET.get('direction', 'en2zh')
     try:

@@ -62,6 +62,7 @@ urlpatterns = [
     path('api/learn-words/', views.api_learn_words, name='api_learn_words'),
     path('api/daily-picks/toggle/', views.api_daily_pick_toggle, name='api_daily_pick_toggle'),
     path('api/daily-picks/clear/', views.api_daily_pick_clear, name='api_daily_pick_clear'),
+    path('api/daily-picks/random/', views.api_daily_pick_random, name='api_daily_pick_random'),
     path('api/units/', views.api_units, name='api_units'),
     path('api/unit/create/', views.api_unit_create, name='api_unit_create'),
     path('api/unit/delete/<int:unit_number>/', views.api_unit_delete, name='api_unit_delete'),

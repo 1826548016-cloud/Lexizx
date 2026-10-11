@@ -23,24 +23,26 @@
   <p class="setup-subtitle" style="margin-bottom: 20px;">点一下就能开始，高级设置可以展开调整。</p>
 
   {% if plan_today %}
-  <!-- 一键开始今日学习 -->
-  <div class="card plan-quick-start today-mission" style="margin-bottom: 20px;">
-    <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 16px;">
-      <div>
-        <div class="mission-title">
-          <i class="ph ph-sun-horizon"></i> 今日任务
-          <span class="mission-plan">计划「{{ plan_today.plan_name }}」</span>
-        </div>
-        <div class="mission-chips">
-          <span class="mission-chip">新学 <strong>{{ plan_today.today_new_done }}</strong>/{{ plan_today.daily_new_target }}</span>
-          <span class="mission-chip">复习 <strong>{{ plan_today.today_review_done }}</strong>/{{ plan_today.daily_review_target }}</span>
-          {% if plan_today.days_left is not None %}<span class="mission-chip"><i class="ph ph-timer"></i> 距目标 {{ plan_today.days_left }} 天</span>{% endif %}
-        </div>
+  <!-- 默认推荐：按今日计划开始（唯一主按钮 + 数量/检测方式/预计时长） -->
+  <div class="card plan-quick-start today-mission" id="todayMissionCard"
+       data-new-done="{{ plan_today.today_new_done }}"
+       data-new-target="{{ plan_today.daily_new_target }}"
+       data-review-done="{{ plan_today.today_review_done }}"
+       data-review-target="{{ plan_today.daily_review_target }}">
+    <div class="mission-main">
+      <div class="mission-title">
+        <i class="ph ph-sun-horizon"></i> 按今日计划开始
+        <span class="mission-plan">「{{ plan_today.plan_name }}」</span>
       </div>
-      <div class="flex gap-2">
-        <button type="button" class="btn btn-primary btn-lg" onclick="quickStartToday('new')">开始背新词</button>
-        <button type="button" class="btn btn-secondary btn-lg" onclick="quickStartToday('review')">去复习</button>
+      <div class="mission-chips">
+        <span class="mission-chip">新学 <strong>{{ plan_today.today_new_done }}</strong>/{{ plan_today.daily_new_target }}</span>
+        <span class="mission-chip">复习 <strong>{{ plan_today.today_review_done }}</strong>/{{ plan_today.daily_review_target }}</span>
+        {% if plan_today.days_left is not None %}<span class="mission-chip"><i class="ph ph-timer"></i> 距目标 {{ plan_today.days_left }} 天</span>{% endif %}
       </div>
+      <p class="mission-recommend" id="missionRecommend">推荐：背新词 · 拼写检测 · 约 10 分钟</p>
+    </div>
+    <div class="mission-action">
+      <button type="button" class="btn btn-primary btn-lg" id="missionBtn" data-type="new" onclick="quickStartToday(this.dataset.type)">开始背新词</button>
     </div>
   </div>
   {% endif %}
@@ -59,51 +61,51 @@
     </div>
   </div>
 
-  <!-- 快速开始 -->
+  <!-- 常用入口：继续上次（resumeCard）+ 收藏词汇 + 自选范围 -->
   <div class="card" style="margin-bottom: 20px;">
-    <div class="card-header">快速开始</div>
-    <div class="quick-start-grid">
+    <div class="card-header">常用入口</div>
+    <div class="quick-start-grid quick-grid-2">
       <a href="{% url 'words:daily_pick' %}" class="quick-card">
         <div class="quick-icon"><i class="ph ph-calendar-check"></i></div>
-        <div class="quick-title">今日自选</div>
+        <div class="quick-title">自选范围</div>
         <div class="quick-desc">{% if daily_pick_count %}已选 <strong>{{ daily_pick_count }}</strong> 个词，点此增减或开始背诵{% else %}自己勾选今天要背的词，没背完明天自动顺延{% endif %}</div>
       </a>
-      <button type="button" class="quick-card" onclick="openLearnConfig('sequential')">
-        <div class="quick-icon"><i class="ph ph-play-circle"></i></div>
-        <div class="quick-title">顺序背新词</div>
-        <div class="quick-desc">点开配置范围、单元与检测方式，每批 10 个</div>
-      </button>
-      <button type="button" class="quick-card" onclick="openLearnConfig('random')">
-        <div class="quick-icon"><i class="ph ph-shuffle"></i></div>
-        <div class="quick-title">乱序背新词</div>
-        <div class="quick-desc">点开配置范围、单元与检测方式，每批 10 个</div>
-      </button>
-      <a href="{% url 'words:learn_session' %}?scope=unknown&mode=sequential&batch=10&check=spelling" class="quick-card">
-        <div class="quick-icon"><i class="ph ph-pencil-simple"></i></div>
-        <div class="quick-title">拼写检测</div>
-        <div class="quick-desc">看中文释义默写英文单词</div>
+      <a href="{% url 'words:learn_session' %}?scope=favorites&mode=sequential&batch=10&check=none" class="quick-card">
+        <div class="quick-icon"><i class="ph ph-star"></i></div>
+        <div class="quick-title">收藏词汇</div>
+        <div class="quick-desc">只背收藏过的重点词，顺序按收藏时间倒序</div>
       </a>
-      <a href="{% url 'words:learn_session' %}?scope=unknown&mode=sequential&batch=10&check=gates&repeats=3&interleave=1" class="quick-card">
-        <div class="quick-icon"><i class="ph ph-check-circle"></i></div>
-        <div class="quick-title">高效背诵</div>
-        <div class="quick-desc">每个词连续背 3 遍拼写+释义默写，再随机穿插重现 1 次</div>
-      </a>
-      {% for preset in presets %}
-      <div class="quick-card preset-card" data-url="{% url 'words:learn_session' %}?scope={{ preset.params.scope|default:'unknown' }}&mode={{ preset.params.mode|default:'sequential' }}&batch={{ preset.params.batch|default:batch_size }}&check={{ preset.params.check|default:'none' }}{% if preset.params.check == 'gates' %}&repeats={{ preset.params.repeats|default:3 }}&interleave={{ preset.params.interleave|default:1 }}{% endif %}{% if preset.params.count %}&count={{ preset.params.count }}{% endif %}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
-        <div class="quick-icon"><i class="ph ph-lightning"></i></div>
-        <div class="quick-title">{{ preset.name }}</div>
-        <div class="quick-desc">{{ preset.params.scope|default:'未掌握' }} · {{ preset.params.mode|default:'顺序' }} · {{ preset.params.check|default:'纯背诵' }}</div>
-        <div class="preset-actions">
-          <button type="button" class="btn btn-ghost btn-sm preset-edit" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="编辑（载入到配置面板修改）" onclick="event.stopPropagation(); editPreset(this)"><i class="ph ph-note-pencil"></i></button>
-          <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
-        </div>
-      </div>
-      {% endfor %}
     </div>
   </div>
 
   <!-- 背诵配置面板（原「自定义」功能已迁移至顺序/乱序背新词入口） -->
-  <div id="learnConfigPanel" class="card custom-setup hidden" style="margin-bottom: 20px;">
+  <div id="learnConfigPanel" class="card custom-setup" style="margin-bottom: 20px;">
+    <button type="button" class="config-toggle" id="configToggle" aria-expanded="false" aria-controls="learnConfigBody" onclick="toggleConfig()">
+      <span class="config-toggle-title"><i class="ph ph-sliders"></i> 调整学习方式</span>
+      <span class="config-toggle-hint">范围 · 顺序 · 批量 · 数量 · 检测方式 · 预设 · 单元</span>
+      <i class="ph ph-caret-down config-toggle-arrow" aria-hidden="true"></i>
+    </button>
+
+    <div class="config-body hidden" id="learnConfigBody">
+      {% if presets %}
+      <div class="preset-list" style="margin-bottom: 16px;">
+        <div class="choice-group-title">我的预设</div>
+        <div class="quick-start-grid">
+          {% for preset in presets %}
+          <div class="quick-card preset-card" data-url="{% url 'words:learn_session' %}?scope={{ preset.params.scope|default:'unknown' }}&mode={{ preset.params.mode|default:'sequential' }}&batch={{ preset.params.batch|default:batch_size }}&check={{ preset.params.check|default:'none' }}{% if preset.params.check == 'gates' %}&repeats={{ preset.params.repeats|default:3 }}&interleave={{ preset.params.interleave|default:1 }}{% endif %}{% if preset.params.count %}&count={{ preset.params.count }}{% endif %}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
+            <div class="quick-icon"><i class="ph ph-lightning"></i></div>
+            <div class="quick-title">{{ preset.name }}</div>
+            <div class="quick-desc">{{ preset.params.scope|default:'未掌握' }} · {{ preset.params.mode|default:'顺序' }} · {{ preset.params.check|default:'纯背诵' }}</div>
+            <div class="preset-actions">
+              <button type="button" class="btn btn-ghost btn-sm preset-edit" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="编辑（载入到配置面板修改）" onclick="event.stopPropagation(); editPreset(this)"><i class="ph ph-note-pencil"></i></button>
+              <button type="button" class="btn btn-ghost btn-sm preset-delete" data-id="{{ preset.id }}" data-name="{{ preset.name }}" title="删除" onclick="event.stopPropagation(); deletePreset(this)"><i class="ph ph-trash"></i></button>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
       <div class="preset-save-row" style="display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap;">
         <input type="text" id="presetName" class="form-input" placeholder="给这套配置起个名字" style="flex: 1; min-width: 160px;">
         <button type="button" class="btn btn-secondary" data-role="preset-save" onclick="saveLearnPreset()"><i class="ph ph-bookmark"></i> 保存为预设</button>
@@ -156,20 +158,20 @@
     <div class="choice-group" style="grid-column: 1 / -1;">
       <span class="choice-group-title">检测方式</span>
       <label class="choice-option">
-        <input type="radio" name="check" value="none" checked>
-        <span>纯背诵 <span class="text-secondary text-sm">（只看不写）</span></span>
-      </label>
-      <label class="choice-option">
         <input type="radio" name="check" value="spelling">
-        <span>拼写检测 <span class="text-secondary text-sm">（看中文默写英文）</span></span>
+        <span class="choice-main">拼写检测 <span class="text-secondary text-sm">看中文默写英文 · 练拼写 · 约 20 秒/词</span></span>
       </label>
       <label class="choice-option">
         <input type="radio" name="check" value="meaning">
-        <span>释义默写 <span class="text-secondary text-sm">（看英文写中文，AI 判定）</span></span>
+        <span class="choice-main">释义默写 <span class="text-secondary text-sm">看英文写中文 · AI 判定 · 约 30 秒/词</span></span>
+      </label>
+      <label class="choice-option">
+        <input type="radio" name="check" value="none" checked>
+        <span class="choice-main">纯背诵 <span class="text-secondary text-sm">只看不写 · 快速通读 · 约 5 秒/词</span></span>
       </label>
       <label class="choice-option">
         <input type="radio" name="check" value="gates">
-        <span>高效背诵 <span class="text-secondary text-sm">（每个词连续背 N 遍拼写+释义默写，再随机穿插重现）</span></span>
+        <span class="choice-main">高效背诵 <span class="text-secondary text-sm">精记高频 · 每词连续 N 遍 + 穿插重现 · 约 60 秒/词</span> <span class="badge badge-review">高级</span></span>
       </label>
       <div id="gatesConfig" class="hidden" style="margin-top: 10px; padding: 10px 12px; background: var(--c-surface-2); border-radius: var(--radius-sm); gap: 16px; flex-wrap: wrap; align-items: center;">
         <label style="display: inline-flex; align-items: center; gap: 6px;">
@@ -193,6 +195,7 @@
       </button>
     </div>
     <div class="learn-start-submit"><button type="submit" class="btn btn-primary btn-lg"><i class="ph ph-play"></i> 开始背诵</button></div>
+    </div>
 
     <!-- 单元选择弹窗 -->
     <div id="unitPickerModal" class="modal-overlay hidden" onclick="if (event.target === this) closeUnitModal()">
@@ -304,13 +307,31 @@ function syncCountHint() {
 }
 window.syncCountHint = syncCountHint;
 
-// 顺序/乱序背新词卡片：点开配置面板并预选背诵模式（原「自定义」已迁移至此）
+function toggleConfig() {
+  var body = document.getElementById('learnConfigBody');
+  var toggle = document.getElementById('configToggle');
+  if (!body) return;
+  var isHidden = body.classList.contains('hidden');
+  if (isHidden) expandConfig(); else {
+    body.classList.add('hidden');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function expandConfig() {
+  var body = document.getElementById('learnConfigBody');
+  var toggle = document.getElementById('configToggle');
+  if (body) body.classList.remove('hidden');
+  if (toggle) toggle.setAttribute('aria-expanded', 'true');
+}
+
+// 顺序/乱序背新词：展开「调整学习方式」并预选背诵模式
 function openLearnConfig(mode) {
   const panel = document.getElementById('learnConfigPanel');
   if (!panel) return;
   const radio = document.querySelector('input[name="mode"][value="' + mode + '"]');
   if (radio) radio.checked = true;
-  panel.classList.remove('hidden');
+  expandConfig();
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -397,7 +418,7 @@ function editPreset(btn) {
   setPresetSaveMode(true);
   var panel = document.getElementById('learnConfigPanel');
   if (panel) {
-    panel.classList.remove('hidden');
+    expandConfig();
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   showToast('已载入预设「' + name + '」，修改后点「更新预设」保存', 'success');
@@ -473,6 +494,40 @@ function discardResume() {
   if (card) card.classList.add('hidden');
   showToast('已丢弃上次背诵进度', 'success');
 }
+
+// 按今日计划生成的默认推荐：唯一主按钮 + 数量/检测方式/预计时长
+function renderMission() {
+  var card = document.getElementById('todayMissionCard');
+  if (!card) return;
+  var newDone = parseInt(card.dataset.newDone, 10) || 0;
+  var newTarget = parseInt(card.dataset.newTarget, 10) || 0;
+  var reviewDone = parseInt(card.dataset.reviewDone, 10) || 0;
+  var reviewTarget = parseInt(card.dataset.reviewTarget, 10) || 0;
+  var btn = document.getElementById('missionBtn');
+  var rec = document.getElementById('missionRecommend');
+
+  var type, label, text;
+  if (newDone < newTarget) {
+    type = 'new';
+    var remaining = newTarget - newDone;
+    var mins = Math.max(1, Math.ceil(remaining * 20 / 60));
+    label = '开始背新词';
+    text = '推荐：背新词 ' + remaining + ' 个 · 拼写检测 · 约 ' + mins + ' 分钟';
+  } else if (reviewDone < reviewTarget) {
+    type = 'review';
+    var rRemaining = reviewTarget - reviewDone;
+    var rMins = Math.max(1, Math.ceil(rRemaining * 15 / 60));
+    label = '去复习';
+    text = '推荐：复习 ' + rRemaining + ' 词 · 约 ' + rMins + ' 分钟';
+  } else {
+    type = 'new';
+    label = '今日目标已完成';
+    text = '今日新词与复习目标均已达成，可继续巩固薄弱词';
+  }
+  if (btn) { btn.dataset.type = type; btn.textContent = label; }
+  if (rec) rec.textContent = text;
+}
+renderMission();
 
 // 一键开始今日学习：按计划单元范围自动跳转
 function quickStartToday(type) {

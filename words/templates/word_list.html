@@ -44,6 +44,34 @@
   .word-action-menu .danger { color: var(--c-red); }
   @media (max-width: 900px) { .vocab-workspace { grid-template-columns: 1fr; } .vocab-sidebar { position: static; } .unit-list { max-height: 230px; } .filter-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 560px) { .filter-fields { grid-template-columns: 1fr; } .vocab-toolbar .btn { flex: 1; } .meaning-cell { max-width: 230px; } }
+
+  /* 统一筛选：可关闭标签 + 清除全部 */
+  .active-filters { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .filter-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 6px 4px 10px; border-radius: 999px;
+    background: var(--c-surface-2); border: 1px solid var(--c-border-light);
+    color: var(--c-text-2); font-size: var(--fs-xs); font-weight: 500;
+    cursor: pointer; line-height: 1.4;
+  }
+  .filter-tag:hover { border-color: var(--c-red); color: var(--c-red); }
+  .filter-tag i.ph { font-size: .8rem; }
+  .filter-clear-all {
+    border: none; background: transparent; cursor: pointer;
+    padding: 4px 4px; color: var(--c-text-3); font-size: var(--fs-xs);
+    text-decoration: underline; text-underline-offset: 2px;
+  }
+  .filter-clear-all:hover { color: var(--c-red); }
+
+  /* 移动端：筛选面板改为底部抽屉 */
+  @media (max-width: 900px) {
+    .filter-panel[open] {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      max-height: 82vh; overflow-y: auto; z-index: 120;
+      margin: 0 !important; border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      box-shadow: 0 -8px 32px rgba(0,0,0,.18);
+    }
+  }
 </style>
 {% endblock %}
 
@@ -55,13 +83,9 @@
   <aside class="card vocab-sidebar">
     <div>
       <div class="flex justify-between items-center" style="margin-bottom: 12px;">
-        <div class="card-header" style="margin: 0;">词库导航</div>
+        <div class="card-header" style="margin: 0;">单元导航</div>
         <button class="btn btn-secondary btn-sm" onclick="showCreateUnit()"><i class="ph ph-plus"></i> 单元</button>
       </div>
-      <button class="vocab-nav-item active" id="allWordsButton" onclick="resetWordFilters()"><span><i class="ph ph-books"></i> 全部单词</span><span class="vocab-nav-count" id="allWordsCount">—</span></button>
-      <button class="vocab-nav-item" onclick="setStatusFilter('mastered')"><span><i class="ph ph-check-circle"></i> 已掌握</span></button>
-      <button class="vocab-nav-item" onclick="setStatusFilter('unknown')"><span><i class="ph ph-arrow-clockwise"></i> 待学习</span></button>
-      <button class="vocab-nav-item" onclick="setStatusFilter('excluded')"><span><i class="ph ph-check-fat"></i> 永不忘记</span><span class="vocab-nav-count" id="excludedCount">—</span></button>
       <div class="vocab-side-heading">
         <span>单元（{{ units|length }}）</span>
       </div>
@@ -92,7 +116,7 @@
   <!-- Main word list area -->
   <div style="min-width: 0;">
     <div class="vocab-toolbar">
-      <div class="vocab-search"><i class="ph ph-magnifying-glass"></i><input type="text" id="searchInput" class="form-input" placeholder="搜索单词、释义或词性"></div>
+      <div class="vocab-search"><i class="ph ph-magnifying-glass"></i><input type="text" id="searchInput" class="form-input" placeholder="搜索单词、释义或词性" aria-label="搜索单词、释义或词性"></div>
       <button class="btn btn-secondary" onclick="document.getElementById('filterPanel').open = !document.getElementById('filterPanel').open"><i class="ph ph-faders"></i> 筛选</button>
       <details class="word-actions">
         <summary title="更多操作"><i class="ph ph-dots-three"></i></summary>
@@ -121,25 +145,25 @@
     <details class="card filter-panel" id="filterPanel">
       <summary><i class="ph ph-sliders-horizontal"></i> 更多筛选与排序</summary>
       <div class="filter-fields">
-        <select id="categoryFilter" class="form-input">
+        <select id="categoryFilter" class="form-input" aria-label="分类筛选">
           <option value="">全部分类</option>
           <option value="required">必考词</option>
           <option value="basic">基础词</option>
           <option value="advanced">超纲词</option>
         </select>
-        <select id="unitFilter" class="form-input">
+        <select id="unitFilter" class="form-input" aria-label="单元筛选">
           <option value="">全部单元</option>
           {% for unit in units %}
           <option value="{{ unit.number }}">{{ unit.name }}</option>
           {% endfor %}
         </select>
-        <select id="statusFilter" class="form-input">
+        <select id="statusFilter" class="form-input" aria-label="状态筛选">
           <option value="">全部状态</option>
           <option value="mastered">会</option>
           <option value="unknown">不会</option>
           <option value="excluded">已排除（永不忘记）</option>
         </select>
-        <select id="sortFilter" class="form-input">
+        <select id="sortFilter" class="form-input" aria-label="排序方式">
           <option value="">默认排序</option>
           <option value="alpha">A → Z</option>
           <option value="alpha_desc">Z → A</option>
@@ -153,12 +177,7 @@
         <strong>单词列表</strong>
         <span id="wordListSummary">加载中…</span>
         <span class="spacer"></span>
-        <span class="quick-filters">
-          <button class="quick-filter" onclick="setStatusFilter('')">全部</button>
-          <button class="quick-filter" onclick="setStatusFilter('unknown')">待学习</button>
-          <button class="quick-filter" onclick="setStatusFilter('mastered')">已掌握</button>
-          <button class="quick-filter" onclick="setStatusFilter('excluded')">已排除</button>
-        </span>
+        <span class="active-filters" id="activeFilters" aria-label="当前生效的筛选条件"></span>
       </div>
       <div class="vocab-table-scroll">
         <table class="data-table vocab-table">
@@ -394,12 +413,55 @@
       var data = await VOCAB_API.get(buildQuery(currentPage));
       renderWords(data);
       renderPagination(data.total, data.page);
-      document.getElementById('allWordsCount').textContent = data.total;
-      document.getElementById('excludedCount').textContent = data.total_excluded || 0;
       document.getElementById('wordListSummary').textContent = '共 ' + data.total + ' 词 · 当前显示 ' + (data.words || []).length + ' 词';
+      renderActiveFilters();
     } catch (e) {
       showToast('加载单词失败', 'error');
     }
+  }
+
+  // 读取某个下拉框当前选中项的可读文本
+  function selectedOptionText(id) {
+    var sel = document.getElementById(id);
+    if (!sel || !sel.value) return '';
+    var opt = sel.options[sel.selectedIndex];
+    return opt ? opt.textContent : sel.value;
+  }
+
+  // 当前生效筛选条件 → 可关闭标签 + 清除全部
+  function renderActiveFilters() {
+    var container = document.getElementById('activeFilters');
+    if (!container) return;
+    var defs = [
+      { id: 'searchInput', label: '搜索', isText: true },
+      { id: 'categoryFilter', label: '分类' },
+      { id: 'unitFilter', label: '单元' },
+      { id: 'statusFilter', label: '状态' },
+      { id: 'sortFilter', label: '排序' }
+    ];
+    var html = '';
+    defs.forEach(function (d) {
+      var el = document.getElementById(d.id);
+      var val = d.isText ? (el ? el.value.trim() : '') : (el ? el.value : '');
+      if (!val) return;
+      var text = d.isText ? val : selectedOptionText(d.id);
+      html += '<button type="button" class="filter-tag" data-clear="' + d.id + '">' +
+                '<span>' + d.label + '：' + escapeHtml(text) + '</span>' +
+                '<i class="ph ph-x" aria-hidden="true"></i>' +
+              '</button>';
+    });
+    html += '<button type="button" class="filter-clear-all" id="clearAllFilters">清除全部</button>';
+    container.innerHTML = html;
+    container.querySelectorAll('.filter-tag[data-clear]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var id = b.getAttribute('data-clear');
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+        loadWords(1);
+      });
+    });
+    var clearAll = document.getElementById('clearAllFilters');
+    if (clearAll) clearAll.addEventListener('click', function () { resetWordFilters(); });
   }
 
   // 优先按词性分组展示释义：v. 释义；释义
@@ -541,12 +603,6 @@
 
   function setStatusFilter(status) {
     document.getElementById('statusFilter').value = status;
-    // 更新侧边栏按钮高亮
-    document.querySelectorAll('.vocab-nav-item').forEach(function (btn) { btn.classList.remove('active'); });
-    var map = { 'mastered': 1, 'unknown': 2, 'excluded': 3 };
-    var idx = map[status] || 0;
-    var buttons = document.querySelectorAll('.vocab-nav-item');
-    if (buttons[idx]) buttons[idx].classList.add('active');
     loadWords(1);
   }
 

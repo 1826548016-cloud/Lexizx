@@ -3,6 +3,7 @@
 
 {% block title %}复习中 - 考研单词背诵系统{% endblock %}
 {% block page_title %}复习中{% endblock %}
+{% block body_class %}session-page{% endblock %}
 
 {% block extra_head %}
 <style>
@@ -34,35 +35,45 @@
 </div>
 {% else %}
 <div class="review-stage check-scope">
-<div class="card review-progress mb-4">
-  <div class="review-progress-top">
-    <a href="{% url 'words:dashboard' %}" class="text-secondary text-sm"><i class="ph ph-arrow-left"></i> 退出复习</a>
-    <span class="badge badge-reviewing">复习 <span id="progressText">1 / {{ review_count }}</span></span>
+<header class="card review-progress session-header" aria-label="复习进度与计时">
+  <div class="session-header-grid">
+    <div class="session-header-side">
+      <a href="{% url 'words:dashboard' %}" class="session-exit"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>退出并保存</span></a>
+    </div>
+    <div class="session-center">
+      <div class="session-progress-row">
+        <span class="badge badge-reviewing">复习 <span id="progressText">1 / {{ review_count }}</span></span>
+      </div>
+      <div class="progress-bar"><div id="progressFill" class="progress-bar-fill review" style="width: 0%;"></div></div>
+      <input type="range" id="progressSlider" class="review-progress-slider" min="0" max="1" value="0" step="1" aria-label="拖动跳转单词" title="拖动跳转单词">
+    </div>
+    <div class="session-header-side session-header-right">
+      <span class="session-timer" id="sessionTimer" title="本次用时" aria-label="本次用时">00:00</span>
+    </div>
   </div>
-  <div class="text-secondary text-sm" style="margin-bottom: 8px;" id="batchInfo"></div>
-  <div class="review-mode-bar">
-    <span class="text-sm" style="color: var(--c-text-3);">复习模式：</span>
-    <button class="mode-btn is-active" data-mode="all" id="reviewModeAllBtn">全部词性</button>
-    <button class="mode-btn" data-mode="uncommon" id="reviewModeUncommonBtn">仅陌生词性</button>
+  <div class="review-options">
+    <div class="text-secondary text-sm" id="batchInfo"></div>
+    <div class="review-mode-bar">
+      <span class="text-sm" style="color: var(--c-text-3);">复习模式：</span>
+      <button class="mode-btn is-active" data-mode="all" id="reviewModeAllBtn">全部词性</button>
+      <button class="mode-btn" data-mode="uncommon" id="reviewModeUncommonBtn">仅陌生词性</button>
+    </div>
+    <div class="review-mode-bar check-mode-bar">
+      <span class="text-sm" style="color: var(--c-text-3);">检测方式：</span>
+      <button class="mode-btn is-active" data-check="none" id="reviewCheckNoneBtn">纯复习</button>
+      <button class="mode-btn" data-check="spelling" id="reviewCheckSpellingBtn">拼写检测</button>
+      <button class="mode-btn" data-check="meaning" id="reviewCheckMeaningBtn">释义默写</button>
+      <button class="mode-btn" data-check="gates" id="reviewCheckGatesBtn">高效背诵</button>
+    </div>
   </div>
-  <div class="review-mode-bar check-mode-bar">
-    <span class="text-sm" style="color: var(--c-text-3);">检测方式：</span>
-    <button class="mode-btn is-active" data-check="none" id="reviewCheckNoneBtn">纯复习</button>
-    <button class="mode-btn" data-check="spelling" id="reviewCheckSpellingBtn">拼写检测</button>
-    <button class="mode-btn" data-check="meaning" id="reviewCheckMeaningBtn">释义默写</button>
-    <button class="mode-btn" data-check="gates" id="reviewCheckGatesBtn">高效背诵</button>
-  </div>
-  <div class="progress-bar">
-    <div id="progressFill" class="progress-bar-fill review" style="width: 0%;"></div>
-  </div>
-  <input type="range" id="progressSlider" class="review-progress-slider" min="0" max="1" value="0" step="1" title="拖动跳转单词">
-</div>
+</header>
 
 <div id="wordCard" class="card word-card review-study-card">
   <div class="review-tools">
     <button id="speakBtn" class="study-tool-btn" title="发音"><i class="ph ph-speaker-high"></i><span>发音</span></button>
-    <button id="noteBtn" class="study-tool-btn" title="记笔记 / 查看笔记"><i class="ph ph-note-pencil"></i><span>笔记</span></button>
-    <button id="quickMemoryBtn" class="study-tool-btn" title="AI 速记 / 查看速记"><i class="ph ph-lightning"></i><span>速记</span></button>
+    <button id="favBtn" class="study-tool-btn" aria-pressed="false" title="收藏单词（加入收藏词汇）"><i class="ph ph-star"></i><span>收藏</span></button>
+    <button id="noteBtn" class="study-tool-btn" aria-pressed="false" title="记笔记 / 查看笔记"><i class="ph ph-note-pencil"></i><span>笔记</span></button>
+    <button id="quickMemoryBtn" class="study-tool-btn" aria-pressed="false" title="AI 速记 / 查看速记"><i class="ph ph-lightning"></i><span>速记</span></button>
   </div>
   <div id="wordText" class="word-text">加载中…</div>
   <div id="wordPhonetic" class="word-phonetic">—</div>
@@ -162,6 +173,7 @@
 
 {% block extra_scripts %}
 <script src="{% static 'js/word_ext.js' %}?v=2"></script>
+<script src="{% static 'js/word_fav.js' %}?v=1"></script>
 <script src="{% static 'js/assistant.js' %}"></script>
 <script>
 (function() {
@@ -348,6 +360,7 @@
 
   function renderWord(word) {
     currentWord = word;
+    if (window.WordFavorite) WordFavorite.update(word);
     revealDone = false;
     expandAllTmp = false;
     checked = false;
@@ -1063,6 +1076,13 @@
     });
   }
 
+  // 初始化收藏共享组件
+  if (window.WordFavorite) {
+    WordFavorite.init({
+      getCurrentWord: function () { return currentWord; }
+    });
+  }
+
   // 初始化小助手共享组件
   if (window.AssistantPanel) {
     AssistantPanel.init({
@@ -1120,6 +1140,20 @@
     }
     renderWord(wordsData[currentIndex]);
   }
+})();
+</script>
+<script>
+// 会话页计时显示（仅展示，实际学习时长由 VocabStudyTimer 上报）
+(function () {
+  var el = document.getElementById('sessionTimer');
+  if (!el) return;
+  var start = Date.now();
+  var t = setInterval(function () {
+    var s = Math.floor((Date.now() - start) / 1000);
+    var m = Math.floor(s / 60); s = s % 60;
+    el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }, 1000);
+  window.addEventListener('pagehide', function () { clearInterval(t); });
 })();
 </script>
 {% endblock %}

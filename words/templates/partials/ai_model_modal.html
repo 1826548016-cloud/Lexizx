@@ -3,7 +3,7 @@
      全局可用：AI 单词导入 / 设置 / 小助手等页面均可通过 openAddModel() 打开。
      配置统一存入数据库 AIModel 表，由后端 resolve_ai_model 读取。 -->
 <div id="addModelModal" class="modal-overlay hidden" onclick="if (event.target === this) closeAddModel()">
-  <div class="modal" style="max-width: 520px;">
+  <div class="modal" style="max-width: 520px;" role="dialog" aria-modal="true" aria-label="模型配置">
     <input type="hidden" id="amEditId" value="">
     <div class="flex justify-between items-center" style="margin-bottom: 16px;">
       <h3 id="amModalTitle" style="margin: 0; font-size: var(--fs-lg);"><i class="ph ph-plus" style="color: var(--c-green);"></i> 添加模型</h3>
@@ -11,12 +11,12 @@
     </div>
 
     <div class="form-group">
-      <label class="form-label">模型服务商</label>
+      <label class="form-label" for="amProvider">模型服务商</label>
       <select id="amProvider" class="form-input" onchange="changeAMProvider()"></select>
     </div>
 
     <div class="form-group">
-      <label class="form-label">模型</label>
+      <label class="form-label" for="amModelPreset">模型</label>
       <select id="amModelPreset" class="form-input" onchange="onAMPresetChange()"></select>
       <div id="amCustomModelWrap" class="hidden" style="margin-top: 8px;">
         <input type="text" id="amModelId" class="form-input" placeholder="输入模型 ID，如 gpt-4o">
@@ -29,7 +29,7 @@
     </div>
 
     <div class="form-group">
-      <label class="form-label">API 密钥 <span class="text-secondary" style="font-weight: normal;">（本机服务可留空）</span> <a href="https://platform.openai.com/api-keys" target="_blank" class="text-sm" style="color: var(--c-green); margin-left: 6px;">获取 API 密钥 →</a></label>
+      <label class="form-label" for="amApiKey">API 密钥 <span class="text-secondary" style="font-weight: normal;">（本机服务可留空）</span> <a href="https://platform.openai.com/api-keys" target="_blank" class="text-sm" style="color: var(--c-green); margin-left: 6px;">获取 API 密钥 →</a></label>
       <div class="ai-key-wrap">
         <input type="password" id="amApiKey" class="form-input" placeholder="sk-...（无鉴权服务可不填）" autocomplete="off">
         <button type="button" class="ai-key-toggle" id="amKeyToggle" onclick="toggleAMKeyVisible()" title="显示/隐藏密钥"><i class="ph ph-eye"></i></button>
@@ -38,7 +38,7 @@
 
     <div class="form-group">
       <div class="flex justify-between items-center">
-        <label class="form-label" style="margin: 0;">自定义请求地址 <span class="text-secondary" style="font-weight: normal;">（可选）</span></label>
+        <label class="form-label" style="margin: 0;" for="amBaseUrl">自定义请求地址 <span class="text-secondary" style="font-weight: normal;">（可选）</span></label>
         <div class="flex items-center gap-2">
           <span class="text-sm text-secondary">完整 URL</span>
           <label class="switch"><input type="checkbox" id="amFullUrl" onchange="onAMFullUrlChange()"><span class="slider"></span></label>
@@ -54,11 +54,11 @@
       </button>
       <div id="amAdvanced" class="hidden grid grid-2" style="margin-top: 8px; gap: 8px;">
         <div>
-          <label class="form-label">模型展示名称</label>
+          <label class="form-label" for="amDisplayName">模型展示名称</label>
           <input type="text" id="amDisplayName" class="form-input" placeholder="留空默认显示模型 ID">
         </div>
         <div>
-          <label class="form-label">上下文窗口</label>
+          <label class="form-label" for="amContext">上下文窗口</label>
           <select id="amContext" class="form-input">
             <option value="32K">32K</option>
             <option value="128K" selected>128K</option>

@@ -7,20 +7,49 @@
 {% block content %}
 {% csrf_token %}
 
-<!-- Hero -->
-<div class="card hero-card" style="margin-bottom: 24px;">
-  <div>
-    <h1 class="hero-title">今天也要<span class="text-red">订正</span>昨天的错</h1>
-    <p class="text-secondary" id="today-date" style="margin: 0; font-size: var(--fs-sm);"></p>
-  </div>
-  <div class="flex items-center" style="gap: 12px;">
-    <span class="stamp">连续打卡 {{ streak }} 天</span>
-    <div class="date-chip" id="today-date-brief"></div>
-  </div>
+<!-- 每日一句：静态、低干扰、可关闭（不使用自动滚动横幅） -->
+<div class="daily-quote" id="dailyQuote" role="note">
+  <i class="ph ph-sparkle"></i>
+  <span class="daily-quote-text">今天也要<span class="text-red">订正</span>昨天的错</span>
+  <span class="daily-quote-date" id="today-date"></span>
+  <button type="button" class="daily-quote-close" onclick="closeDailyQuote()" aria-label="关闭每日一句"><i class="ph ph-x"></i></button>
 </div>
 
-<!-- Today's tasks -->
-<div class="card-grid" style="margin-bottom: 24px;">
+<!-- 今日学习任务卡：唯一首要任务，首屏最突出 -->
+<section class="section task-section" aria-labelledby="dailyTaskTitle">
+  <div class="card daily-task-card" id="dailyTaskCard"
+       data-new-today="{{ today_new }}"
+       data-new-target="{{ settings.daily_new_target|default:30 }}"
+       data-review-today="{{ today_review }}"
+       data-review-target="{{ settings.daily_review_target|default:50 }}"
+       data-learn-url="{% url 'words:learn_start' %}"
+       data-review-url="{% url 'words:review_start' %}">
+    <div class="daily-task-main">
+      <span class="daily-task-eyebrow"><i class="ph ph-target"></i> 今日学习任务</span>
+      <h2 class="daily-task-title" id="dailyTaskTitle">开始今日学习</h2>
+      <p class="daily-task-desc" id="dailyTaskDesc">按计划完成今日目标，保持连续打卡</p>
+      <div class="daily-task-meta">
+        <span class="daily-task-chip"><i class="ph ph-stack"></i> <span id="dailyTaskCount">--</span></span>
+        <span class="daily-task-chip"><i class="ph ph-clock"></i> <span id="dailyTaskDuration">约 -- 分钟</span></span>
+        <span class="daily-task-chip"><i class="ph ph-trophy"></i> <span id="dailyTaskBenefit">完成后推进计划</span></span>
+      </div>
+      <div class="progress-bar" style="margin-top: 10px;">
+        <div class="progress-bar-fill progress-fill--red" id="dailyTaskProgress" style="width: 0%;"></div>
+      </div>
+    </div>
+    <div class="daily-task-action">
+      <a href="{% url 'words:learn_start' %}" class="btn btn-primary btn-lg" id="dailyTaskBtn"><i class="ph ph-play"></i> 开始学习</a>
+    </div>
+    <div class="daily-task-foot">
+      <span class="stamp stamp-sm">连续打卡 {{ streak }} 天</span>
+      <span class="date-chip" id="today-date-brief"></span>
+    </div>
+  </div>
+</section>
+
+<!-- 次级统计：今日新词 / 复习 / 打卡 / 时长（任务卡下方的次级信息） -->
+<section class="stack" aria-label="今日统计">
+<div class="card-grid">
   <div class="card stat-card">
     <div class="stat-card-head">
       <span class="stat-icon stat-icon--red"><i class="ph ph-book-open"></i></span>
@@ -75,18 +104,11 @@
     <div class="stat-label" id="todayDurationLabel">学习页可见时计时</div>
   </div>
 </div>
+</section>
 
-<!-- Quick actions -->
-<div class="card" style="margin-bottom: 24px;">
-  <div class="card-header"><i class="ph ph-lightning text-amber"></i> 快捷操作</div>
-  <div class="flex gap-4" style="flex-wrap: wrap;">
-    <a href="{% url 'words:learn_start' %}" class="btn btn-primary"><i class="ph ph-target"></i> 开始背诵</a>
-    <a href="{% url 'words:review_start' %}" class="btn btn-secondary"><i class="ph ph-arrows-clockwise"></i> 去复习</a>
-  </div>
-</div>
-
+<section class="stack" aria-label="学习计划与巩固">
 {% if plan %}
-<div class="card" style="margin-bottom: 24px;">
+<div class="card">
   <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
     <div class="card-header" style="margin: 0;"><i class="ph ph-calendar-blank text-blue"></i> 当前计划：{{ plan.name }}</div>
     {% if plan_today.days_left is not None %}
@@ -128,7 +150,7 @@
   </div>
 </div>
 {% else %}
-<div class="card empty-state" style="margin-bottom: 24px;">
+<div class="card empty-state">
   <i class="ph ph-calendar-blank"></i>
   <div class="empty-state-title">还没有学习计划</div>
   <div class="empty-state-hint">制定一个计划，让每天的学习目标更清晰、更容易坚持</div>
@@ -136,8 +158,22 @@
 </div>
 {% endif %}
 
+<!-- 薄弱词提醒：第二层召唤入口（不引入后端新字段） -->
+<div class="card weak-reminder-card">
+  <div class="weak-reminder-main">
+    <span class="stat-icon stat-icon--amber"><i class="ph ph-warning-circle"></i></span>
+    <div>
+      <div class="card-header" style="margin: 0 0 2px;">薄弱词巩固</div>
+      <p class="text-secondary" style="margin: 0;">复习易错词，精准补漏，快速提升正确率</p>
+    </div>
+  </div>
+  <a href="{% url 'words:weak_words' %}" class="btn btn-secondary btn-sm">去巩固薄弱词 →</a>
+</div>
+</section>
+
+<section class="stack" aria-label="趋势与历史记录">
 <!-- 刷题打卡热力图 -->
-<div class="card" style="margin-bottom: 24px;">
+<div class="card">
   <div class="flex justify-between items-center" style="flex-wrap: wrap; gap: 16px; margin-bottom: 4px;">
     <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
       <div class="card-header" style="margin: 0; display: flex; align-items: center; gap: 6px;">
@@ -176,7 +212,7 @@
 </div>
 
 <!-- Overall progress（GitHub 语言占比条风格） -->
-<div class="card" style="margin-bottom: 24px;">
+<div class="card">
   <div class="flex justify-between items-center" style="margin-bottom: 14px;">
     <div class="card-header" style="margin-bottom: 0;">总体进度</div>
     <span class="text-secondary text-sm">共 {{ total_words }} 词</span>
@@ -202,6 +238,7 @@
     </span>
   </div>
 </div>
+</section>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -210,11 +247,86 @@
   (function () {
     var options = { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' };
     var today = new Date();
-    document.getElementById('today-date').textContent = today.toLocaleDateString('zh-CN', options);
-    document.getElementById('today-date-brief').textContent = today.toLocaleDateString('zh-CN', {
+    var dateEl = document.getElementById('today-date');
+    if (dateEl) dateEl.textContent = today.toLocaleDateString('zh-CN', options);
+    var briefEl = document.getElementById('today-date-brief');
+    if (briefEl) briefEl.textContent = today.toLocaleDateString('zh-CN', {
       year: 'numeric', month: 'long', day: 'numeric'
     });
   })();
+
+  // ===== 每日一句：可关闭，当日不再打扰（次日重新显示） =====
+  function closeDailyQuote() {
+    var q = document.getElementById('dailyQuote');
+    if (q) q.hidden = true;
+    try {
+      var d = new Date();
+      var key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+      localStorage.setItem('vocab-daily-quote-closed', key);
+    } catch (e) {}
+  }
+  (function () {
+    try {
+      var d = new Date();
+      var key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+      if (localStorage.getItem('vocab-daily-quote-closed') === key) {
+        var q = document.getElementById('dailyQuote');
+        if (q) q.hidden = true;
+      }
+    } catch (e) {}
+  })();
+
+  // ===== 今日学习任务卡：按「新词优先、其次复习」生成唯一主按钮与预估信息 =====
+  function renderDailyTask() {
+    var card = document.getElementById('dailyTaskCard');
+    if (!card) return;
+    var newT = parseInt(card.dataset.newToday, 10) || 0;
+    var newG = parseInt(card.dataset.newTarget, 10) || 0;
+    var revT = parseInt(card.dataset.reviewToday, 10) || 0;
+    var revG = parseInt(card.dataset.reviewTarget, 10) || 0;
+    var learnUrl = card.dataset.learnUrl;
+    var reviewUrl = card.dataset.reviewUrl;
+
+    var title = document.getElementById('dailyTaskTitle');
+    var desc = document.getElementById('dailyTaskDesc');
+    var count = document.getElementById('dailyTaskCount');
+    var dur = document.getElementById('dailyTaskDuration');
+    var benefit = document.getElementById('dailyTaskBenefit');
+    var btn = document.getElementById('dailyTaskBtn');
+    var bar = document.getElementById('dailyTaskProgress');
+
+    var state, remaining, goal, done, secPerWord, badge;
+    if (newT < newG) {
+      state = 'new';
+      remaining = newG - newT; goal = newG; done = newT;
+      secPerWord = 40;
+      badge = { title: '开始背诵新词', desc: '再完成 ' + remaining + ' 个新词即可达成今日目标',
+                count: '再背 ' + remaining + ' 个新词', benefit: '完成推进计划、保持连续打卡', url: learnUrl, icon: 'ph-stack' };
+    } else if (revT < revG) {
+      state = 'review';
+      remaining = revG - revT; goal = revG; done = revT;
+      secPerWord = 15;
+      badge = { title: '开始今日复习', desc: '再复习 ' + remaining + ' 个旧词即可达成今日目标',
+                count: '再复习 ' + remaining + ' 词', benefit: '巩固记忆、降低遗忘', url: reviewUrl, icon: 'ph-arrows-clockwise' };
+    } else {
+      state = 'done';
+      remaining = 0; goal = Math.max(newG, revG); done = goal;
+      badge = { title: '今日目标已达成', desc: '继续巩固薄弱词，或提前预习明日新词',
+                count: '今日目标完成', benefit: '保持节奏、稳扎稳打', url: reviewUrl, icon: 'ph-check-circle' };
+    }
+
+    if (title) title.textContent = badge.title;
+    if (desc) desc.textContent = badge.desc;
+    if (count) { count.textContent = badge.count; count.parentNode.querySelector('i').className = 'ph ' + badge.icon; }
+    if (benefit) benefit.textContent = badge.benefit;
+    if (btn) { btn.href = badge.url; btn.innerHTML = (state === 'review' || state === 'done' ? '<i class="ph ph-arrows-clockwise"></i> ' : '<i class="ph ph-play"></i> ') + (state === 'new' ? '开始背诵' : (state === 'review' ? '去复习' : '继续巩固')); }
+    if (bar) bar.style.width = Math.min(100, (goal > 0 ? Math.round(done / goal * 100) : 0)) + '%';
+    if (dur) {
+      var minutes = Math.max(1, Math.ceil(remaining * secPerWord / 60));
+      dur.textContent = '约 ' + minutes + ' 分钟';
+    }
+  }
+  renderDailyTask();
 
   // 打卡已改为自动：每日学习满 {{ checkin_threshold }} 词自动打卡，无需手动操作
 

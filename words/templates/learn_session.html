@@ -3,6 +3,7 @@
 
 {% block title %}背诵中{% endblock %}
 {% block page_title %}背诵中{% endblock %}
+{% block body_class %}session-page{% endblock %}
 
 {% block extra_head %}
 <style>
@@ -34,22 +35,33 @@
 {% csrf_token %}
 
 <div class="learn-session check-scope">
-  <div class="card learn-progress">
-    <div class="learn-progress-top">
-      <a href="{% url 'words:learn_start' %}" class="text-secondary text-sm"><i class="ph ph-arrow-left"></i> 退出背诵</a>
-      <div class="flex gap-2 items-center"><span class="text-secondary text-sm" id="progressText">-</span><span class="badge badge-learning">{{ mode }}</span></div>
+  <header class="card learn-progress session-header" aria-label="背诵进度与计时">
+    <div class="session-header-grid">
+      <div class="session-header-side">
+        <a href="{% url 'words:learn_start' %}" class="session-exit"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>退出并保存</span></a>
+      </div>
+      <div class="session-center">
+        <div class="session-progress-row">
+          <span class="text-secondary text-sm" id="progressText">-</span>
+          <span class="badge badge-learning">{{ mode }}</span>
+        </div>
+        <div class="progress-bar"><div id="progressFill" class="progress-bar-fill" style="width: 0%;"></div></div>
+        <input type="range" id="progressSlider" class="learn-progress-slider" min="0" max="1" value="0" step="1" aria-label="拖动跳转单词" title="拖动跳转单词">
+      </div>
+      <div class="session-header-side session-header-right">
+        <span class="session-timer" id="sessionTimer" title="本次用时" aria-label="本次用时">00:00</span>
+      </div>
     </div>
-    <div class="progress-bar"><div id="progressFill" class="progress-bar-fill" style="width: 0%;"></div></div>
-    <input type="range" id="progressSlider" class="learn-progress-slider" min="0" max="1" value="0" step="1" style="margin-top: 8px;" title="拖动跳转单词">
-  </div>
+  </header>
 
 <div id="wordCard" class="card word-card study-card">
   <div class="study-card-top">
     <span class="study-unit"><i class="ph ph-stack"></i> <span id="wordUnit">—</span></span>
     <div class="study-tools">
       <button id="speakBtn" class="study-tool-btn" title="发音"><i class="ph ph-speaker-high"></i><span>发音</span></button>
-      <button id="noteBtn" class="study-tool-btn" title="记笔记 / 查看笔记"><i class="ph ph-note-pencil"></i><span>笔记</span></button>
-      <button id="quickMemoryBtn" class="study-tool-btn" title="AI 速记 / 查看速记"><i class="ph ph-lightning"></i><span>速记</span></button>
+      <button id="favBtn" class="study-tool-btn" aria-pressed="false" title="收藏单词（加入收藏词汇）"><i class="ph ph-star"></i><span>收藏</span></button>
+      <button id="noteBtn" class="study-tool-btn" aria-pressed="false" title="记笔记 / 查看笔记"><i class="ph ph-note-pencil"></i><span>笔记</span></button>
+      <button id="quickMemoryBtn" class="study-tool-btn" aria-pressed="false" title="AI 速记 / 查看速记"><i class="ph ph-lightning"></i><span>速记</span></button>
     </div>
   </div>
 
@@ -110,7 +122,7 @@
   </div>
   <div class="flex gap-2" style="justify-content: center; margin-top: 6px; flex-wrap: wrap;">
     <button id="nextBatchBtn" class="btn btn-primary btn-lg"><i class="ph ph-arrow-right"></i> 继续下一批</button>
-    <a href="{% url 'words:learn_start' %}" class="btn btn-secondary btn-lg"><i class="ph ph-sign-out"></i> 退出背诵</a>
+    <a href="{% url 'words:learn_start' %}" class="btn btn-secondary btn-lg"><i class="ph ph-sign-out"></i> 退出并保存</a>
   </div>
 </div>
 <div id="completionCard" class="card word-card completion-card hidden">
@@ -134,6 +146,7 @@
 
 {% block extra_scripts %}
 <script src="{% static 'js/word_ext.js' %}?v=2"></script>
+<script src="{% static 'js/word_fav.js' %}?v=1"></script>
 <script src="{% static 'js/assistant.js' %}"></script>
 <script>
 (function() {
@@ -415,6 +428,7 @@
     if (window.WordExtPanel) WordExtPanel.closeExtPanel();
 
     currentWord = wordsData[currentIndex];
+    if (window.WordFavorite) WordFavorite.update(currentWord);
     revealDone = false;
     checked = false;
     gateStage = 0;
@@ -1020,6 +1034,13 @@
     });
   }
 
+  // 初始化收藏共享组件
+  if (window.WordFavorite) {
+    WordFavorite.init({
+      getCurrentWord: function () { return currentWord; }
+    });
+  }
+
   // 初始化小助手共享组件
   if (window.AssistantPanel) {
     AssistantPanel.init({
@@ -1078,6 +1099,20 @@
     if (currentIndex >= wordCount) currentIndex = 0;
     renderWord();
   }
+})();
+</script>
+<script>
+// 会话页计时显示（仅展示，实际学习时长由 VocabStudyTimer 上报）
+(function () {
+  var el = document.getElementById('sessionTimer');
+  if (!el) return;
+  var start = Date.now();
+  var t = setInterval(function () {
+    var s = Math.floor((Date.now() - start) / 1000);
+    var m = Math.floor(s / 60); s = s % 60;
+    el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }, 1000);
+  window.addEventListener('pagehide', function () { clearInterval(t); });
 })();
 </script>
 {% endblock %}

@@ -140,6 +140,31 @@
       <span class="choice-group-title">每批数量</span>
       <input type="number" id="pBatch" value="{{ batch_size }}" min="1" max="1000" class="form-input" style="width: 110px;">
     </div>
+    <div class="choice-group">
+      <span class="choice-group-title">背诵数量</span>
+      <input type="number" id="pCount" value="" min="1" max="5000" class="form-input" style="width: 110px;" placeholder="不限"
+             onchange="var v=parseInt(this.value,10); if(this.value!==''&&(!v||v<1)){this.value='';}">
+      <span class="text-secondary text-sm">留空 = 背完勾选的全部词；顺序取前 N 个，乱序随机抽 N 个</span>
+    </div>
+  </div>
+
+  <!-- 随机抽取：从词库随机抽「没背过 / 背过」各任意个，加入今日清单 -->
+  <div class="pick-random" style="margin-top: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 14px; background: var(--c-surface-2); border-radius: var(--radius-sm);">
+    <span style="font-weight: 600; font-size: var(--fs-sm); display: inline-flex; align-items: center; gap: 6px;"><i class="ph ph-shuffle" style="color: var(--c-blue);"></i> 随机抽取加入清单</span>
+    <label style="display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--c-text-2);">没背过
+      <input type="number" id="pRandUnknown" value="0" min="0" max="1000" class="form-input" style="width: 80px;"> 个</label>
+    <label style="display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--c-text-2);">背过
+      <input type="number" id="pRandMastered" value="0" min="0" max="1000" class="form-input" style="width: 80px;"> 个</label>
+    <button type="button" class="btn btn-secondary" id="randomBtn"><i class="ph ph-shuffle"></i> 随机抽取</button>
+    <button type="button" class="btn btn-ghost" id="randomClearBtn"><i class="ph ph-trash"></i> 清空清单</button>
+    <span class="pick-tip">从词库随机抽「没背过 / 背过」的词加入今日清单，可反复抽取；已在清单中的自动跳过</span>
+  </div>
+
+  <!-- 打印清单：PDF 打开即显示清单，供打印背诵 -->
+  <div class="pick-print-row" style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px;">
+    <a href="{% url 'words:api_export_pdf' %}?type=pick" target="_blank" class="btn btn-secondary btn-sm"><i class="ph ph-printer"></i> 打印今日清单</a>
+    <a href="{% url 'words:api_export_pdf' %}?type=pick&dictation=en2zh" target="_blank" class="btn btn-secondary btn-sm" title="看英文写中文默写纸">英→中默写纸</a>
+    <a href="{% url 'words:api_export_pdf' %}?type=pick&dictation=zh2en" target="_blank" class="btn btn-secondary btn-sm" title="看中文写英文默写纸">中→英默写纸</a>
   </div>
 
   <div class="pick-start-row">
@@ -329,14 +354,45 @@
     }
   });
 
+  // 随机抽取加入清单
+  document.getElementById('randomBtn').addEventListener('click', async function () {
+    var btn = this;
+    var unknown = Math.max(0, parseInt(document.getElementById('pRandUnknown').value, 10) || 0);
+    var mastered = Math.max(0, parseInt(document.getElementById('pRandMastered').value, 10) || 0);
+    if (!unknown && !mastered) { if (window.appToast) appToast('请至少设置一个抽取数量', 'error'); return; }
+    btn.disabled = true;
+    try {
+      var res = await VOCAB_API.post('/api/daily-picks/random/', { unknown_count: unknown, mastered_count: mastered });
+      if (res && res.success) {
+        (res.added_ids || []).forEach(function (id) { picked.add(id); });
+        refreshCount();
+        render();
+        if (window.appToast) appToast(res.added ? '已随机加入 ' + res.added + ' 个词' : '已无可抽取的词（全部已在清单中）', res.added ? 'success' : 'info');
+      } else {
+        if (window.appToast) appToast((res && res.error) || '抽取失败，请重试', 'error');
+      }
+    } catch (e) {
+      if (window.appToast) appToast('抽取失败，请重试', 'error');
+    }
+    btn.disabled = false;
+  });
+
+  // 随机抽取区旁的清空：复用头部清空按钮（含确认弹窗）
+  document.getElementById('randomClearBtn').addEventListener('click', function () {
+    document.getElementById('clearBtn').click();
+  });
+
   // 开始背诵
   startBtn.addEventListener('click', function () {
     if (!picked.size) { if (window.appToast) appToast('请先勾选今天要背的词', 'error'); return; }
     var mode = document.querySelector('input[name="pMode"]:checked').value;
     var check = document.querySelector('input[name="pCheck"]:checked').value;
     var batch = parseInt(document.getElementById('pBatch').value, 10) || 10;
+    var countEl = document.getElementById('pCount');
+    var count = (countEl && countEl.value.trim()) ? parseInt(countEl.value, 10) : 0;
     var url = '{% url "words:learn_session" %}?scope=daily&mode=' + mode +
               '&check=' + check + '&batch=' + batch;
+    if (count >= 1) url += '&count=' + count;
     if (check === 'gates') {
       var repeats = Math.max(1, Math.min(10, parseInt(document.getElementById('pRepeats').value, 10) || 3));
       var interleave = Math.max(0, Math.min(5, parseInt(document.getElementById('pInterleave').value, 10) || 0));
