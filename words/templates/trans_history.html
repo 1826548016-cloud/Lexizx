@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}翻译学习报告 - 考研写作工坊{% endblock %}
+
+{% block page_title %}翻译学习报告{% endblock %}
+
+{% block content %}
+{% include 'partials/exam_nav.html' with ws_active='trans' %}
+
+<!-- 总体统计 -->
+<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:12px;" class="mb-4">
+  <div class="stat-card" style="padding:14px 16px;">
+    <div class="text-secondary text-sm">累计练习</div>
+    <div style="font-size:1.6rem; font-weight:700;">{{ total_practices }} <span class="text-secondary text-sm">次</span></div>
+  </div>
+  <div class="stat-card" style="padding:14px 16px;">
+    <div class="text-secondary text-sm">句均得分（每句最近一次）</div>
+    <div style="font-size:1.6rem; font-weight:700;">{{ avg_total|default:'—' }} <span class="text-secondary text-sm">/ 50</span></div>
+  </div>
+  <div class="stat-card" style="padding:14px 16px;">
+    <div class="text-secondary text-sm">待重练错句</div>
+    <div style="font-size:1.6rem; font-weight:700; {% if error_count %}color:var(--c-red);{% endif %}">{{ error_count }} <span class="text-secondary text-sm">句</span></div>
+  </div>
+</div>
+
+<!-- 错句清单 -->
+<div class="card mb-4">
+  <div class="card-header flex justify-between items-center">
+    <span><i class="ph ph-warning-circle" style="color:var(--c-red);"></i> 错句清单（按复习日期排序）{% if ai_error_count %}<span class="text-secondary text-sm"> · 其中 AI 题 {{ ai_error_count }} 句</span>{% endif %}</span>
+    <a href="{% url 'words:trans_home' %}" class="btn btn-secondary btn-xs">去句库重练</a>
+  </div>
+  {% if error_sentences %}
+  <div>
+    {% for e in error_sentences %}
+    <a href="{% url 'words:trans_practice' e.id %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span class="btn btn-xs btn-secondary" style="min-width:96px; text-align:center;">{% if e.is_ai %}AI 题 · 第{{ e.num }}句{% else %}{{ e.year }} · 第{{ e.num }}句{% endif %}</span>
+      <span class="text-secondary text-sm" style="flex:1; min-width:160px;">{{ e.sentence_en }}…</span>
+      {% for t in e.error_tags %}<span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:0 8px; white-space:nowrap;">{{ t }}</span>{% endfor %}
+      {% if e.last_total %}<span class="text-sm" style="color:var(--c-red);">{{ e.last_total }} 分</span>{% endif %}
+      {% if e.review_date %}<span class="date-chip" style="padding:2px 10px;">复习 {{ e.review_date }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px 16px;">
+    <div class="empty-state-title">没有待重练的错句</div>
+    <div>每句总分达到 {{ pass_score|default:40 }}/50 或以上即视为掌握；未掌握的句子次日会重新进入今日推荐。</div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- 按年份表现 -->
+<div class="card mb-4">
+  <div class="card-header"><i class="ph ph-chart-bar"></i> 按年份表现</div>
+  {% if year_rows %}
+  <div>
+    {% for r in year_rows %}
+    <div style="display:flex; align-items:center; gap:12px; padding:9px 16px; border-bottom:1px solid var(--c-border-light);">
+      <span style="min-width:56px; font-weight:600;">{{ r.year }}</span>
+      <div style="flex:1; height:8px; background:var(--c-surface-2); border-radius:999px; overflow:hidden;">
+        {% if r.avg %}<div style="width:{% widthratio r.avg 50 100 %}%; height:100%; background:var(--c-blue); border-radius:999px;"></div>{% endif %}
+      </div>
+      <span class="text-secondary text-sm" style="min-width:120px; text-align:right;">练 {{ r.practiced }} 句 · 均 {{ r.avg|default:'—' }} 分</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px 16px;"><div class="empty-state-title">还没有练习记录</div><div>从<a href="{% url 'words:trans_home' %}">训练首页</a>开始今日翻译训练</div></div>
+  {% endif %}
+</div>
+
+<!-- 最近练习记录 -->
+<div class="card">
+  <div class="card-header flex justify-between items-center">
+    <span><i class="ph ph-clock-counter-clockwise"></i> 最近练习记录</span>
+    <div class="flex gap-2">
+      <a href="{% url 'words:trans_history' %}" class="btn btn-xs {% if not only_errors %}btn-primary{% else %}btn-secondary{% endif %}">全部</a>
+      <a href="?filter=error" class="btn btn-xs {% if only_errors %}btn-primary{% else %}btn-secondary{% endif %}">只看错句</a>
+    </div>
+  </div>
+  {% if recent_items %}
+  <div>
+    {% for p in recent_items %}
+    <a href="{% url 'words:trans_practice' p.sid %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:9px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span class="text-secondary text-sm" style="min-width:86px;">{{ p.created_at }}</span>
+      <span class="btn btn-xs btn-secondary" style="min-width:96px; text-align:center;">{% if p.is_ai %}AI 题 · 第{{ p.num }}句{% else %}{{ p.year }} · 第{{ p.num }}句{% endif %}</span>
+      <span class="text-secondary text-sm" style="flex:1; min-width:140px;">{{ p.snippet }}…</span>
+      {% if p.ungraded %}
+        <span class="text-sm" style="color:var(--c-amber); border:1px solid var(--c-amber); border-radius:999px; padding:1px 10px; white-space:nowrap;">未批改</span>
+      {% elif p.total %}
+        <span class="text-sm" {% if p.total >= 40 %}style="color:var(--c-green);"{% else %}style="color:var(--c-red);"{% endif %}>{{ p.total }}/50</span>
+      {% else %}
+        <span class="text-secondary text-sm">—</span>
+      {% endif %}
+      {% if p.duration_fmt %}<span class="text-secondary text-sm">{{ p.duration_fmt }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:24px 16px;">
+    <div class="empty-state-title">{{ only_errors|yesno:'错句筛选下没有记录,还没有练习记录' }}</div>
+    <div>去<a href="{% url 'words:trans_home' %}">训练首页</a>开始练习</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

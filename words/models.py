@@ -402,6 +402,8 @@ class UserSettings(models.Model):
         on_delete=models.SET_NULL, related_name='+', verbose_name='释义默写判定模型')
     exam_model = models.ForeignKey('AIModel', null=True, blank=True,
         on_delete=models.SET_NULL, related_name='+', verbose_name='考研写作工坊模型')
+    cet6_translation_model = models.ForeignKey('AIModel', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+', verbose_name='六级汉译英模型')
 
     # 密钥保险箱：salt 与校验串落库，密码本身与派生密钥不落库
     vault_salt = models.CharField(max_length=64, blank=True, default='', verbose_name='保险箱密码 salt')
@@ -664,6 +666,288 @@ class WritingPhrase(models.Model):
         return self.phrase[:40]
 
 
+class TranslationSentence(models.Model):
+    """英语一翻译真题逐句训练单位：把整道翻译真题拆成单句"""
+    SOURCE_TYPE_CHOICES = [
+        ('past_paper', '真题'),
+        ('ai_generated', 'AI 训练题'),
+        ('user_error', '用户错句'),
+    ]
+    question = models.ForeignKey(ExamQuestion, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='translation_sentences', verbose_name='所属真题',
+        help_text='真题句必填；AI 训练题为空')
+    order = models.IntegerField(verbose_name='句序', help_text='真题 1-5 对应标号 (46)-(50)；AI 题为卷内序号')
+    sentence_en = models.TextField(verbose_name='英文原句')
+    sentence_zh = models.TextField(blank=True, default='', verbose_name='参考译文')
+    difficulty = models.IntegerField(default=3, verbose_name='难度(1-5)')
+    syntax_tags = models.JSONField(default=list, blank=True, verbose_name='句法标签',
+        help_text='真题为中文标签；AI 题为句法代码，如 ["non_finite","attributive_clause"]')
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES,
+        default='past_paper', verbose_name='来源类型')
+    source_note = models.CharField(max_length=200, blank=True, default='',
+        verbose_name='来源说明')
+    verified = models.BooleanField(default=False, verbose_name='参考译文已核验')
+
+    class Meta:
+        ordering = ['question__year', 'order']
+        unique_together = [('question', 'order')]
+        verbose_name = '翻译训练句'
+        verbose_name_plural = '翻译训练句'
+        indexes = [
+            models.Index(fields=['source_type']),
+        ]
+
+    def __str__(self):
+        if self.question_id:
+            return f'{self.question} 第{self.order + 45}句'
+        return f'AI训练句 {self.id} 第{self.order}句'
+
+
+class TranslationPractice(models.Model):
+    """长难句翻译练习记录：用户译文 + AI 五维批改 + 复习排期"""
+    user = models.ForeignKey('auth.User', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='translation_practices', verbose_name='用户')
+    sentence = models.ForeignKey(TranslationSentence, on_delete=models.CASCADE,
+        related_name='practices', verbose_name='练习句子')
+    user_translation = models.TextField(blank=True, default='', verbose_name='用户译文')
+    score_json = models.TextField(blank=True, default='{}', verbose_name='五维评分数据')
+    feedback = models.TextField(blank=True, default='', verbose_name='批改总评')
+    duration_seconds = models.IntegerField(default=0, verbose_name='耗时(秒)')
+    error_tags = models.JSONField(default=list, blank=True, verbose_name='错因标签',
+        help_text='main/subordinate/meaning/logic/expression')
+    next_review_date = models.DateField(null=True, blank=True, verbose_name='下次复习日期')
+    consecutive_correct = models.IntegerField(default=0, verbose_name='连续正确次数')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='练习时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['user', 'sentence'])]
+        verbose_name = '翻译练习'
+        verbose_name_plural = '翻译练习'
+
+    def __str__(self):
+        return f'{self.sentence} - {self.created_at:%Y-%m-%d %H:%M}'
+
+    def get_score(self):
+        try:
+            return json.loads(self.score_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+
+class TranslationFavorite(models.Model):
+    """长难句收藏：用户标记需要反复练的句子"""
+    user = models.ForeignKey('auth.User', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='translation_favorites', verbose_name='用户')
+    sentence = models.ForeignKey(TranslationSentence, on_delete=models.CASCADE,
+        related_name='favorites', verbose_name='收藏句子')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='收藏时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = [('user', 'sentence')]
+        verbose_name = '长难句收藏'
+        verbose_name_plural = '长难句收藏'
+
+    def __str__(self):
+        return f'{self.sentence}'
+
+
+class GeneratedPaper(models.Model):
+    """AI 专项组卷：一次组卷任务及其配置（首期 GenerationJob 合并进本表）"""
+    MODE_CHOICES = [
+        ('weakness', '按薄弱点推荐'),
+        ('syntax', '指定句法专项'),
+        ('words', '按词库单词组卷'),
+        ('rewrite', '真题同难度改写'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', '待生成'),
+        ('generating', '生成中'),
+        ('ready', '已完成'),
+        ('failed', '失败'),
+    ]
+    title = models.CharField(max_length=200, verbose_name='试卷标题')
+    mode = models.CharField(max_length=20, choices=MODE_CHOICES,
+        default='weakness', verbose_name='组卷模式')
+    source = models.CharField(max_length=20, default='ai', verbose_name='来源')
+    config_json = models.JSONField(default=dict, blank=True, verbose_name='组卷配置')
+    target_word_ids = models.JSONField(default=list, blank=True, verbose_name='目标词ID列表')
+    syntax_tags = models.JSONField(default=list, blank=True, verbose_name='句法标签')
+    difficulty = models.IntegerField(default=3, verbose_name='难度(1-5)')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES,
+        default='pending', db_index=True, verbose_name='状态')
+    error_message = models.TextField(blank=True, default='', verbose_name='失败原因')
+    retry_count = models.IntegerField(default=0, verbose_name='已重试次数')
+    model_id = models.IntegerField(null=True, blank=True, verbose_name='使用的AI模型')
+    prompt_hash = models.CharField(max_length=64, blank=True, default='', verbose_name='提示词指纹')
+    raw_response = models.TextField(blank=True, default='', verbose_name='AI原始返回')
+    duration_ms = models.IntegerField(null=True, blank=True, verbose_name='生成耗时(毫秒)')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'AI组卷'
+        verbose_name_plural = 'AI组卷'
+
+    def __str__(self):
+        return f'{self.title}（{self.get_status_display()}）'
+
+
+class GeneratedQuestion(models.Model):
+    """AI 卷中的单题：扩展 TranslationSentence(source_type=ai_generated) 的组卷元数据"""
+    paper = models.ForeignKey(GeneratedPaper, on_delete=models.CASCADE,
+        related_name='questions', verbose_name='所属试卷')
+    sentence = models.OneToOneField(TranslationSentence, on_delete=models.CASCADE,
+        related_name='generated_question', verbose_name='训练句')
+    order = models.IntegerField(verbose_name='卷内句序')
+    syntax_tree_json = models.JSONField(default=list, blank=True, verbose_name='句法层级')
+    target_word_ids = models.JSONField(default=list, blank=True, verbose_name='目标词ID列表')
+    difficulty = models.IntegerField(default=3, verbose_name='难度(1-5)')
+    difficulty_reason = models.CharField(max_length=300, blank=True, default='',
+        verbose_name='难度说明')
+    quality_score = models.FloatField(null=True, blank=True, verbose_name='本地质量分')
+    quality_notes = models.TextField(blank=True, default='', verbose_name='校验备注')
+    is_approved = models.BooleanField(default=True, verbose_name='校验通过')
+
+    class Meta:
+        ordering = ['order']
+        unique_together = [('paper', 'order')]
+        verbose_name = 'AI组卷题目'
+        verbose_name_plural = 'AI组卷题目'
+
+    def __str__(self):
+        return f'{self.paper.title} 第{self.order}句'
+
+
+class Cet6TranslationPassage(models.Model):
+    """六级汉译英段落：真题 / AI 生成 / 用户错段，与英语一 TranslationSentence 分开维护"""
+    SOURCE_CHOICES = [
+        ('past_paper', '真题'),
+        ('ai_generated', 'AI 生成'),
+        ('user_error', '用户错段'),
+    ]
+    question = models.ForeignKey(ExamQuestion, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='cet6_passages', verbose_name='关联真题')
+    source_type = models.CharField(max_length=15, choices=SOURCE_CHOICES,
+        verbose_name='来源')
+    source_note = models.CharField(max_length=200, blank=True, default='',
+        verbose_name='来源备注')
+    source_zh = models.TextField(verbose_name='中文原文')
+    reference_en = models.TextField(blank=True, default='',
+        verbose_name='参考英文译文')
+    topic_tags = models.JSONField(default=list, blank=True, verbose_name='主题标签')
+    skill_tags = models.JSONField(default=list, blank=True,
+        verbose_name='语法/表达标签')
+    key_points = models.JSONField(default=list, blank=True,
+        verbose_name='关键表达点',
+        help_text='[{zh, recommended_en, alternatives}] 中文概念到英文表达的映射')
+    difficulty = models.IntegerField(default=3, verbose_name='难度(1-5)')
+    verified = models.BooleanField(default=False, verbose_name='参考译文已人工核验')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '六级汉译英段落'
+        verbose_name_plural = '六级汉译英段落'
+
+    def __str__(self):
+        head = (self.source_zh or '')[:18]
+        return f'{self.get_source_type_display()}：{head}'
+
+
+class Cet6TranslationPractice(models.Model):
+    """六级翻译练习记录：用户英文译文 + AI 批改评分 + SRS 复习排期"""
+    user = models.ForeignKey('auth.User', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='cet6_translation_practices',
+        verbose_name='用户')
+    passage = models.ForeignKey(Cet6TranslationPassage, on_delete=models.CASCADE,
+        related_name='practices', verbose_name='翻译段落')
+    user_translation = models.TextField(blank=True, default='', verbose_name='用户英文译文')
+    score_json = models.TextField(blank=True, default='{}', verbose_name='分维评分数据')
+    feedback = models.TextField(blank=True, default='', verbose_name='批改总评')
+    error_tags = models.JSONField(default=list, blank=True, verbose_name='错因标签',
+        help_text='omission/culture/grammar/collocation/logic/fluency')
+    next_review_date = models.DateField(null=True, blank=True, verbose_name='下次复习日期')
+    consecutive_correct = models.IntegerField(default=0, verbose_name='连续达标次数')
+    duration_seconds = models.IntegerField(default=0, verbose_name='耗时(秒)')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '六级翻译练习'
+        verbose_name_plural = '六级翻译练习'
+
+    def __str__(self):
+        return f'{self.passage} - {self.created_at:%m-%d %H:%M}'
+
+    def get_score(self):
+        try:
+            return json.loads(self.score_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+
+class GeneratedCet6Paper(models.Model):
+    """六级 AI 专项组卷：一次组卷任务及其配置"""
+    MODE_CHOICES = [
+        ('weakness', '按薄弱点推荐'),
+        ('topic', '按主题组卷'),
+        ('expressions', '按表达词库组卷'),
+        ('rewrite', '真题同难度改写'),
+    ]
+    STATUS_CHOICES = [
+        ('generating', '生成中'),
+        ('ready', '已完成'),
+        ('failed', '失败'),
+    ]
+    title = models.CharField(max_length=100, verbose_name='试卷标题')
+    mode = models.CharField(max_length=15, choices=MODE_CHOICES, verbose_name='组卷模式')
+    config_json = models.JSONField(default=dict, blank=True, verbose_name='组卷配置')
+    target_word_ids = models.JSONField(default=list, blank=True,
+        verbose_name='目标表达词ID列表')
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES,
+        default='generating', verbose_name='状态')
+    error_message = models.TextField(blank=True, default='', verbose_name='失败原因')
+    retry_count = models.IntegerField(default=0, verbose_name='自动重试次数')
+    duration_ms = models.IntegerField(default=0, verbose_name='生成耗时(毫秒)')
+    raw_response = models.TextField(blank=True, default='', verbose_name='原始返回')
+    model_id = models.CharField(max_length=100, blank=True, default='',
+        verbose_name='使用的模型')
+    prompt_hash = models.CharField(max_length=64, blank=True, default='',
+        verbose_name='配置哈希')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '六级AI组卷'
+        verbose_name_plural = '六级AI组卷'
+
+    def __str__(self):
+        return self.title
+
+
+class GeneratedCet6Question(models.Model):
+    """六级 AI 卷中的单题：扩展 Cet6TranslationPassage 的组卷元数据"""
+    paper = models.ForeignKey(GeneratedCet6Paper, on_delete=models.CASCADE,
+        related_name='questions', verbose_name='所属试卷')
+    passage = models.OneToOneField(Cet6TranslationPassage, on_delete=models.CASCADE,
+        related_name='generated_question', verbose_name='翻译段落')
+    order = models.IntegerField(verbose_name='卷内序号')
+    quality_score = models.FloatField(null=True, blank=True, verbose_name='本地质量分')
+    quality_notes = models.TextField(blank=True, default='', verbose_name='校验备注')
+    is_approved = models.BooleanField(default=True, verbose_name='校验通过')
+
+    class Meta:
+        ordering = ['order']
+        unique_together = [('paper', 'order')]
+        verbose_name = '六级AI组卷题目'
+        verbose_name_plural = '六级AI组卷题目'
+
+    def __str__(self):
+        return f'{self.paper.title} 第{self.order}段'
+
+
 class AICallLog(models.Model):
     """AI 调用日志：记录每次调用详情，便于追溯与排查"""
     ACTION_CHOICES = [
@@ -675,6 +959,11 @@ class AICallLog(models.Model):
         ('exam_template', '专属模板'),
         ('cet6_translate_analyze', '六级翻译解析'),
         ('cet6_grade_translation', '六级译文批改'),
+        ('trans_grade', '长难句批改'),
+        ('trans_hint', '长难句解析'),
+        ('trans_paper_generate', '长难句AI组卷'),
+        ('cet6_grade_passage', '六级段落批改'),
+        ('cet6_paper_generate', '六级AI组卷'),
     ]
     user = models.ForeignKey('auth.User', null=True, blank=True,
         on_delete=models.SET_NULL, verbose_name='用户')

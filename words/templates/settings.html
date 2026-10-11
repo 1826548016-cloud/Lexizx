@@ -230,6 +230,13 @@
             </select>
           </div>
           <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-text-t" style="color: var(--c-blue);"></i> 六级汉译英模型</div>
+            <div class="feat-desc">六级翻译「真题解析 / 译文批改 / AI 专项组卷」使用的模型；不选时自动继承考研写作工坊模型</div>
+            <select id="cet6TranslationModelSelect" class="form-input" onchange="saveFeatureModel('cet6_translation_model', this.value)">
+              <option value="">自动（继承考研写作工坊模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
             <div class="feat-head"><i class="ph ph-pencil-simple" style="color: var(--c-green);"></i> 释义默写判定方式</div>
             <div class="feat-desc">AI 判定更灵活（识别同义词 / 部分正确），本地比对不依赖网络</div>
             <select id="meaningCheckMode" class="form-input" onchange="saveMeaningCheckMode(this.value)">
@@ -325,7 +332,7 @@
             <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
             <span class="about-stat-title">最后更新</span>
           </div>
-          <div class="stat-value">2026-10-06</div>
+          <div class="stat-value">2026-10-11</div>
         </div>
       </div>
 
@@ -925,6 +932,7 @@ function loadFeatureModels() {
     fillModelSelect('quickMemoryModelSelect', res.quick_memory_model_id);
     fillModelSelect('meaningCheckModelSelect', res.meaning_check_model_id);
     fillModelSelect('examModelSelect', res.exam_model_id);
+    fillModelSelect('cet6TranslationModelSelect', res.cet6_translation_model_id);
   }).catch(function () {});
 }
 

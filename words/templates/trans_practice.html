@@ -1,0 +1,301 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{% if is_ai %}AI训练题第{{ num }}句{% else %}{{ sentence.question.year }}年第{{ num }}句{% endif %} - 长难句翻译{% endblock %}
+
+{% block page_title %}长难句翻译练习{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+<style>
+  .trans-frag { background: rgba(192, 57, 43, .14); border-bottom: 2px solid var(--c-red); border-radius: 2px; padding: 0 1px; }
+  .trans-issue-badge { display: inline-block; border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; font-size: .72rem; white-space: nowrap; }
+  #transSource mark { background: transparent; }
+  details.ws-anal > summary { cursor: pointer; font-weight: 600; padding: 12px 16px; list-style: none; display: flex; align-items: center; gap: 8px; }
+  details.ws-anal > summary::-webkit-details-marker { display: none; }
+  details.ws-anal > summary i { transition: transform .15s; }
+  details.ws-anal[open] > summary i { transform: rotate(90deg); }
+  details.ws-anal > div { padding: 0 16px 14px; border-top: 1px solid var(--c-border-light); }
+</style>
+
+{% include 'partials/exam_nav.html' with ws_active='trans' %}
+
+<!-- 题头 -->
+<div class="card mb-4">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      {% if is_ai %}
+      <span class="btn btn-xs btn-secondary" style="color:var(--c-amber); border-color:var(--c-amber);"><i class="ph ph-sparkle"></i> AI 训练题</span>
+      <span class="btn btn-xs btn-secondary">第 {{ num }} 句</span>
+      {% else %}
+      <span class="btn btn-xs btn-secondary">{{ sentence.question.year }} 年</span>
+      <span class="btn btn-xs btn-secondary">第 {{ num }} 句</span>
+      {% endif %}
+      <span class="btn btn-xs btn-secondary" title="难度 {{ sentence.difficulty }}/5">{% for i in ""|center:sentence.difficulty %}★{% endfor %}</span>
+      {% for t in syntax_tag_names %}<span class="date-chip" style="padding:2px 10px;">{{ t }}</span>{% endfor %}
+    </div>
+    <div class="flex gap-2">
+      <button type="button" id="favBtn" class="btn btn-sm {% if is_fav %}btn-primary{% else %}btn-secondary{% endif %}" onclick="toggleFav()">
+        <i class="ph{% if is_fav %}-fill{% endif %} ph-bookmark-simple" id="favIcon"></i>
+        <span id="favText">{% if is_fav %}已收藏{% else %}收藏{% endif %}</span>
+      </button>
+      {% if is_ai and paper %}
+      <a href="{% url 'words:trans_paper_detail' paper.id %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回试卷</a>
+      {% else %}
+      <a href="{% url 'words:trans_home' %}?year={{ sentence.question.year }}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 句库</a>
+      {% endif %}
+    </div>
+  </div>
+  <div class="ws-head-title" style="margin-bottom:6px;">原句</div>
+  <div id="transSource" class="word-text" style="line-height:1.9; font-size:1.08rem;">{{ sentence.sentence_en }}</div>
+  <div class="flex gap-2 mt-2" style="flex-wrap:wrap; align-items:center;">
+    <span class="date-chip"><i class="ph ph-timer"></i> 用时 <span id="transTimer">00:00</span></span>
+    {% if last_practice %}
+      {% with sc=last_practice.get_score %}
+      {% if sc.ungraded %}
+      <span class="date-chip" style="color:var(--c-amber); border-color:var(--c-amber);">上次：未批改（AI 不可用）</span>
+      {% else %}
+      <span class="date-chip" {% if sc.total >= pass_score %}style="color:var(--c-green); border-color:var(--c-green);"{% else %}style="color:var(--c-red); border-color:var(--c-red);"{% endif %}>上次：{{ sc.total|default:'—' }}/50 分</span>
+      {% endif %}
+      {% endwith %}
+    {% endif %}
+  </div>
+</div>
+
+<!-- 作答 -->
+<div class="card mb-4">
+  <div class="card-header flex justify-between items-center">
+    <span>我的译文</span>
+    <span class="text-secondary text-sm">先独立翻译，解析与参考译文在下方折叠区</span>
+  </div>
+  <textarea id="myTrans" class="form-input" rows="5" placeholder="写下你的译文…建议先抓主干（主谓宾），再处理从句与修饰成分。"></textarea>
+  <div class="flex justify-between items-center mt-2" style="flex-wrap:wrap; gap:8px;">
+    <button type="button" class="btn btn-secondary btn-sm" onclick="resetPractice()"><i class="ph ph-arrow-counter-clockwise"></i> 清空重写</button>
+    <button type="button" id="submitBtn" class="btn btn-primary" onclick="submitTranslation()"><i class="ph ph-check-square"></i> 提交批改</button>
+  </div>
+</div>
+
+<!-- 批改结果 -->
+<div class="card mb-4" id="resultCard">
+  <div class="card-header flex justify-between items-center">
+    <span><i class="ph ph-chart-line"></i> 批改结果</span>
+    <i class="ph ph-sparkle text-accent"></i>
+  </div>
+  <div id="resultBox">
+    <div class="empty-state"><div class="empty-state-title">还没有批改</div><div>写下译文后点击「提交批改」，AI 将按五个维度评分并逐条指出问题依据</div></div>
+  </div>
+</div>
+
+<!-- 解析（默认折叠：先译后看） -->
+<details class="card ws-anal mb-4">
+  <summary><i class="ph ph-caret-right"></i> 查看解析与参考译文<i class="ph ph-eye" style="color:var(--c-text-2); margin-left:4px;"></i></summary>
+  <div>
+    {% if is_ai and gq.syntax_tree_json %}
+    <div class="form-label" style="margin:12px 0 6px;"><i class="ph ph-tree-structure" style="color:var(--c-amber);"></i> 句法层级（AI 命题时标注）</div>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      {% for node in gq.syntax_tree_json %}
+      <span class="date-chip" style="padding:4px 12px;"><b>{{ node.role }}</b> · {{ node.fragment }}</span>
+      {% endfor %}
+    </div>
+    {% if gq.difficulty_reason %}<div class="text-secondary text-sm mt-2">{{ gq.difficulty_reason }}</div>{% endif %}
+    {% endif %}
+    {% if sentence.sentence_zh %}
+    <div class="form-label" style="margin:12px 0 6px;">参考译文{% if is_ai %}（AI 随题生成，非官方译文）{% endif %}</div>
+    <div class="model-box" style="white-space:pre-wrap;">{{ sentence.sentence_zh }}</div>
+    {% if not sentence.verified %}<div class="form-help mt-2"><i class="ph ph-flask"></i> 该参考译文{% if is_ai %}由 AI 生成且{% endif %}尚未人工核验，仅供学习参考。</div>{% endif %}
+    {% else %}
+    <div class="text-secondary text-sm" style="margin:12px 0 6px;">本句暂无预置参考译文，可点击下方「AI 解析」获取。</div>
+    {% endif %}
+    <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+      <button type="button" id="hintBtn" class="btn btn-secondary btn-sm" onclick="loadHint()"><i class="ph ph-magnifying-glass"></i> AI 逐层拆解本句</button>
+    </div>
+    <div id="hintResult" class="markdown-body text-secondary" style="margin-top:10px; min-height:24px;"></div>
+  </div>
+</details>
+
+<!-- 底部操作 -->
+<div class="flex justify-between items-center" style="flex-wrap:wrap; gap:8px;">
+  <a href="{% url 'words:trans_history' %}" class="btn btn-secondary btn-sm"><i class="ph ph-clock-counter-clockwise"></i> 练习历史</a>
+  {% if next_s %}
+  <a href="{% url 'words:trans_practice' next_s.id %}" class="btn btn-primary">下一句 <i class="ph ph-arrow-right"></i></a>
+  {% elif is_ai and paper %}
+  <a href="{% url 'words:trans_paper_detail' paper.id %}" class="btn btn-primary">已是本卷最后一句 · 返回试卷 <i class="ph ph-arrow-right"></i></a>
+  {% else %}
+  <span class="text-secondary text-sm">已是最后一句</span>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+var SID = {{ sentence.id }};
+var passScore = {{ pass_score }};
+var startedAt = Date.now();
+var timerId = setInterval(function () {
+  var s = Math.floor((Date.now() - startedAt) / 1000);
+  var m = Math.floor(s / 60), r = s % 60;
+  document.getElementById('transTimer').textContent =
+    (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+}, 1000);
+
+function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
+
+function submitTranslation() {
+  var trans = document.getElementById('myTrans').value.trim();
+  if (!trans) { showToast('请先输入你的译文', 'error'); return; }
+  var btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  var box = document.getElementById('resultBox');
+  box.innerHTML = '<div class="report-loading">AI 五维批改中，请稍候…（主干 / 从句 / 词义 / 逻辑 / 中文表达）</div>';
+  var duration = Math.floor((Date.now() - startedAt) / 1000);
+  VOCAB_API.post('{% url "words:api_trans_submit" sentence.id %}', {
+    translation: trans, duration_seconds: duration
+  }).then(function (res) {
+    stopTimer();
+    btn.disabled = false;
+    if (res.success && res.graded) {
+      box.innerHTML = renderTransResult(res.result);
+      highlightFragments(res.result.errors || []);
+      showToast('批改完成，已加入复习计划', 'success');
+    } else if (res.success) {
+      box.innerHTML = renderUngraded(res);
+      showToast(res.error || '本次未批改', 'error');
+    } else {
+      box.innerHTML = '<div class="empty-state">' + (res.error || '提交失败') + '</div>';
+      showToast(res.error || '提交失败', 'error');
+    }
+  }).catch(function () {
+    stopTimer();
+    btn.disabled = false;
+    box.innerHTML = '<div class="empty-state">请求失败，请检查网络或 AI 配置</div>';
+    showToast('请求失败', 'error');
+  });
+}
+
+function renderTransResult(r) {
+  if (!r || r.raw) return '<div class="markdown-body">' + renderMarkdown(r.raw || '—') + '</div>';
+  var dims = [
+    ['structure', '主干识别'], ['clause', '从句/非谓语'], ['lexicon', '关键词义'],
+    ['logic', '逻辑关系'], ['expression', '中文表达']
+  ];
+  var html = WS.renderScoreGrid(r.scores, dims, 10) + WS.renderTotal(r.total, 50);
+  if (r.syntax_notes) {
+    html += '<div style="margin:10px 0; padding:10px 12px; background:var(--c-surface-2); border:1px solid var(--c-border-light); border-radius:8px;">'
+      + '<b>结构一句话：</b>' + escapeHtml(r.syntax_notes) + '</div>';
+  }
+  html += WS.renderComments(r.comments) + renderTransErrors(r.errors || [])
+    + WS.renderSuggestions(r.suggestions)
+    + WS.renderModelText('更佳译文', r.model_translation, { markdown: true });
+  return html;
+}
+
+var ISSUE_COLORS = { '主干': 'var(--c-red)', '从句': 'var(--c-blue)', '词义': 'var(--c-amber)', '逻辑': 'var(--c-green)', '中文表达': 'var(--c-text-2)' };
+
+function renderTransErrors(errors) {
+  if (!errors.length) return '';
+  var html = '<div class="ws-section"><div class="ws-section-title"><i class="ph ph-warning-circle" style="color:var(--c-red);"></i> 问题清单（每条附原句英文依据）</div>';
+  for (var i = 0; i < errors.length; i++) {
+    var e = errors[i];
+    var color = ISSUE_COLORS[e.issue_type] || 'var(--c-text-2)';
+    html += '<div style="padding:10px 12px; border:1px solid var(--c-border-light); border-radius:8px; margin-bottom:8px;">'
+      + '<span class="trans-issue-badge" style="color:' + color + ';">' + escapeHtml(e.issue_type || '问题') + '</span> '
+      + '<code style="font-size:.85rem;">' + escapeHtml(e.fragment_en || '') + '</code>'
+      + '<div class="text-sm" style="margin-top:6px;">' + escapeHtml(e.suggestion || '') + '</div>'
+      + '</div>';
+  }
+  return html + '</div>';
+}
+
+function highlightFragments(errors) {
+  var el = document.getElementById('transSource');
+  var original = el.textContent;
+  var html = escapeHtml(original);
+  for (var i = 0; i < errors.length; i++) {
+    var f = errors[i] && errors[i].fragment_en;
+    if (!f) continue;
+    var esc = escapeHtml(f);
+    if (html.indexOf(esc) !== -1) {
+      html = html.split(esc).join('<span class="trans-frag">' + esc + '</span>');
+    }
+  }
+  el.innerHTML = html;
+}
+
+function renderUngraded(res) {
+  var html = '<div style="padding:12px 14px; border:1px solid var(--c-amber); border-radius:8px; color:var(--c-amber);">'
+    + '<i class="ph ph-warning-circle"></i> AI 批改暂不可用（' + escapeHtml(res.error || '未知原因') + '）。练习已保存，本次按字面相似度给出粗略对照。'
+    + '</div>';
+  if (typeof res.similarity === 'number') {
+    html += '<div style="margin:10px 0;"><span class="date-chip">与参考译文字面相似度约 ' + res.similarity + '%</span>'
+      + '<span class="text-secondary text-sm">（仅字符层面，不代表语义对错）</span></div>';
+  }
+  if (res.reference) {
+    html += '<div class="form-label" style="margin:10px 0 6px;">参考译文</div><div class="model-box" style="white-space:pre-wrap;">' + escapeHtml(res.reference) + '</div>';
+  }
+  html += '<div class="text-secondary text-sm mt-2">可点击「提交批改」重试，或在下方解析区使用 AI 拆解。</div>';
+  return html;
+}
+
+function resetPractice() {
+  document.getElementById('myTrans').value = '';
+  document.getElementById('resultBox').innerHTML =
+    '<div class="empty-state"><div class="empty-state-title">还没有批改</div><div>写下译文后点击「提交批改」</div></div>';
+  var el = document.getElementById('transSource');
+  el.textContent = el.getAttribute('data-raw') || el.textContent;
+  startedAt = Date.now();
+  if (!timerId) {
+    timerId = setInterval(function () {
+      var s = Math.floor((Date.now() - startedAt) / 1000);
+      var m = Math.floor(s / 60), r = s % 60;
+      document.getElementById('transTimer').textContent =
+        (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+    }, 1000);
+  }
+  document.getElementById('myTrans').focus();
+}
+
+function loadHint() {
+  var btn = document.getElementById('hintBtn');
+  btn.disabled = true;
+  var box = document.getElementById('hintResult');
+  box.innerHTML = '<div class="report-loading">AI 拆解中，请稍候…</div>';
+  VOCAB_API.post('{% url "words:api_trans_hint" sentence.id %}', {}).then(function (res) {
+    btn.disabled = false;
+    if (res.success) {
+      box.innerHTML = renderMarkdown(res.content);
+      showToast('解析完成', 'success');
+    } else {
+      box.innerHTML = '<div class="empty-state">' + (res.error || '解析失败') + '</div>';
+      showToast(res.error || '解析失败', 'error');
+    }
+  }).catch(function () {
+    btn.disabled = false;
+    box.innerHTML = '<div class="empty-state">请求失败，请检查网络或 AI 配置</div>';
+    showToast('请求失败', 'error');
+  });
+}
+
+function toggleFav() {
+  VOCAB_API.post('{% url "words:api_trans_fav" sentence.id %}', {}).then(function (res) {
+    if (!res.success) { showToast(res.error || '操作失败', 'error'); return; }
+    var btn = document.getElementById('favBtn');
+    var icon = document.getElementById('favIcon');
+    var text = document.getElementById('favText');
+    if (res.is_favorite) {
+      btn.classList.remove('btn-secondary'); btn.classList.add('btn-primary');
+      icon.className = 'ph-fill ph-bookmark-simple';
+      text.textContent = '已收藏';
+      showToast('已收藏本句', 'success');
+    } else {
+      btn.classList.remove('btn-primary'); btn.classList.add('btn-secondary');
+      icon.className = 'ph ph-bookmark-simple';
+      text.textContent = '收藏';
+      showToast('已取消收藏', 'success');
+    }
+  }).catch(function () { showToast('请求失败', 'error'); });
+}
+
+// 保留原句原文，供清空重写时还原
+document.getElementById('transSource').setAttribute('data-raw', document.getElementById('transSource').textContent);
+</script>
+{% endblock %}

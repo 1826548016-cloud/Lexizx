@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}我的错段 - 六级汉译英{% endblock %}
+
+{% block page_title %}六级我的错段{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+
+{% include 'partials/exam_nav.html' with ws_active='cet6' %}
+
+<div class="card mb-4">
+  <div class="ws-head-title"><i class="ph ph-warning-circle" style="color:var(--c-red);"></i> 待重练错段</div>
+  <div class="text-secondary text-sm mt-2">最近一次总分低于 {{ pass_name }}/50 或带错因标签的段落；达标段落间隔 7 天自动安排复习。</div>
+</div>
+
+<div class="card">
+  <div>
+    {% for it in items %}
+    <a href="{% url 'words:cet6_practice' it.passage.id %}" style="display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span class="btn btn-xs btn-secondary" style="min-width:96px; text-align:center;">{% if it.passage.question %}{{ it.passage.question.year }} 年{% else %}AI 训练{% endif %}</span>
+      <span style="flex:1; min-width:200px; color:var(--c-text-2); line-height:1.7;">{{ it.passage.source_zh|truncatechars:60 }}</span>
+      <span style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+        <span class="flex gap-2" style="flex-wrap:wrap; justify-content:flex-end;">
+          {% for t in it.error_names %}<span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:0 8px;">{{ t }}</span>{% endfor %}
+        </span>
+        {% if it.total is not None %}
+        <span class="text-sm" style="color:var(--c-red);">{{ it.total }}/50 分 · 练过 {{ it.attempts }} 次</span>
+        {% else %}
+        <span class="text-sm" style="color:var(--c-amber);">未批改 · 练过 {{ it.attempts }} 次</span>
+        {% endif %}
+        <span class="text-secondary text-sm">{% if it.due %}<i class="ph ph-calendar-check" style="color:var(--c-red);"></i> 已到期，今天复习{% else %}下次复习 {{ it.next_review }}{% endif %}</span>
+      </span>
+    </a>
+    {% empty %}
+    <div class="empty-state" style="padding:32px 16px;">
+      <div class="empty-state-title">暂无错段</div>
+      <div>完成一段翻译练习后，未达标的段落出现在这里。去<a href="{% url 'words:cet6_home' %}">专题首页</a>开始今日训练。</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}{% endblock %}

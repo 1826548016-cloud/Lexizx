@@ -1,0 +1,276 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}六级段落翻译 - 汉译英{% endblock %}
+
+{% block page_title %}六级汉译英练习{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+<style>
+  .cet6-frag { background: rgba(192, 57, 43, .14); border-bottom: 2px solid var(--c-red); border-radius: 2px; padding: 0 1px; }
+  .cet6-issue-badge { display: inline-block; border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; font-size: .72rem; white-space: nowrap; }
+  #cet6Source mark { background: transparent; }
+  details.ws-anal > summary { cursor: pointer; font-weight: 600; padding: 12px 16px; list-style: none; display: flex; align-items: center; gap: 8px; }
+  details.ws-anal > summary::-webkit-details-marker { display: none; }
+  details.ws-anal > summary i { transition: transform .15s; }
+  details.ws-anal[open] > summary i { transform: rotate(90deg); }
+  details.ws-anal > div { padding: 0 16px 14px; border-top: 1px solid var(--c-border-light); }
+  .kp-status { display:inline-block; border-radius:999px; padding:1px 10px; font-size:.75rem; border:1px solid currentColor; white-space:nowrap; }
+</style>
+
+{% include 'partials/exam_nav.html' with ws_active='cet6' %}
+
+<!-- 题头：中文材料 -->
+<div class="card mb-4">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      {% if is_ai %}
+      <span class="btn btn-xs btn-secondary" style="color:var(--c-amber); border-color:var(--c-amber);"><i class="ph ph-sparkle"></i> AI 训练题（非真题）</span>
+      {% else %}
+      <span class="btn btn-xs btn-secondary">{{ passage.question.year }} 年真题</span>
+      {% endif %}
+      <span class="btn btn-xs btn-secondary" title="难度 {{ passage.difficulty }}/5">{% for i in ""|center:passage.difficulty %}★{% endfor %}</span>
+      {% for t in skill_names %}<span class="date-chip" style="padding:2px 10px;">{{ t }}</span>{% endfor %}
+    </div>
+    <a href="{% url 'words:cet6_home' %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回专题</a>
+  </div>
+  <div class="ws-head-title" style="margin-bottom:6px;">中文段落</div>
+  <div id="cet6Source" class="word-text" style="line-height:2; font-size:1.08rem;">{{ passage.source_zh }}</div>
+  <div class="flex gap-2 mt-2" style="flex-wrap:wrap; align-items:center;">
+    <span class="date-chip"><i class="ph ph-timer"></i> 用时 <span id="cet6Timer">00:00</span></span>
+    {% if last_total is not None %}
+      <span class="date-chip" {% if last_total >= pass_name %}style="color:var(--c-green); border-color:var(--c-green);"{% else %}style="color:var(--c-red); border-color:var(--c-red);"{% endif %}>上次：{{ last_total }}/50 分</span>
+    {% elif latest %}
+      <span class="date-chip" style="color:var(--c-amber); border-color:var(--c-amber);">上次：未批改（AI 不可用）</span>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 作答 -->
+<div class="card mb-4">
+  <div class="card-header flex justify-between items-center">
+    <span>我的英文译文</span>
+    <span class="text-secondary text-sm">先独立翻译，参考译文与关键表达在下方折叠区</span>
+  </div>
+  <textarea id="myTrans" class="form-input" rows="7" placeholder="将整段中文译成英文…建议先按意群拆句，再确定每句的时态、语态与衔接词。"></textarea>
+  <div class="flex justify-between items-center mt-2" style="flex-wrap:wrap; gap:8px;">
+    <button type="button" class="btn btn-secondary btn-sm" onclick="resetPractice()"><i class="ph ph-arrow-counter-clockwise"></i> 清空重写</button>
+    <button type="button" id="submitBtn" class="btn btn-primary" onclick="submitTranslation()"><i class="ph ph-check-square"></i> 提交批改</button>
+  </div>
+</div>
+
+<!-- 批改结果 -->
+<div class="card mb-4" id="resultCard">
+  <div class="card-header flex justify-between items-center">
+    <span><i class="ph ph-chart-line"></i> 批改结果</span>
+    <i class="ph ph-sparkle text-accent"></i>
+  </div>
+  <div id="resultBox">
+    <div class="empty-state"><div class="empty-state-title">还没有批改</div><div>译完后点击「提交批改」，AI 按六级标准评分：信息完整 / 文化表达 / 语法句法 / 搭配词性 / 衔接自然</div></div>
+  </div>
+</div>
+
+<!-- 解析（默认折叠：先译后看） -->
+<details class="card ws-anal mb-4">
+  <summary><i class="ph ph-caret-right"></i> 查看解析与参考译文<i class="ph ph-eye" style="color:var(--c-text-2); margin-left:4px;"></i></summary>
+  <div>
+    <div class="form-label" style="margin:12px 0 6px;">参考译文{% if is_ai %}（AI 随题生成，非官方译文）{% else %}<span id="refVerifiedTag" class="text-secondary text-sm">{% if not passage.verified %}（尚未人工核验，AI 批改后会自动补全，仅供学习参考）{% endif %}</span>{% endif %}</div>
+    <div class="model-box" style="white-space:pre-wrap;" id="refText">{% if passage.reference_en %}{{ passage.reference_en }}{% else %}本段暂无参考译文，提交批改后 AI 将自动补全。{% endif %}</div>
+
+    {% if key_points %}
+    <div class="form-label" style="margin:14px 0 6px;"><i class="ph ph-cards" style="color:var(--c-blue);"></i> 关键表达点（中文概念 → 英文表达）</div>
+    <div style="display:grid; gap:6px;">
+      {% for kp in key_points %}
+      <div style="padding:8px 12px; background:var(--c-surface); border:1px solid var(--c-border-light); border-radius:8px;">
+        <b>{{ kp.zh }}</b>
+        <span class="ws-arrow" style="margin:0 6px;">→</span>
+        <span style="color:var(--c-blue);">{{ kp.recommended_en }}</span>
+        {% if kp.alternatives %}<span class="text-secondary text-sm">（可接受：{{ kp.alternatives|join:'、' }}）</span>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</details>
+
+<!-- 底部操作 -->
+<div class="flex justify-between items-center" style="flex-wrap:wrap; gap:8px;">
+  <a href="{% url 'words:cet6_errors' %}" class="btn btn-secondary btn-sm"><i class="ph ph-warning-circle"></i> 我的错段</a>
+  <a href="{% url 'words:cet6_report' %}" class="btn btn-secondary btn-sm">学习报告 <i class="ph ph-arrow-right"></i></a>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+var PID = {{ passage.id }};
+var passScore = {{ pass_name }};
+var startedAt = Date.now();
+var timerId = setInterval(function () {
+  var s = Math.floor((Date.now() - startedAt) / 1000);
+  var m = Math.floor(s / 60), r = s % 60;
+  document.getElementById('cet6Timer').textContent =
+    (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+}, 1000);
+function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
+
+var KP_STATUS = {
+  conveyed: ['已表达', 'var(--c-green)'],
+  rephrased: ['替代表达', 'var(--c-blue)'],
+  missed: ['未达成', 'var(--c-red)']
+};
+var ISSUE_COLORS = { '遗漏': 'var(--c-red)', '文化表达': 'var(--c-amber)', '语法': 'var(--c-blue)', '搭配': 'var(--c-green)', '逻辑': 'var(--c-text-2)', '自然度': 'var(--c-text-2)' };
+
+function submitTranslation() {
+  var trans = document.getElementById('myTrans').value.trim();
+  if (!trans) { showToast('请先输入你的英文译文', 'error'); return; }
+  var btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  var box = document.getElementById('resultBox');
+  box.innerHTML = '<div class="report-loading">AI 五维批改中，请稍候…（信息完整 / 文化表达 / 语法句法 / 搭配词性 / 衔接自然）</div>';
+  var duration = Math.floor((Date.now() - startedAt) / 1000);
+  VOCAB_API.post('{% url "words:api_cet6_submit" passage.id %}', {
+    translation: trans, duration: duration
+  }).then(function (res) {
+    stopTimer();
+    btn.disabled = false;
+    if (res.success && res.result) {
+      box.innerHTML = renderCet6Result(res.result);
+      highlightFragments(res.result.errors || []);
+      if (res.reference_en) { updateReference(res.reference_en); }
+      showToast('批改完成，已加入复习计划', 'success');
+    } else if (res.success && res.fallback) {
+      box.innerHTML = renderFallback(res);
+      if (res.reference_en) { updateReference(res.reference_en); }
+      showToast(res.message || 'AI 暂不可用', 'error');
+    } else {
+      box.innerHTML = '<div class="empty-state">' + (res.error || '提交失败') + '</div>';
+      showToast(res.error || '提交失败', 'error');
+    }
+  }).catch(function () {
+    stopTimer();
+    btn.disabled = false;
+    box.innerHTML = '<div class="empty-state">请求失败，请检查网络或 AI 配置</div>';
+    showToast('请求失败', 'error');
+  });
+}
+
+function renderCet6Result(r) {
+  var dims = [
+    ['accuracy', '信息完整'], ['culture', '文化表达'], ['grammar', '语法句法'],
+    ['collocation', '搭配词性'], ['fluency', '衔接自然']
+  ];
+  var html = WS.renderScoreGrid(r.scores, dims, 10) + WS.renderTotal(r.total, 50);
+  html += WS.renderComments(r.comments);
+  html += renderKeyPointResults(r.key_point_results || []);
+  html += renderCet6Errors(r.errors || []);
+  html += renderReplacements(r.replacements || []);
+  html += WS.renderSuggestions(r.suggestions);
+  html += WS.renderModelText('更佳参考译文', r.model_translation, { markdown: false });
+  return html;
+}
+
+function renderKeyPointResults(results) {
+  if (!results.length) return '';
+  var html = '<div class="ws-section"><div class="ws-section-title"><i class="ph ph-cards" style="color:var(--c-blue);"></i> 关键表达点判定</div>';
+  for (var i = 0; i < results.length; i++) {
+    var kp = results[i];
+    var st = KP_STATUS[kp.status] || [kp.status || '—', 'var(--c-text-2)'];
+    html += '<div style="padding:10px 12px; border:1px solid var(--c-border-light); border-radius:8px; margin-bottom:8px;">'
+      + '<span class="kp-status" style="color:' + st[1] + ';">' + st[0] + '</span> '
+      + '<b>' + escapeHtml(kp.zh || '') + '</b>'
+      + (kp.user_en ? ' <span class="text-secondary text-sm">你的表达：' + escapeHtml(kp.user_en) + '</span>' : '')
+      + (kp.note ? '<div class="text-sm" style="margin-top:4px; color:var(--c-text-2);">' + escapeHtml(kp.note) + '</div>' : '')
+      + '</div>';
+  }
+  return html + '</div>';
+}
+
+function renderCet6Errors(errors) {
+  if (!errors.length) return '';
+  var html = '<div class="ws-section"><div class="ws-section-title"><i class="ph ph-warning-circle" style="color:var(--c-red);"></i> 问题清单（每条附中文原文依据）</div>';
+  for (var i = 0; i < errors.length; i++) {
+    var e = errors[i];
+    var color = ISSUE_COLORS[e.issue_type] || 'var(--c-text-2)';
+    html += '<div style="padding:10px 12px; border:1px solid var(--c-border-light); border-radius:8px; margin-bottom:8px;">'
+      + '<span class="cet6-issue-badge" style="color:' + color + ';">' + escapeHtml(e.issue_type || '问题') + '</span> '
+      + '<code style="font-size:.85rem;">' + escapeHtml(e.zh_fragment || '') + '</code>'
+      + '<div class="text-sm" style="margin-top:6px;"><span class="ws-wrong">' + escapeHtml(e.original || '') + '</span>'
+      + ' <span class="ws-arrow">→</span> <span class="ws-right">' + escapeHtml(e.corrected || '') + '</span></div>'
+      + (e.suggestion ? '<div class="text-sm" style="margin-top:4px; color:var(--c-text-2);">' + escapeHtml(e.suggestion) + '</div>' : '')
+      + '</div>';
+  }
+  return html + '</div>';
+}
+
+function renderReplacements(list) {
+  if (!list || !list.length) return '';
+  var html = '<div class="ws-section"><div class="ws-section-title"><i class="ph ph-arrow-up-right" style="color:var(--c-green);"></i> 更适合六级写作与翻译的替换表达</div><ul class="ws-expr-list">';
+  for (var i = 0; i < list.length; i++) {
+    var r = list[i];
+    html += '<li>'
+      + '<b>' + escapeHtml(r.zh || '') + '</b>'
+      + (r.basic ? ' <span class="ws-expr-old">（' + escapeHtml(r.basic) + '）</span>' : '')
+      + ' <span class="ws-arrow">→</span> <span class="ws-expr-new">' + escapeHtml(r.better || '') + '</span>'
+      + (r.note ? '<div class="ws-expr-note">' + escapeHtml(r.note) + '</div>' : '')
+      + '</li>';
+  }
+  return html + '</ul></div>';
+}
+
+function highlightFragments(errors) {
+  var el = document.getElementById('cet6Source');
+  var original = el.getAttribute('data-raw') || el.textContent;
+  var html = escapeHtml(original);
+  for (var i = 0; i < errors.length; i++) {
+    var f = errors[i] && errors[i].zh_fragment;
+    if (!f) continue;
+    var esc = escapeHtml(f);
+    if (html.indexOf(esc) !== -1) {
+      html = html.split(esc).join('<span class="cet6-frag">' + esc + '</span>');
+    }
+  }
+  el.innerHTML = html;
+}
+
+function updateReference(refEn) {
+  var el = document.getElementById('refText');
+  if (el) el.textContent = refEn;
+  var tag = document.getElementById('refVerifiedTag');
+  if (tag) tag.textContent = '（参考译文已由 AI 批改补全，尚未人工核验）';
+}
+
+function renderFallback(res) {
+  var html = '<div style="padding:12px 14px; border:1px solid var(--c-amber); border-radius:8px; color:var(--c-amber);">'
+    + '<i class="ph ph-warning-circle"></i> ' + escapeHtml(res.message || 'AI 批改暂不可用。练习已保存，本次不计入达标统计。')
+    + '</div>';
+  if (res.reference_en) {
+    html += '<div class="form-label" style="margin:10px 0 6px;">参考译文</div>'
+      + '<div class="model-box" style="white-space:pre-wrap;">' + escapeHtml(res.reference_en) + '</div>';
+  }
+  html += '<div class="text-secondary text-sm mt-2">可点击「提交批改」重试。</div>';
+  return html;
+}
+
+function resetPractice() {
+  document.getElementById('myTrans').value = '';
+  document.getElementById('resultBox').innerHTML =
+    '<div class="empty-state"><div class="empty-state-title">还没有批改</div><div>译完后点击「提交批改」</div></div>';
+  var el = document.getElementById('cet6Source');
+  el.textContent = el.getAttribute('data-raw') || el.textContent;
+  startedAt = Date.now();
+  if (!timerId) {
+    timerId = setInterval(function () {
+      var s = Math.floor((Date.now() - startedAt) / 1000);
+      var m = Math.floor(s / 60), r = s % 60;
+      document.getElementById('cet6Timer').textContent =
+        (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+    }, 1000);
+  }
+  document.getElementById('myTrans').focus();
+}
+
+// 保留中文原文，供清空重写时还原
+document.getElementById('cet6Source').setAttribute('data-raw', document.getElementById('cet6Source').textContent);
+</script>
+{% endblock %}

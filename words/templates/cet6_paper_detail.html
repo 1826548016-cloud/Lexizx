@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{{ paper.title }} - 六级 AI 卷{% endblock %}
+
+{% block page_title %}六级 AI 专项卷{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+
+{% include 'partials/exam_nav.html' with ws_active='cet6' %}
+
+<!-- 卷信息 -->
+<div class="card mb-4">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:260px;">
+      <div class="ws-head-title"><i class="ph ph-sparkle" style="color:var(--c-amber);"></i> {{ paper.title }}</div>
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+        <span class="btn btn-xs btn-secondary" style="color:var(--c-amber); border-color:var(--c-amber);"><i class="ph ph-sparkle"></i> AI 训练题（非真题）</span>
+        <span class="btn btn-xs btn-secondary">{{ mode_name }}</span>
+        <span class="btn btn-xs btn-secondary">{{ diff_name }} · {{ length_name }}</span>
+        {% if skill_names %}<span class="btn btn-xs btn-secondary">专项：{{ skill_names }}</span>{% endif %}
+      </div>
+      {% if target_words %}
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+        {% for w in target_words %}<span class="date-chip"><i class="ph ph-bookmark-simple"></i> {{ w }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      {% if paper.status == 'failed' and paper.error_message %}
+      <div class="mt-2" style="padding:10px 14px; border:1px solid var(--c-red); border-radius:8px; color:var(--c-red); font-size:.88rem;">
+        <i class="ph ph-warning-circle"></i> {{ paper.error_message }}
+      </div>
+      {% endif %}
+    </div>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      <a href="{% url 'words:cet6_paper_new' %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回组卷</a>
+      <button type="button" id="retryBtn" class="btn btn-primary btn-sm" onclick="retryPaper()"><i class="ph ph-arrow-clockwise"></i> 重试补齐</button>
+    </div>
+  </div>
+</div>
+
+<!-- 状态条 -->
+<div class="flex gap-2 mb-4" style="flex-wrap:wrap;">
+  <span class="date-chip"><i class="ph ph-list-checks"></i> 段落 {{ questions|length }}/{{ expected }}</span>
+  {% if paper.status == 'ready' %}
+    <span class="date-chip" style="color:var(--c-green); border-color:var(--c-green);"><i class="ph ph-check-circle"></i> 已完成</span>
+  {% elif paper.status == 'failed' %}
+    <span class="date-chip" style="color:var(--c-red); border-color:var(--c-red);"><i class="ph ph-x-circle"></i> 未完成</span>
+  {% else %}
+    <span class="date-chip" style="color:var(--c-amber); border-color:var(--c-amber);"><i class="ph ph-circle-notch ph-spin"></i> 生成中</span>
+  {% endif %}
+  {% if paper.retry_count %}<span class="date-chip">自动重试 {{ paper.retry_count }} 次</span>{% endif %}
+  {% if paper.duration_ms %}<span class="date-chip">生成耗时 {{ paper.duration_ms }} ms</span>{% endif %}
+</div>
+
+<!-- 段落列表 -->
+<div class="card">
+  <div class="card-header">本卷段落（点击进入练习）</div>
+  <div>
+    {% for q in questions %}
+    <a href="{% url 'words:cet6_practice' q.pid %}" style="display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span class="btn btn-xs btn-secondary" style="min-width:56px; text-align:center;">第 {{ q.order }} 段</span>
+      <span style="flex:1; min-width:200px; color:var(--c-text-2); line-height:1.7;">{{ q.source_zh|truncatechars:60 }}</span>
+      <span style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+        <span style="color:var(--c-amber); font-size:.8rem; letter-spacing:1px;" title="难度 {{ q.difficulty }}/5">{% for i in ""|center:q.difficulty %}★{% endfor %}</span>
+        <span class="text-secondary text-sm">本地校验{% if q.is_approved %}通过{% else %}未过{% endif %}{% if q.quality_score is not None %} · {{ q.quality_score|floatformat:0 }} 分{% endif %}</span>
+        {% if q.status == 'new' %}
+          <span class="text-secondary text-sm">未练</span>
+        {% elif q.status == 'error' %}
+          <span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:1px 10px; white-space:nowrap;">待重练{% if q.last_total %} {{ q.last_total }}分{% endif %}</span>
+        {% else %}
+          <span class="text-sm" style="color:var(--c-green); border:1px solid var(--c-green); border-radius:999px; padding:1px 10px; white-space:nowrap;">已过{% if q.last_total %} {{ q.last_total }}分{% endif %}</span>
+        {% endif %}
+      </span>
+    </a>
+    {% empty %}
+    <div class="empty-state" style="padding:32px 16px;">
+      <div class="empty-state-title">本卷还没有通过校验的段落</div>
+      <div>点击右上角「重试补齐」重新生成。</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="form-help mt-2"><i class="ph ph-flask"></i> 「本地校验分」仅代表生成后规则校验（长度/考点/覆盖率/相似度）的结果，不代表翻译准确性或句法质量。</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+var PAPER_ID = {{ paper.id }};
+
+function retryPaper() {
+  var btn = document.getElementById('retryBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ph ph-circle-notch ph-spin"></i> 正在重试…';
+  VOCAB_API.post('{% url "words:api_cet6_paper_retry" paper.id %}', {}).then(function (res) {
+    if (res && res.redirect) {
+      window.location.href = res.redirect;
+    } else {
+      showToast(res.error || '重试失败', 'error');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ph ph-arrow-clockwise"></i> 重试补齐';
+    }
+  }).catch(function () {
+    showToast('请求失败，请重试', 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ph ph-arrow-clockwise"></i> 重试补齐';
+  });
+}
+</script>
+{% endblock %}

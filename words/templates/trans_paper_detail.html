@@ -1,0 +1,134 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{{ paper.title }} - AI 专项组卷{% endblock %}
+
+{% block page_title %}AI 专项组卷详情{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+
+{% include 'partials/exam_nav.html' with ws_active='trans' %}
+
+<!-- 卷头 -->
+<div class="card mb-4">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:260px;">
+      <div class="ws-head-title">
+        <i class="ph ph-wand" style="color:var(--c-amber);"></i> {{ paper.title }}
+        <span class="date-chip" style="color:var(--c-amber); border-color:var(--c-amber);"><i class="ph ph-sparkle"></i> AI 训练题（非真题）</span>
+      </div>
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+        <span class="date-chip">{{ mode_name }}</span>
+        <span class="date-chip">难度：{{ diff_name }}</span>
+        <span class="date-chip">{{ length_name }}</span>
+        <span class="date-chip">{{ questions|length }}/{{ expected }} 句</span>
+        {% if syntax_names %}<span class="date-chip">句法：{{ syntax_names }}</span>{% endif %}
+      </div>
+      {% if target_words %}
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+        {% for w in target_words %}<span class="date-chip"><i class="ph ph-bookmark-simple"></i> {{ w }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="text-secondary text-sm mt-2">创建于 {{ paper.created_at|date:'m-d H:i' }}{% if paper.duration_ms %} · 生成耗时 {% widthratio paper.duration_ms 1000 1 %} 秒{% endif %}{% if paper.retry_count %} · 自动重试 {{ paper.retry_count }} 次{% endif %}</div>
+    </div>
+    <div class="flex gap-2">
+      <a href="{% url 'words:trans_paper_new' %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 再组一卷</a>
+      {% if questions %}
+      <a href="{% url 'words:trans_practice' questions.0.sid %}" class="btn btn-primary btn-sm"><i class="ph ph-play"></i> 开始练习</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- 状态条 -->
+{% if paper.status == 'ready' %}
+<div class="card mb-4" style="border-color:var(--c-green);">
+  <div style="display:flex; align-items:center; gap:10px; color:var(--c-green); flex-wrap:wrap;">
+    <i class="ph ph-check-circle" style="font-size:1.2rem;"></i>
+    <span>组卷完成，{{ questions|length }} 句全部通过本地质量校验。AI 题在练习、解析与历史记录中均永久标注「AI 训练题」。</span>
+  </div>
+</div>
+{% else %}
+<div class="card mb-4" style="border-color:var(--c-red);">
+  <div style="display:flex; align-items:flex-start; gap:10px; color:var(--c-red); flex-wrap:wrap;">
+    <i class="ph ph-warning-circle" style="font-size:1.2rem; margin-top:2px;"></i>
+    <div style="flex:1; min-width:240px;">
+      <div style="font-weight:600; color:var(--c-text);">组卷未完成{% if questions %}（已保留已生成的 {{ questions|length }} 句，重试只补齐缺失部分）{% endif %}</div>
+      {% if paper.error_message %}<div class="text-secondary text-sm mt-2" style="white-space:pre-line;">{{ paper.error_message }}</div>{% endif %}
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+        <button type="button" id="retryBtn" class="btn btn-primary btn-sm" onclick="retryPaper()"><i class="ph ph-arrow-clockwise"></i> 重试补齐</button>
+        <a class="btn btn-secondary btn-sm" href="{% url 'words:settings_page' %}">检查 AI 模型设置</a>
+        <a class="btn btn-secondary btn-sm" href="{% url 'words:trans_home' %}">改用真题练习</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- 题目列表 -->
+<div class="card">
+  <div class="card-header">题目列表</div>
+  {% if questions %}
+  <div>
+    {% for q in questions %}
+    <div style="padding:14px 16px; border-bottom:1px solid var(--c-border-light);">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px;">
+        <span class="btn btn-xs btn-secondary">第 {{ q.order }} 句</span>
+        <span class="date-chip" style="color:var(--c-amber); border-color:var(--c-amber); padding:2px 10px;"><i class="ph ph-sparkle"></i> AI 训练题</span>
+        {% for t in q.syntax_tags %}<span class="date-chip" style="padding:2px 10px;">{{ t }}</span>{% endfor %}
+        <span style="color:var(--c-amber); font-size:.8rem;">{% for i in ""|center:q.difficulty %}★{% endfor %}</span>
+        {% if q.quality_score %}<span class="text-secondary text-sm" title="本地规则校验得分（句长、译文、句法标签、词库范围、重复度、目标词覆盖），不代表翻译质量评分">本地校验分 {{ q.quality_score|floatformat:0 }}</span>{% endif %}
+        <span style="flex:1;"></span>
+        {% if q.status == 'new' %}
+          <span class="text-secondary text-sm">未练</span>
+        {% elif q.status == 'error' %}
+          <span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:1px 10px;">待重练{% if q.last_total %} {{ q.last_total }}分{% endif %}</span>
+        {% else %}
+          <span class="text-sm" style="color:var(--c-green); border:1px solid var(--c-green); border-radius:999px; padding:1px 10px;">已过{% if q.last_total %} {{ q.last_total }}分{% endif %}</span>
+        {% endif %}
+        <a href="{% url 'words:trans_practice' q.sid %}" class="btn btn-primary btn-xs">去练习 <i class="ph ph-arrow-right"></i></a>
+      </div>
+      <div class="word-text" style="line-height:1.8;">{{ q.sentence_en }}</div>
+      {% if q.difficulty_reason %}<div class="text-secondary text-sm mt-2"><i class="ph ph-info"></i> {{ q.difficulty_reason }}</div>{% endif %}
+      {% if q.syntax_tree %}
+      <details class="mt-2">
+        <summary class="text-secondary text-sm" style="cursor:pointer;"><i class="ph ph-tree-structure"></i> 句法层级（{{ q.syntax_tree|length }} 个片段）</summary>
+        <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+          {% for node in q.syntax_tree %}
+          <span class="date-chip" style="padding:4px 12px;"><b>{{ node.role }}</b> · {{ node.fragment }}</span>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state" style="padding:32px 16px;">
+    <div class="empty-state-title">本卷还没有题目</div>
+    <div>点击上方「重试补齐」，或返回降低难度、减少条件后重新组卷。</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function retryPaper() {
+  var btn = document.getElementById('retryBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ph ph-circle-notch ph-spin"></i> 正在补齐…';
+  VOCAB_API.post('{% url "words:api_trans_paper_retry" paper.id %}', {}).then(function (res) {
+    if (res && res.redirect) { window.location.href = res.redirect; return; }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ph ph-arrow-clockwise"></i> 重试补齐';
+    showToast((res && res.error) || '重试失败', 'error');
+  }).catch(function () {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ph ph-arrow-clockwise"></i> 重试补齐';
+    showToast('网络异常，请稍后重试', 'error');
+  });
+}
+</script>
+{% endblock %}

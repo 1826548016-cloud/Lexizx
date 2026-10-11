@@ -1,0 +1,130 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}六级汉译英 - 写作工坊{% endblock %}
+
+{% block page_title %}六级汉译英{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+
+{% include 'partials/exam_nav.html' with ws_active='cet6' %}
+
+<!-- Hero：今日六级翻译训练 -->
+<div class="card mb-4">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:260px;">
+      <div class="ws-head-title"><i class="ph ph-article" style="color:var(--c-blue);"></i> 今日六级翻译训练</div>
+      <div class="text-secondary text-sm mt-2">
+        今日推荐：1 段 · 约 15 分钟 · {{ rec_reason }}
+        <br>重点：{{ focus_names }}
+      </div>
+      {% if rec %}
+      <div style="margin-top:10px; padding:10px 14px; background:var(--c-surface); border:1px solid var(--c-border); border-radius:8px; line-height:1.8;">
+        {{ rec.source_zh|truncatechars:80 }}
+      </div>
+      {% endif %}
+    </div>
+    {% if rec %}
+    <a href="{% url 'words:cet6_practice' rec.id %}" class="btn btn-primary" style="white-space:nowrap;">
+      <i class="ph ph-play"></i> 开始训练
+    </a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 次级入口 -->
+<div class="ws-tile-grid mb-4">
+  <a href="#passage-list" class="study-tile">
+    <div class="study-tile-icon study-tile-icon--blue"><i class="ph ph-text-t"></i></div>
+    <div class="study-tile-title">真题训练</div>
+    <div class="study-tile-desc">按年份练段落汉译英</div>
+  </a>
+  <a href="{% url 'words:cet6_paper_new' %}" class="study-tile">
+    <div class="study-tile-icon study-tile-icon--amber"><i class="ph ph-magic-wand"></i></div>
+    <div class="study-tile-title">AI 专项组卷</div>
+    <div class="study-tile-desc">主题 · 专项 · 表达词库定向</div>
+  </a>
+  <a href="{% url 'words:cet6_errors' %}" class="study-tile">
+    <div class="study-tile-icon study-tile-icon--red"><i class="ph ph-warning-circle"></i></div>
+    <div class="study-tile-title">我的错段</div>
+    <div class="study-tile-desc">{{ stats.errors }} 段待重练{% if stats.due %} · {{ stats.due }} 段已到期{% endif %}</div>
+  </a>
+  <a href="{% url 'words:cet6_expressions' %}" class="study-tile">
+    <div class="study-tile-icon study-tile-icon--green"><i class="ph ph-cards"></i></div>
+    <div class="study-tile-title">表达词库</div>
+    <div class="study-tile-desc">中文概念 → 英文表达</div>
+  </a>
+  <a href="{% url 'words:cet6_report' %}" class="study-tile">
+    <div class="study-tile-icon study-tile-icon--blue"><i class="ph ph-chart-line"></i></div>
+    <div class="study-tile-title">学习报告</div>
+    <div class="study-tile-desc">成绩与高频错因</div>
+  </a>
+</div>
+
+<!-- 统计 + 年份筛选 -->
+<div class="flex gap-2 mb-2" style="flex-wrap:wrap;">
+  <span class="date-chip"><i class="ph ph-stack"></i> 真题段库 {{ stats.total }} 段</span>
+  <span class="date-chip"><i class="ph ph-check-circle"></i> 已练 {{ stats.practiced }}</span>
+  <span class="date-chip" style="{% if stats.errors %}color:var(--c-red); border-color:var(--c-red);{% endif %}"><i class="ph ph-warning-circle"></i> 待重练 {{ stats.errors }}</span>
+  <span class="date-chip"><i class="ph ph-calendar-check"></i> 到期复习 {{ stats.due }}</span>
+</div>
+<div class="flex gap-2 mb-4" style="flex-wrap:wrap;">
+  <a class="date-chip" style="{% if not year %}color:#fff; background:var(--c-blue); border-color:var(--c-blue);{% endif %}" href="{% url 'words:cet6_home' %}">全部年份</a>
+  {% for y in years %}
+  <a class="date-chip" style="{% if year == y %}color:#fff; background:var(--c-blue); border-color:var(--c-blue);{% endif %}" href="?year={{ y }}">{{ y }}</a>
+  {% endfor %}
+</div>
+
+<!-- 真题段落列表 -->
+<div class="card" id="passage-list">
+  <div class="card-header">六级真题段落库{% if year %} · {{ year }} 年{% endif %}</div>
+  <div>
+    {% for it in passages %}
+    <a href="{% url 'words:cet6_practice' it.id %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span class="btn btn-xs btn-secondary" style="min-width:96px; text-align:center;">{{ it.year|default:'—' }} · 翻译</span>
+      <span style="flex:1; min-width:160px; color:var(--c-text-2);">{{ it.head }}…</span>
+      <span style="color:var(--c-amber); font-size:.8rem; letter-spacing:1px;" title="难度 {{ it.difficulty }}/5">{% for i in ""|center:it.difficulty %}★{% endfor %}</span>
+      {% if it.due %}<span class="text-secondary text-sm">到期复习</span>{% endif %}
+      {% if it.status == 'new' %}
+        <span class="text-secondary text-sm">未练</span>
+      {% elif it.status == 'error' %}
+        <span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:1px 10px; white-space:nowrap;">待重练{% if it.total %} {{ it.total }}分{% endif %}</span>
+      {% else %}
+        <span class="text-sm" style="color:var(--c-green); border:1px solid var(--c-green); border-radius:999px; padding:1px 10px; white-space:nowrap;">已过{% if it.total %} {{ it.total }}分{% endif %}</span>
+      {% endif %}
+    </a>
+    {% empty %}
+    <div class="empty-state" style="padding:32px 16px;">
+      <div class="empty-state-title">暂无真题段落</div>
+      <div>首次进入本页会自动从六级真题库导入翻译段落；若仍为空，请先导入六级真题题库。</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- 最近练习 -->
+{% if recent %}
+<div class="card mt-4">
+  <div class="card-header flex justify-between items-center">
+    <span>最近练习</span>
+    <a href="{% url 'words:cet6_report' %}" class="text-secondary text-sm">学习报告 →</a>
+  </div>
+  <div>
+    {% for pr in recent %}
+    <a href="{% url 'words:cet6_practice' pr.passage_id %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span class="btn btn-xs btn-secondary" style="min-width:96px; text-align:center;">{{ pr.created_at|date:'m-d H:i' }}</span>
+      <span style="flex:1; min-width:160px; color:var(--c-text-2);">{{ pr.passage.source_zh|truncatechars:44 }}</span>
+      {% with sc=pr.get_score %}
+      {% if sc.fallback %}
+        <span class="text-sm" style="color:var(--c-amber); border:1px solid var(--c-amber); border-radius:999px; padding:1px 10px; white-space:nowrap;">未批改</span>
+      {% else %}
+        <span class="text-sm {% if sc.total >= pass_name %}status-ok{% else %}status-err{% endif %}" style="border-radius:999px; padding:1px 10px; white-space:nowrap; {% if sc.total >= pass_name %}color:var(--c-green); border:1px solid var(--c-green);{% else %}color:var(--c-red); border:1px solid var(--c-red);{% endif %}">{{ sc.total|default:'—' }}/50</span>
+      {% endif %}
+      {% endwith %}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

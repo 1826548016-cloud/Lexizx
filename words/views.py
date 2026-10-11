@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import threading
 import time
+import difflib
+import hashlib
 import urllib.request
 import urllib.error
 import base64
@@ -14,7 +16,7 @@ from io import BytesIO
 
 from django.conf import settings
 from django.core.paginator import Paginator
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 from django.db.models import Q, Count, Sum, Avg, F, Max
 from django.http import JsonResponse, HttpResponse, FileResponse, Http404
 from django.shortcuts import render, get_object_or_404
@@ -23,7 +25,9 @@ from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
 from .models import (Unit, Word, StudyProgress, StudyPlan,
-                     DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog)
+                     DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog, TranslationSentence, TranslationPractice, TranslationFavorite, GeneratedPaper, GeneratedQuestion,
+                     Cet6TranslationPassage, Cet6TranslationPractice,
+                     GeneratedCet6Paper, GeneratedCet6Question)
 from .ai_prompts import (
     quick_memory_prompt, ASSISTANT_SYSTEM_PROMPT, assistant_word_context,
     pos_grouping_prompt, examples_prompt, phonetics_prompt,
@@ -35,6 +39,12 @@ from .ai_exam_prompts import (
     build_vocabulary_profile, essay_generation_prompt, essay_grading_prompt,
     translation_help_prompt, translation_grading_prompt, themes_report_prompt,
     personal_template_prompt, cet6_translation_help_prompt, cet6_translation_grading_prompt,
+    trans_grading_prompt_v2,
+    trans_paper_generation_prompt, TRANS_SYNTAX_TAGS,
+    TRANS_DIFFICULTY_NAMES, TRANS_LENGTH_RANGES,
+    cet6_grading_prompt_v2, cet6_paper_generation_prompt,
+    CET6_SKILL_TAGS, CET6_SKILL_TAG_NAMES, CET6_TOPICS, CET6_ERROR_TAGS,
+    CET6_DIFFICULTY_NAMES, CET6_LENGTH_RANGES, CET6_BATCH_SIZE,
 )
 from . import vault
 
@@ -2572,6 +2582,7 @@ def _backup_settings(s):
         'quick_memory_model_id': s.quick_memory_model_id,
         'meaning_check_model_id': s.meaning_check_model_id,
         'exam_model_id': s.exam_model_id,
+        'cet6_translation_model_id': s.cet6_translation_model_id,
     }
 
 
@@ -2754,6 +2765,7 @@ def api_restore(request):
                     settings_obj.quick_memory_model_id = _map_fk('quick_memory_model_id')
                     settings_obj.meaning_check_model_id = _map_fk('meaning_check_model_id')
                     settings_obj.exam_model_id = _map_fk('exam_model_id')
+                    settings_obj.cet6_translation_model_id = _map_fk('cet6_translation_model_id')
                     settings_obj.save()
 
                 # --- 3) 学习进度（用 word 字符串跨库映射 word_id）---
@@ -2989,6 +3001,7 @@ def api_settings(request):
             'quick_memory_model_id': settings_obj.quick_memory_model_id,
             'meaning_check_model_id': settings_obj.meaning_check_model_id,
             'exam_model_id': settings_obj.exam_model_id,
+            'cet6_translation_model_id': settings_obj.cet6_translation_model_id,
             'use_ai_meaning_check': settings_obj.use_ai_meaning_check,
         })
     try:
@@ -5281,9 +5294,12 @@ def api_ai_test(request):
 # 考研写作工坊
 # ============================================================
 
-def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_generate', practice=None):
+def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_generate', practice=None,
+                         settings_model_field='exam_model'):
     """考研工坊统一 AI 调用：复用现有模型配置体系（支持 DeepSeek 等 OpenAI 兼容接口）
-    模型优先级：前端指定 model_id > 设置页「考研写作工坊模型」 > 第一个启用模型。
+    模型优先级：前端指定 model_id > 设置页 settings_model_field 对应模型 > 考研写作工坊模型
+    > 第一个启用模型。六级相关接口传 settings_model_field='cet6_translation_model' 即可复用
+    模型调用、密钥保险箱、调用日志和异常处理逻辑。
     调用详情（模型、耗时、成败、提示词预览）写入 AICallLog 供追溯。
     """
     import time as _time
@@ -5291,8 +5307,11 @@ def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_genera
     data = data or {}
     if not data.get('model_id'):
         settings_obj = UserSettings.get_settings()
-        if settings_obj.exam_model_id:
-            data['model_id'] = settings_obj.exam_model_id
+        for field in (settings_model_field, 'exam_model'):
+            model_id = getattr(settings_obj, f'{field}_id', None)
+            if model_id:
+                data['model_id'] = model_id
+                break
     try:
         cfg = resolve_ai_model(data)
     except ValueError as e:
@@ -5400,6 +5419,11 @@ def exam_workshop(request):
             },
         ],
         'trans_cards': [
+            {
+                'url': '/workshop/trans/',
+                'icon': 'ph-article', 'tone': 'red',
+                'title': '长难句训练', 'desc': '英语一真题逐句翻译 · 五维批改',
+            },
             {
                 'url': '/workshop/questions/?exam_type=english1&type=translation',
                 'icon': 'ph-text-aa', 'tone': 'blue',
@@ -5756,7 +5780,9 @@ def api_cet6_translate_analyze(request):
 
     profile = build_vocabulary_profile()
     prompt = cet6_translation_help_prompt(question, paragraph, profile)
-    content, err = builtin_ai_exam_call(prompt, temperature=0.6, data=data, action='cet6_translate_analyze')
+    content, err = builtin_ai_exam_call(prompt, temperature=0.6, data=data,
+                                        action='cet6_translate_analyze',
+                                        settings_model_field='cet6_translation_model')
     if err:
         return JsonResponse({'error': err}, status=502)
     return JsonResponse({'success': True, 'content': content.strip()})
@@ -5778,7 +5804,9 @@ def api_cet6_grade_translation(request):
 
     reference = (question.model_answer or '').strip() or None
     prompt = cet6_translation_grading_prompt(question, user_trans, reference=reference)
-    content, err = builtin_ai_exam_call(prompt, temperature=0.3, data=data, action='cet6_grade_translation')
+    content, err = builtin_ai_exam_call(prompt, temperature=0.3, data=data,
+                                        action='cet6_grade_translation',
+                                        settings_model_field='cet6_translation_model')
     if err:
         return JsonResponse({'error': err}, status=502)
 
@@ -6258,3 +6286,1862 @@ def extract_json_object(text):
                 except json.JSONDecodeError:
                     return {}
     return {}
+
+
+# ─── 长难句翻译训练（英语一逐句）─────────────────────────────────
+
+# 批改错误类型 → error_tags 五类代码
+ISSUE_TYPE_TO_CODE = {
+    '主干': 'main', '从句': 'subordinate', '词义': 'meaning',
+    '逻辑': 'logic', '中文表达': 'expression',
+}
+ERROR_CODE_NAMES = {
+    'main': '主干', 'subordinate': '从句', 'meaning': '词义',
+    'logic': '逻辑', 'expression': '中文表达',
+}
+TRANS_GRADE_PASS = 40      # 总分（满分 50）达到此值视为掌握
+TRANS_REVIEW_INTERVAL_OK = 7   # 掌握后下次复习间隔（天）
+TRANS_REVIEW_INTERVAL_ERR = 1  # 未掌握下次复习间隔（天）
+
+
+def _request_user(request):
+    return request.user if getattr(request, 'user', None) and request.user.is_authenticated else None
+
+
+def _parse_practice_total(practice):
+    """解析练习记录总分（int/float），失败返回 None"""
+    score = practice.get_score()
+    total = score.get('total')
+    return total if isinstance(total, (int, float)) else None
+
+
+def _is_error_practice(practice):
+    """是否错句：最近一次总分 < 40 或带错因标签"""
+    total = _parse_practice_total(practice)
+    if total is None:
+        return bool(practice.error_tags)
+    return total < TRANS_GRADE_PASS or bool(practice.error_tags)
+
+
+def _latest_practice_map():
+    """{sentence_id: 最近一次 TranslationPractice}"""
+    latest = {}
+    for p in (TranslationPractice.objects
+              .only('id', 'sentence_id', 'score_json', 'error_tags',
+                    'next_review_date', 'consecutive_correct')
+              .order_by('created_at')):
+        latest[p.sentence_id] = p
+    return latest
+
+
+def trans_home(request):
+    """长难句翻译训练首页（句库列表只列真题；AI 题走"AI 专项组卷"入口）"""
+    year = request.GET.get('year', '')
+    try:
+        year_int = int(year) if year else None
+    except (TypeError, ValueError):
+        year_int = None
+    sentences = TranslationSentence.objects.select_related('question').filter(
+        source_type='past_paper')
+    years = list(ExamQuestion.objects.filter(
+        exam_type='english1', question_type='translation')
+        .values_list('year', flat=True).distinct().order_by('-year'))
+    if year_int in years:
+        sentences = sentences.filter(question__year=year_int)
+    latest = _latest_practice_map()
+    fav_ids = set(TranslationFavorite.objects.filter(
+        user=_request_user(request)).values_list('sentence_id', flat=True))
+
+    items = []
+    for s in sentences.order_by('-question__year', 'order'):
+        p = latest.get(s.id)
+        total = _parse_practice_total(p) if p else None
+        items.append({
+            'id': s.id, 'num': s.order + 45, 'year': s.question.year,
+            'difficulty': s.difficulty, 'syntax_tags': s.syntax_tags or [],
+            'is_favorite': s.id in fav_ids,
+            'status': ('new' if p is None else ('error' if _is_error_practice(p) else 'ok')),
+            'last_total': int(total) if total is not None else None,
+            'review_date': p.next_review_date.strftime('%m-%d') if (p and p.next_review_date) else '',
+        })
+    total_count = TranslationSentence.objects.filter(source_type='past_paper').count()
+    practiced_count = TranslationPractice.objects.values('sentence_id').distinct().count()
+    error_count = sum(1 for p in latest.values() if _is_error_practice(p))
+    fav_count = TranslationFavorite.objects.filter(user=_request_user(request)).count()
+    paper_count = GeneratedPaper.objects.filter(status='ready').count()
+    return render(request, 'trans_home.html', {
+        'items': items,
+        'years': years,
+        'cur_year': year_int,
+        'total_count': total_count,
+        'practiced_count': practiced_count,
+        'error_count': error_count,
+        'fav_count': fav_count,
+        'paper_count': paper_count,
+        'active_nav': 'workshop',
+        'ws_active': 'trans',
+    })
+
+
+def api_trans_today(request):
+    """今日推荐 3-5 句：到期错句（含 AI 题）优先，再补未练真题，不足随机补已练真题"""
+    today = timezone.localdate()
+    latest = _latest_practice_map()
+    due_ids, fresh_ids, rest_ids = [], [], []
+    for s in TranslationSentence.objects.select_related('question').order_by(
+            '-question__year', 'order'):
+        p = latest.get(s.id)
+        if p is None:
+            if s.source_type == 'past_paper':
+                fresh_ids.append(s.id)
+        elif _is_error_practice(p) and (p.next_review_date or today) <= today:
+            due_ids.append(s.id)
+        elif s.source_type == 'past_paper':
+            rest_ids.append(s.id)
+    picked = due_ids[:3]
+    picked += fresh_ids[:5 - len(picked)]
+    if len(picked) < 3:
+        pool = rest_ids[:]
+        random.shuffle(pool)
+        picked += pool[:3 - len(picked)]
+    picked = picked[:5]
+    order_map = {sid: i for i, sid in enumerate(picked)}
+    out = []
+    for s in TranslationSentence.objects.filter(id__in=picked).select_related('question'):
+        is_ai = s.source_type == 'ai_generated'
+        out.append({
+            'id': s.id, 'order': s.order,
+            'num': s.order if is_ai else s.order + 45,
+            'year': (s.question.year if s.question_id else None),
+            'difficulty': s.difficulty,
+            'is_ai': is_ai,
+        })
+    out.sort(key=lambda x: order_map[x['id']])
+    return JsonResponse({'success': True, 'sentences': out})
+
+
+def trans_practice_page(request, sid):
+    """逐句翻译练习页（真题句与 AI 训练题共用）"""
+    s = get_object_or_404(
+        TranslationSentence.objects.select_related('question'), id=sid)
+    is_ai = s.source_type == 'ai_generated'
+    is_fav = TranslationFavorite.objects.filter(
+        user=_request_user(request), sentence=s).exists()
+    last_practice = s.practices.order_by('-created_at').first()
+    gq = getattr(s, 'generated_question', None)
+    paper = gq.paper if gq else None
+    next_s = None
+    if is_ai and gq:
+        # AI 题：卷内下一句
+        next_gq = (GeneratedQuestion.objects
+                   .filter(paper=gq.paper, order__gt=gq.order)
+                   .select_related('sentence').order_by('order').first())
+        if next_gq:
+            next_s = next_gq.sentence
+    elif not is_ai:
+        # 真题：同年下一句 → 更早年份的第一句（列表按年份倒序排列）
+        next_s = TranslationSentence.objects.filter(
+            question=s.question, order__gt=s.order).order_by('order').first()
+        if next_s is None:
+            next_q = ExamQuestion.objects.filter(
+                exam_type='english1', question_type='translation',
+                year__lt=s.question.year).order_by('-year').first()
+            if next_q:
+                next_s = TranslationSentence.objects.filter(
+                    question=next_q).order_by('order').first()
+    return render(request, 'trans_practice.html', {
+        'sentence': s,
+        'num': s.order if is_ai else s.order + 45,
+        'is_ai': is_ai,
+        'paper': paper,
+        'gq': gq,
+        'syntax_tag_names': [TRANS_SYNTAX_TAG_NAMES.get(t, t) for t in (s.syntax_tags or [])],
+        'is_fav': is_fav,
+        'last_practice': last_practice,
+        'next_s': next_s,
+        'pass_score': TRANS_GRADE_PASS,
+        'active_nav': 'workshop',
+        'ws_active': 'trans',
+    })
+
+
+@require_http_methods(['POST'])
+def api_trans_submit(request, sid):
+    """提交译文：保存练习 → AI 五维批改 → 复习排期（AI 不可用时离线兜底）"""
+    try:
+        data = json.loads(request.body)
+    except Exception:
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    user_trans = (data.get('translation') or '').strip()
+    if not user_trans:
+        return JsonResponse({'error': '请先输入你的译文'}, status=400)
+    s = get_object_or_404(
+        TranslationSentence.objects.select_related('question'), id=sid)
+    try:
+        duration = int(data.get('duration_seconds') or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    practice = TranslationPractice.objects.create(
+        user=_request_user(request),
+        sentence=s,
+        user_translation=user_trans,
+        duration_seconds=max(0, min(duration, 86400)),
+    )
+
+    content, err = builtin_ai_exam_call(
+        trans_grading_prompt_v2(s.sentence_en, user_trans, s.sentence_zh or None),
+        temperature=0.3, data=data, action='trans_grade')
+    if err:
+        # 无 AI 兜底：练习照存，返回对照与字面相似度
+        practice.score_json = json.dumps({'ungraded': True}, ensure_ascii=False)
+        practice.save(update_fields=['score_json'])
+        similarity = 0
+        if s.sentence_zh:
+            similarity = round(difflib.SequenceMatcher(
+                None, user_trans, s.sentence_zh).ratio() * 100)
+        return JsonResponse({
+            'success': True, 'graded': False, 'error': err,
+            'practice_id': practice.id, 'reference': s.sentence_zh,
+            'similarity': similarity,
+        })
+
+    score_data = extract_json_object(content)
+    if not score_data or not isinstance(score_data.get('scores'), dict):
+        practice.score_json = json.dumps(
+            {'ungraded': True, 'raw': (content or '')[:2000]}, ensure_ascii=False)
+        practice.save(update_fields=['score_json'])
+        return JsonResponse({
+            'success': True, 'graded': False,
+            'error': 'AI 返回格式异常，本次已保存但未批改，可稍后重练',
+            'practice_id': practice.id, 'reference': s.sentence_zh,
+        })
+
+    # 错因标签（去重）
+    codes = []
+    for e in score_data.get('errors') or []:
+        if not isinstance(e, dict):
+            continue
+        code = ISSUE_TYPE_TO_CODE.get((e.get('issue_type') or '').strip())
+        if code and code not in codes:
+            codes.append(code)
+    total = score_data.get('total')
+    total = int(total) if isinstance(total, (int, float)) else 0
+
+    # 复习排期（SRS）：掌握 +7 天连对 +1；未掌握明天再练、连对清零
+    prev = s.practices.exclude(id=practice.id).order_by('-created_at').first()
+    if total >= TRANS_GRADE_PASS:
+        practice.consecutive_correct = (prev.consecutive_correct + 1) if prev else 1
+        practice.next_review_date = timezone.localdate() + timedelta(days=TRANS_REVIEW_INTERVAL_OK)
+    else:
+        practice.consecutive_correct = 0
+        practice.next_review_date = timezone.localdate() + timedelta(days=TRANS_REVIEW_INTERVAL_ERR)
+    practice.score_json = json.dumps(score_data, ensure_ascii=False)
+    practice.feedback = score_data.get('comments', '')
+    practice.error_tags = codes
+    practice.save()
+    return JsonResponse({
+        'success': True, 'graded': True, 'result': score_data,
+        'practice_id': practice.id, 'reference': s.sentence_zh,
+        'next_review_date': practice.next_review_date.strftime('%Y-%m-%d'),
+        'consecutive_correct': practice.consecutive_correct,
+    })
+
+
+@require_http_methods(['POST'])
+def api_trans_hint(request, sid):
+    """AI 解析：语法拆解 + 词汇点拨 + 参考译文（Markdown）"""
+    try:
+        data = json.loads(request.body)
+    except Exception:
+        data = {}
+    s = get_object_or_404(
+        TranslationSentence.objects.select_related('question'), id=sid)
+    q = s.question if s.question_id else _TransLiteQuestion()
+    prompt = translation_help_prompt(q, s.sentence_en, build_vocabulary_profile())
+    content, err = builtin_ai_exam_call(prompt, temperature=0.6, data=data, action='trans_hint')
+    if err:
+        return JsonResponse({'error': err}, status=502)
+    return JsonResponse({'success': True, 'content': content.strip()})
+
+
+@require_http_methods(['POST'])
+def api_trans_fav(request, sid):
+    """收藏/取消收藏句子"""
+    s = get_object_or_404(TranslationSentence, id=sid)
+    user = _request_user(request)
+    fav, created = TranslationFavorite.objects.get_or_create(user=user, sentence=s)
+    if not created:
+        fav.delete()
+    return JsonResponse({'success': True, 'is_favorite': created})
+
+
+def trans_history_page(request):
+    """练习历史与学习报告（本期：统计 + 年份表 + 记录 + 错句清单）"""
+    only_errors = request.GET.get('filter') == 'error'
+    latest = _latest_practice_map()
+    all_practices = TranslationPractice.objects.select_related('sentence__question')
+
+    # 总体统计
+    total_practices = all_practices.count()
+    totals = [t for t in (_parse_practice_total(p) for p in latest.values()) if t is not None]
+    avg_total = round(sum(totals) / len(totals), 1) if totals else None
+    error_count = sum(1 for p in latest.values() if _is_error_practice(p))
+    error_sentences = []
+
+    # 错句清单 + 按年份聚合（AI 题无年份，单独计数不进年份表）
+    year_stats = {}
+    ai_error_count = 0
+    for s in TranslationSentence.objects.select_related('question'):
+        p = latest.get(s.id)
+        if p is None:
+            continue
+        if s.question_id:
+            year_stats.setdefault(s.question.year, []).append(_parse_practice_total(p))
+        if _is_error_practice(p):
+            if not s.question_id:
+                ai_error_count += 1
+            error_sentences.append({
+                'id': s.id,
+                'num': s.order if not s.question_id else s.order + 45,
+                'year': s.question.year if s.question_id else None,
+                'is_ai': s.source_type == 'ai_generated',
+                'sentence_en': s.sentence_en[:80],
+                'last_total': int(t) if (t := _parse_practice_total(p)) is not None else None,
+                'error_tags': [ERROR_CODE_NAMES.get(c, c) for c in (p.error_tags or [])],
+                'review_date': p.next_review_date.strftime('%Y-%m-%d') if p.next_review_date else '',
+            })
+    error_sentences.sort(key=lambda x: (x['review_date'] or '9999', -(x['year'] or 0)))
+    year_rows = []
+    for year in sorted(year_stats, reverse=True):
+        vals = [v for v in year_stats[year] if v is not None]
+        year_rows.append({
+            'year': year,
+            'practiced': len(year_stats[year]),
+            'avg': round(sum(vals) / len(vals), 1) if vals else None,
+        })
+    recent = all_practices.order_by('-created_at')[:50]
+    error_sids = {e['id'] for e in error_sentences}
+    recent_items = [{
+        'id': p.id,
+        'sid': p.sentence_id,
+        'year': p.sentence.question.year if p.sentence.question_id else None,
+        'num': p.sentence.order if not p.sentence.question_id else p.sentence.order + 45,
+        'is_ai': p.sentence.source_type == 'ai_generated',
+        'snippet': p.sentence.sentence_en[:60],
+        'total': (int(t) if (t := _parse_practice_total(p)) is not None else None),
+        'ungraded': bool(p.get_score().get('ungraded')),
+        'duration_fmt': (
+            f'{p.duration_seconds // 60}分{p.duration_seconds % 60:02d}秒'
+            if p.duration_seconds >= 60
+            else (f'{p.duration_seconds}秒' if p.duration_seconds else '')),
+        'created_at': p.created_at.strftime('%m-%d %H:%M'),
+    } for p in recent]
+    if only_errors:
+        recent_items = [it for it in recent_items if it['sid'] in error_sids]
+    return render(request, 'trans_history.html', {
+        'total_practices': total_practices,
+        'avg_total': avg_total,
+        'error_count': error_count,
+        'ai_error_count': ai_error_count,
+        'error_sentences': error_sentences,
+        'year_rows': year_rows,
+        'recent_items': recent_items,
+        'only_errors': request.GET.get('filter') == 'error',
+        'active_nav': 'workshop',
+        'ws_active': 'trans',
+    })
+
+
+# ─── 长难句 AI 专项组卷 ──────────────────────────────────────────
+
+class _TransLiteQuestion:
+    """AI 训练题没有关联 ExamQuestion，用此替身满足解析 prompt 的字段调用"""
+    year = ''
+    title = 'AI 根据你的薄弱点与本地词库生成（非真题）'
+
+    def get_exam_type_display(self):
+        return 'AI 专项训练题'
+
+
+TRANS_PAPER_MODES = {
+    'weakness': '按薄弱点推荐',
+    'syntax': '指定句法专项',
+    'words': '按词库单词组卷',
+    'rewrite': '真题同难度改写',
+}
+TRANS_PAPER_COUNTS = (3, 5, 10)
+TRANS_PAPER_DIFFS = {'basic': 2, 'standard': 3, 'advanced': 4}
+TRANS_PAPER_TOPICS = ['社会', '科技', '教育', '文化', '环境', '经济']
+TRANS_PAPER_WORD_SOURCES = {
+    'unmastered': '未掌握词',
+    'error': '近期错词',
+    'favorite': '收藏词',
+}
+# 批改错因代码 → 组卷句法代码
+TRANS_ERROR_TO_SYNTAX = {
+    'main': ['passive', 'inversion', 'abstract_noun'],
+    'subordinate': ['attributive_clause', 'noun_clause', 'non_finite', 'parenthesis'],
+    'logic': ['comparison', 'passive'],
+    'meaning': ['non_finite', 'attributive_clause'],
+    'expression': ['attributive_clause', 'parenthesis'],
+}
+# 真题中文句法标签 → 句法代码（改写模式用）
+TRANS_ZH_SYNTAX_MAP = [
+    ('定语从句', 'attributive_clause'), ('同位语', 'noun_clause'),
+    ('名词性从句', 'noun_clause'), ('非谓语', 'non_finite'),
+    ('插入', 'parenthesis'), ('倒装', 'inversion'),
+    ('被动', 'passive'), ('比较', 'comparison'), ('抽象名词', 'abstract_noun'),
+]
+TRANS_SYNTAX_TAG_NAMES = {k: v.split('（')[0] for k, v in TRANS_SYNTAX_TAGS.items()}
+TRANS_BATCH_SIZE = 5
+
+
+def _trans_norm_ws(text):
+    return ' '.join((text or '').split())
+
+
+def _trans_word_tokens(en):
+    return re.findall(r"[A-Za-z][A-Za-z'\-]*", en or '')
+
+
+def _trans_word_in_sentence(word, en_lower):
+    """目标词是否出现在句中（允许常见词形变化，最多 4 个字母后缀）"""
+    return re.search(r'\b' + re.escape(word.lower()) + r"[a-z]{0,4}\b", en_lower) is not None
+
+
+def _trans_weak_syntax(latest, limit=3, exclude=False):
+    """根据错句的错因标签推导应重点训练的句法代码"""
+    from collections import Counter
+    counter = Counter()
+    for p in latest.values():
+        if not _is_error_practice(p):
+            continue
+        for code in (p.error_tags or []):
+            for syn in TRANS_ERROR_TO_SYNTAX.get(code, []):
+                counter[syn] += 1
+    weak = [c for c, _ in counter.most_common()]
+    if exclude:
+        weak = [c for c in TRANS_SYNTAX_TAGS if c not in weak]
+    return (weak or ['non_finite', 'attributive_clause', 'passive'])[:limit]
+
+
+def _trans_pick_words(word_source, limit=6):
+    """后端从本地词库选词；前端不能传入词库外单词"""
+    if word_source == 'error':
+        # 近期错词：必须已有学习进度才有错词记录
+        qs = Word.objects.filter(progress__error_count__gt=0,
+                                 progress__is_excluded=False)
+    elif word_source == 'favorite':
+        qs = Word.objects.filter(favorite__isnull=False)
+    else:
+        # 未掌握：从未学过（无进度记录）或进度非 mastered，且未被排除
+        qs = (Word.objects.exclude(progress__is_excluded=True)
+              .exclude(progress__status='mastered'))
+    ids = list(qs.values_list('id', flat=True)[:200])
+    if len(ids) > limit:
+        ids = random.sample(ids, limit)
+    return list(Word.objects.filter(id__in=ids))
+
+
+def _trans_build_config(raw, latest=None):
+    """校验并归一化前端组卷配置；返回 (config_dict, error)。目标词完全由后端决定。"""
+    latest = latest if latest is not None else _latest_practice_map()
+    mode = raw.get('mode', 'weakness')
+    if mode not in TRANS_PAPER_MODES:
+        mode = 'weakness'
+    diff_key = raw.get('difficulty', 'standard')
+    difficulty = TRANS_PAPER_DIFFS.get(diff_key, 3)
+    try:
+        count = int(raw.get('count', 5))
+    except (TypeError, ValueError):
+        count = 5
+    if count not in TRANS_PAPER_COUNTS:
+        count = 5
+    length = raw.get('length', 'standard')
+    if length not in TRANS_LENGTH_RANGES:
+        length = 'standard'
+    syntax = [c for c in (raw.get('syntax') or []) if c in TRANS_SYNTAX_TAGS][:4]
+    topics = [t for t in (raw.get('topics') or []) if t in TRANS_PAPER_TOPICS][:3]
+    word_source = raw.get('word_source', 'unmastered')
+    if word_source not in TRANS_PAPER_WORD_SOURCES:
+        word_source = 'unmastered'
+    reuse_error = bool(raw.get('reuse_error', True))
+
+    # 句法：各模式的默认推导
+    if mode == 'weakness':
+        syntax = _trans_weak_syntax(latest, exclude=not reuse_error)
+    elif mode == 'syntax' and not syntax:
+        syntax = ['non_finite', 'attributive_clause']
+    elif mode in ('words', 'rewrite') and not syntax:
+        syntax = []
+
+    # 目标词：仅 weakness/syntax/words 模式使用，由后端从词库挑选
+    target_words = []
+    if mode == 'words':
+        target_words = _trans_pick_words(word_source, 6)
+    elif mode == 'weakness':
+        target_words = _trans_pick_words('error', 4) or _trans_pick_words('unmastered', 4)
+    elif mode == 'syntax':
+        target_words = _trans_pick_words(word_source, 4)
+
+    cfg = {
+        'mode': mode, 'difficulty': difficulty, 'count': count,
+        'length': length, 'syntax': syntax, 'topics': topics,
+        'word_source': word_source, 'reuse_error': reuse_error,
+        'target_word_ids': [w.id for w in target_words],
+        'target_words': [w.word for w in target_words],
+    }
+    return cfg, None
+
+
+def _trans_recommendation():
+    """首页默认推荐：根据错句 + 错词生成一套默认配置"""
+    latest = _latest_practice_map()
+    cfg, _ = _trans_build_config({'mode': 'weakness'}, latest)
+    syntax_names = '、'.join(TRANS_SYNTAX_TAG_NAMES.get(c, c) for c in cfg['syntax'])
+    words = cfg['target_words']
+    focus_parts = []
+    if syntax_names:
+        focus_parts.append(syntax_names)
+    if words:
+        focus_parts.append('目标词 ' + '、'.join(words[:4]))
+    minutes = {3: 8, 5: 12, 10: 24}[cfg['count']]
+    summary = (f"5 句 · 标准难度 · 约 {minutes} 分钟。重点：{('；'.join(focus_parts) or '非谓语、定语从句')}。")
+    return cfg, summary
+
+
+def _trans_seed_sentences(difficulty, count):
+    """改写模式：按难度抽取真题句作为改写参考"""
+    qs = TranslationSentence.objects.filter(source_type='past_paper')
+    if difficulty <= 2:
+        qs = qs.filter(difficulty__lte=2)
+    elif difficulty >= 4:
+        qs = qs.filter(difficulty__gte=4)
+    ids = list(qs.values_list('id', flat=True))
+    if len(ids) > count:
+        ids = random.sample(ids, count)
+    seeds = list(TranslationSentence.objects.filter(id__in=ids))
+    if not seeds:  # 难度档无题时回退全部真题
+        ids = list(TranslationSentence.objects.filter(
+            source_type='past_paper').values_list('id', flat=True))
+        if len(ids) > count:
+            ids = random.sample(ids, count)
+        seeds = list(TranslationSentence.objects.filter(id__in=ids))
+    return seeds
+
+
+def _trans_validate_batch(raw_questions, expected, length_key, target_words,
+                          lexicon_set, dup_pool, focus_syntax=None,
+                          already_hit=None, required_words=None):
+    """本地质量校验。返回 (kept[归一化题], feedback[失败说明行])。
+    - focus_syntax：用户所选专项句法，题目标签需至少命中其一
+    - target_words：本批提示词要求使用的词
+    - required_words：截至本批整卷应覆盖的词（分批时为前 N 批的并集）
+    - already_hit：此前批次句子中已经命中的词
+    """
+    already_hit = already_hit or set()
+    if required_words is None:
+        required_words = target_words
+    lo, hi, _ = TRANS_LENGTH_RANGES[length_key]
+    feedback, kept = [], []
+    if not isinstance(raw_questions, list):
+        return [], ['返回的 questions 不是数组，无法解析']
+    if len(raw_questions) != expected:
+        feedback.append(f'数量不符：要求 {expected} 句，实际返回 {len(raw_questions)} 句')
+
+    batch_en_norm = []
+    for i, q in enumerate(raw_questions, 1):
+        if not isinstance(q, dict):
+            feedback.append(f'第 {i} 句不是有效对象')
+            continue
+        problems = []
+        en = _trans_norm_ws(str(q.get('sentence_en') or ''))
+        zh = str(q.get('reference_zh') or '').strip()
+        if not en:
+            feedback.append(f'第 {i} 句缺少英文原句')
+            continue
+        tokens = _trans_word_tokens(en)
+        if not (lo <= len(tokens) <= hi):
+            problems.append(f'词数 {len(tokens)}，超出要求 {lo}-{hi} 词')
+        if not (6 <= len(zh) <= 320):
+            problems.append('参考译文为空或长度异常')
+        tags = []
+        for t in (q.get('syntax_tags') or []):
+            if t in TRANS_SYNTAX_TAGS and t not in tags:
+                tags.append(t)
+        if not tags:
+            problems.append('缺少合法的句法标签')
+        elif focus_syntax and not (set(tags) & set(focus_syntax)):
+            problems.append('句法标签与所选专项不符（需包含：'
+                            + '、'.join(TRANS_SYNTAX_TAG_NAMES.get(t, t)
+                                        for t in focus_syntax) + '）')
+
+        # 句法树：只保留逐字摘自原句的片段
+        tree = []
+        en_flat = ' '.join(en.split()).lower()
+        for node in (q.get('syntax_tree') or []):
+            if isinstance(node, dict):
+                frag = _trans_norm_ws(str(node.get('fragment') or ''))
+                role = str(node.get('role') or '').strip()
+                if frag and role and frag.lower() in en_flat:
+                    tree.append({'fragment': frag, 'role': role[:30]})
+
+        # 词库范围：超纲内容词比例
+        content_tokens = [t.lower() for t in tokens if len(t) >= 5]
+        unknown = 0
+        for t in content_tokens:
+            if any(t == w or (t.startswith(w) and len(t) - len(w) <= 4)
+                   or (w.startswith(t) and len(w) - len(t) <= 3)
+                   for w in lexicon_set):
+                continue
+            unknown += 1
+        if content_tokens and unknown / len(content_tokens) > 0.4:
+            problems.append(f'超纲词比例过高（{unknown}/{len(content_tokens)}），请改用词库内词汇')
+
+        # 重复度：同卷 / 近期 AI 题
+        for other in batch_en_norm:
+            if difflib.SequenceMatcher(None, en.lower(), other).ratio() > 0.85:
+                problems.append('与同卷其他句子高度相似')
+                break
+        for other, is_seed in dup_pool:
+            ratio = difflib.SequenceMatcher(None, en.lower(), other).ratio()
+            if ratio > (0.92 if is_seed else 0.88):
+                problems.append('与近期已有题目高度相似')
+                break
+
+        # AI 自报目标词：只保留确实出现在句中的
+        hit_words = [w for w in target_words if _trans_word_in_sentence(w, en_flat)]
+        diff_in = q.get('difficulty')
+        try:
+            diff_in = int(diff_in)
+            if not 1 <= diff_in <= 5:
+                diff_in = None
+        except (TypeError, ValueError):
+            diff_in = None
+
+        if problems:
+            feedback.append(f'第 {i} 句：' + '；'.join(problems))
+        else:
+            kept.append({
+                'sentence_en': en, 'reference_zh': zh, 'syntax_tags': tags,
+                'target_words': hit_words,
+                'difficulty': diff_in,
+                'difficulty_reason': str(q.get('difficulty_reason') or '')[:300],
+                'syntax_tree': tree,
+            })
+            batch_en_norm.append(en.lower())
+
+    # 超出要求数量时按顺序截断，避免入库题数超出配置
+    if len(kept) > expected:
+        kept = kept[:expected]
+
+    # 目标词覆盖率按整卷累计（截至本批应覆盖的词 ≥80%）
+    if required_words:
+        hit_set = ({w for item in kept for w in item['target_words']}
+                   | set(already_hit))
+        required = list(dict.fromkeys(required_words))
+        ratio = sum(1 for w in required if w in hit_set) / len(required)
+        if ratio < 0.8:
+            missing = [w for w in required if w not in hit_set]
+            feedback.append('目标词覆盖率不足 80%，缺失：' + '、'.join(missing))
+    return kept, feedback
+
+
+def _trans_dup_pool(paper, seed_ids):
+    """重复度比对池：近期 AI 题 + 本卷已生成 + 真题（改写种子标记 is_seed）"""
+    pool = []
+    recent = (TranslationSentence.objects.filter(source_type='ai_generated')
+              .order_by('-id').values_list('sentence_en', flat=True)[:40])
+    pool += [(_trans_norm_ws(x).lower(), False) for x in recent]
+    for gq in paper.questions.select_related('sentence'):
+        pool.append((_trans_norm_ws(gq.sentence.sentence_en).lower(), False))
+    past = (TranslationSentence.objects.filter(source_type='past_paper')
+            .values_list('id', 'sentence_en'))
+    for sid, en in past:
+        pool.append((_trans_norm_ws(en).lower(), sid in seed_ids))
+    return pool
+
+
+def _trans_run_paper(paper):
+    """执行组卷（生成接口与重试接口共用）：分批 ≤5 句，每批失败带原因重试一次。"""
+    cfg = paper.config_json or {}
+    expected = int(cfg.get('count', 5))
+    length_key = cfg.get('length', 'standard')
+    difficulty = int(cfg.get('difficulty', 3))
+    syntax = cfg.get('syntax') or []
+    topics = cfg.get('topics') or []
+    target_words = cfg.get('target_words') or []
+    word_map = {w.word.lower(): w for w in Word.objects.filter(
+        id__in=cfg.get('target_word_ids') or [])}
+    lexicon_set = set(w.lower() for w in Word.objects.values_list('word', flat=True))
+
+    paper.status = 'generating'
+    paper.save(update_fields=['status'])
+    t0 = time.monotonic()
+    last_err = ''
+    last_raw = ''
+
+    # 分批计划：每批 ≤5 句；目标词按批轮转分配，覆盖率按整卷累计
+    remaining = expected - paper.questions.count()
+    batch_sizes = []
+    while remaining > 0:
+        batch_sizes.append(min(TRANS_BATCH_SIZE, remaining))
+        remaining -= batch_sizes[-1]
+    batch_targets = [[] for _ in batch_sizes]
+    for i, w in enumerate(target_words):
+        batch_targets[i % len(batch_sizes)].append(w)
+
+    def _existing_hits():
+        hits = set()
+        for g in paper.questions.select_related('sentence'):
+            en = ' '.join(g.sentence.sentence_en.split()).lower()
+            hits.update(w for w in target_words if _trans_word_in_sentence(w, en))
+        return hits
+
+    for bi, batch_n in enumerate(batch_sizes):
+        batch_words = batch_targets[bi]
+        required_so_far = [w for chunk in batch_targets[:bi + 1] for w in chunk]
+        seeds, seed_ids = [], set()
+        if cfg.get('mode') == 'rewrite':
+            # 每次按缺口取新种子，已被本卷参考过的种子尽量不重复
+            used = set()
+            for gq in paper.questions.select_related('sentence'):
+                note = gq.sentence.source_note
+                used.update(re.findall(r'#(\d+)#', note))
+            seeds = _trans_seed_sentences(difficulty, batch_n)
+            seeds = [s for s in seeds if str(s.id) not in used] or seeds
+            seed_ids = {s.id for s in seeds}
+        avoid = [_trans_norm_ws(g.sentence.sentence_en)
+                 for g in (GeneratedQuestion.objects.filter(paper=paper)
+                           .select_related('sentence').order_by('-id')[:6])]
+        avoid += [_trans_norm_ws(x) for x in
+                  TranslationSentence.objects.filter(source_type='ai_generated')
+                  .order_by('-id').values_list('sentence_en', flat=True)[:8]]
+        already_hit = _existing_hits()
+        prompt = trans_paper_generation_prompt(
+            batch_n, length_key, difficulty, syntax, batch_words, topics,
+            rewrite_sources=[s.sentence_en for s in seeds] or None,
+            avoid_sentences=avoid or None)
+        data = {}
+        settings_obj = UserSettings.get_settings()
+        if settings_obj.exam_model_id:
+            data['model_id'] = settings_obj.exam_model_id
+            paper.model_id = settings_obj.exam_model_id
+        content, err = builtin_ai_exam_call(
+            prompt, temperature=0.8, data=data, action='trans_paper_generate')
+        if err:
+            last_err = err
+            break
+        last_raw = (content or '')[:8000]
+        parsed = extract_json_object(content)
+        raw_questions = parsed.get('questions') if isinstance(parsed, dict) else None
+        dup_pool = _trans_dup_pool(paper, seed_ids)
+        kept, fb = _trans_validate_batch(
+            raw_questions, batch_n, length_key, batch_words,
+            lexicon_set, dup_pool, focus_syntax=syntax or None,
+            already_hit=already_hit, required_words=required_so_far)
+
+        # 不合格：带原因定向重试一次
+        if fb or len(kept) != batch_n:
+            paper.retry_count += 1
+            paper.save(update_fields=['retry_count'])
+            retry_prompt = trans_paper_generation_prompt(
+                batch_n, length_key, difficulty, syntax, batch_words, topics,
+                rewrite_sources=[s.sentence_en for s in seeds] or None,
+                avoid_sentences=avoid or None,
+                retry_feedback='\n'.join(fb) or '上一批句子未全部达标，请重新生成。')
+            content2, err2 = builtin_ai_exam_call(
+                retry_prompt, temperature=0.8, data=data, action='trans_paper_generate')
+            if err2:
+                last_err = err2
+                break
+            last_raw = (content2 or '')[:8000]
+            parsed2 = extract_json_object(content2)
+            raw2 = parsed2.get('questions') if isinstance(parsed2, dict) else None
+            kept2, fb2 = _trans_validate_batch(
+                raw2, batch_n, length_key, batch_words,
+                lexicon_set, dup_pool, focus_syntax=syntax or None,
+                already_hit=already_hit, required_words=required_so_far)
+            if kept2:
+                kept, fb = kept2, fb2
+
+        if not kept:
+            last_err = '生成结果未通过本地校验：' + '；'.join(fb[:4])
+            break
+
+        start_order = paper.questions.count() + 1
+        with transaction.atomic():
+            for idx, item in enumerate(kept):
+                order = start_order + idx
+                note = f"AI组卷#{paper.id} {TRANS_PAPER_MODES.get(cfg.get('mode'), '')}"
+                if cfg.get('mode') == 'rewrite' and idx < len(seeds):
+                    note += f' 改写自真题句#{seeds[idx].id}#'
+                ts = TranslationSentence.objects.create(
+                    question=None, order=order,
+                    sentence_en=item['sentence_en'],
+                    sentence_zh=item['reference_zh'],
+                    difficulty=item['difficulty'] or difficulty,
+                    syntax_tags=item['syntax_tags'],
+                    source_type='ai_generated', source_note=note, verified=False)
+                tids = [word_map[w].id for w in item['target_words'] if w in word_map]
+                GeneratedQuestion.objects.create(
+                    paper=paper, sentence=ts, order=order,
+                    syntax_tree_json=item['syntax_tree'],
+                    target_word_ids=tids,
+                    difficulty=item['difficulty'] or difficulty,
+                    difficulty_reason=item['difficulty_reason'],
+                    quality_score=100.0 if not fb else max(40.0, 100.0 - 12 * len(fb)),
+                    quality_notes='\n'.join(fb)[:1000],
+                    is_approved=not fb)
+
+    paper.duration_ms = int((time.monotonic() - t0) * 1000)
+    paper.raw_response = last_raw[:8000]
+    paper.prompt_hash = hashlib.sha256(
+        json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    done = paper.questions.count()
+    if done >= expected:
+        # 整卷复检目标词覆盖率：达标则全部题目视为通过校验（覆盖是整卷性质）
+        required = list(dict.fromkeys(target_words))
+        hits = _existing_hits()
+        ratio = (sum(1 for w in required if w in hits) / len(required)
+                 if required else 1.0)
+        if ratio >= 0.8:
+            paper.questions.filter(is_approved=False).update(
+                is_approved=True, quality_score=100.0, quality_notes='')
+            paper.status = 'ready'
+            paper.error_message = ''
+        else:
+            missing = [w for w in required if w not in hits]
+            paper.status = 'failed'
+            paper.error_message = (
+                '已生成 %d/%d 句，但整卷目标词覆盖率不足 80%%（缺失：%s）。'
+                '重试将替换未达标的句子，也可降低难度/减少条件后重新组卷。'
+                % (done, expected, '、'.join(missing[:6])))
+    elif done > 0:
+        paper.status = 'failed'
+        paper.error_message = f'已生成 {done}/{expected} 句。' + (last_err or '部分句子未通过校验，请重试补齐，或降低难度/减少条件。')
+    else:
+        paper.status = 'failed'
+        paper.error_message = last_err or 'AI 返回内容未通过本地校验，请降低难度或减少条件后重试。'
+    paper.save()
+    return done, paper.error_message
+
+
+@require_http_methods(['GET'])
+def api_trans_recommendation(request):
+    """默认推荐配置（根据错句与错词）"""
+    cfg, summary = _trans_recommendation()
+    return JsonResponse({
+        'success': True, 'config': cfg, 'summary': summary,
+        'syntax_names': {k: TRANS_SYNTAX_TAG_NAMES[k] for k in cfg['syntax']},
+    })
+
+
+def trans_paper_new_page(request):
+    """AI 专项组卷配置页"""
+    cfg, summary = _trans_recommendation()
+    recent_papers = []
+    for p in GeneratedPaper.objects.all()[:8]:
+        recent_papers.append({
+            'id': p.id, 'title': p.title, 'mode_name': TRANS_PAPER_MODES.get(p.mode, p.mode),
+            'status': p.status, 'status_name': p.get_status_display(),
+            'count': p.questions.count(), 'total': (p.config_json or {}).get('count', 0),
+            'created_at': p.created_at.strftime('%m-%d %H:%M'),
+        })
+    return render(request, 'trans_paper_new.html', {
+        'rec_cfg': cfg, 'rec_summary': summary,
+        'recent_papers': recent_papers,
+        'modes': TRANS_PAPER_MODES,
+        'diffs': TRANS_PAPER_DIFFS,
+        'lengths': {k: v[2] for k, v in TRANS_LENGTH_RANGES.items()},
+        'syntax_options': TRANS_SYNTAX_TAG_NAMES,
+        'topics': TRANS_PAPER_TOPICS,
+        'word_sources': TRANS_PAPER_WORD_SOURCES,
+        'active_nav': 'workshop', 'ws_active': 'trans',
+    })
+
+
+@require_http_methods(['POST'])
+def api_trans_paper_generate(request):
+    """接收组卷配置 → 后端选词 → AI 生成 → 校验 → 保存"""
+    try:
+        raw = json.loads(request.body)
+    except Exception:
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    cfg, _ = _trans_build_config(raw)
+    title = (f"AI 专项训练 · {TRANS_PAPER_MODES.get(cfg['mode'])} · "
+             f"{timezone.now():%m-%d %H:%M}")
+    paper = GeneratedPaper.objects.create(
+        title=title, mode=cfg['mode'], source='ai', config_json=cfg,
+        target_word_ids=cfg['target_word_ids'], syntax_tags=cfg['syntax'],
+        difficulty=cfg['difficulty'], status='pending')
+    done, err_msg = _trans_run_paper(paper)
+    return JsonResponse({
+        'success': paper.status == 'ready',
+        'paper_id': paper.id,
+        'status': paper.status,
+        'created': done,
+        'expected': cfg['count'],
+        'error': err_msg,
+        'redirect': f'/workshop/trans/papers/{paper.id}/',
+    })
+
+
+def trans_paper_detail_page(request, pid):
+    """AI 卷详情：状态、题目列表、失败重试入口"""
+    paper = get_object_or_404(GeneratedPaper, id=pid)
+    latest = _latest_practice_map()
+    questions = []
+    for gq in paper.questions.select_related('sentence').order_by('order'):
+        p = latest.get(gq.sentence_id)
+        total = _parse_practice_total(p) if p else None
+        questions.append({
+            'sid': gq.sentence_id, 'order': gq.order,
+            'sentence_en': gq.sentence.sentence_en,
+            'sentence_zh': gq.sentence.sentence_zh,
+            'syntax_tags': [TRANS_SYNTAX_TAG_NAMES.get(t, t) for t in (gq.sentence.syntax_tags or [])],
+            'syntax_tree': gq.syntax_tree_json or [],
+            'difficulty': gq.difficulty,
+            'quality_score': gq.quality_score,
+            'difficulty_reason': gq.difficulty_reason,
+            'status': ('new' if p is None else ('error' if _is_error_practice(p) else 'ok')),
+            'last_total': int(total) if total is not None else None,
+        })
+    cfg = paper.config_json or {}
+    return render(request, 'trans_paper_detail.html', {
+        'paper': paper,
+        'questions': questions,
+        'expected': cfg.get('count', 0),
+        'mode_name': TRANS_PAPER_MODES.get(paper.mode, paper.mode),
+        'diff_name': TRANS_DIFFICULTY_NAMES.get(paper.difficulty, str(paper.difficulty)),
+        'length_name': TRANS_LENGTH_RANGES.get(cfg.get('length'), ('', '', '标准'))[2],
+        'syntax_names': '、'.join(TRANS_SYNTAX_TAG_NAMES.get(t, t) for t in (paper.syntax_tags or [])),
+        'target_words': cfg.get('target_words') or [],
+        'active_nav': 'workshop', 'ws_active': 'trans',
+    })
+
+
+@require_http_methods(['POST'])
+def api_trans_paper_retry(request, pid):
+    """重试失败/部分失败的试卷：只补齐缺失句子，已生成的保留不丢；
+    整卷句数已够但存在未通过整卷校验的句子时，删除后重新生成替换。"""
+    paper = get_object_or_404(GeneratedPaper, id=pid)
+    if paper.status == 'generating':
+        return JsonResponse({'error': '试卷正在生成中，请勿重复提交'}, status=409)
+    expected = int((paper.config_json or {}).get('count', 5))
+    if paper.questions.count() >= expected:
+        bad = paper.questions.filter(is_approved=False)
+        if not bad.exists():
+            return JsonResponse({'success': True, 'paper_id': paper.id,
+                                 'status': paper.status, 'created': 0,
+                                 'redirect': f'/workshop/trans/papers/{paper.id}/'})
+        # 删除未通过校验的句子（级联删除组卷题目），再按升序重排卷内序号
+        TranslationSentence.objects.filter(
+            id__in=list(bad.values_list('sentence_id', flat=True))).delete()
+        for i, gq in enumerate(
+                paper.questions.select_related('sentence').order_by('order'), 1):
+            if gq.order != i:
+                gq.order = i
+                gq.save(update_fields=['order'])
+    done, err_msg = _trans_run_paper(paper)
+    return JsonResponse({
+        'success': paper.status == 'ready',
+        'paper_id': paper.id,
+        'status': paper.status,
+        'created': done,
+        'expected': expected,
+        'error': err_msg,
+        'redirect': f'/workshop/trans/papers/{paper.id}/',
+    })
+
+
+# ============================================================
+# 六级汉译英专题（中文段落 → 英文表达；训练单位与英语一逐句英译汉不同）
+# ============================================================
+
+CET6_GRADE_PASS = 40   # 总分 50，≥40 且无错因标签视为达标：复习间隔+7天，否则次日重练
+CET6_COVER_RATIO = 0.8
+CET6_PAPER_COUNTS = [1, 3, 5]
+CET6_DIFFS = {'basic': 2, 'standard': 3, 'advanced': 4}
+CET6_WORD_SOURCES = {'unmastered': '未掌握词', 'error': '近期错词', 'favorite': '收藏词'}
+CET6_ERROR_TO_SKILL = {
+    'omission': ['cohesion', 'collocation'],
+    'culture': ['culture'],
+    'grammar': ['tense_voice', 'attributive_clause', 'non_finite'],
+    'collocation': ['collocation', 'conversion'],
+    'logic': ['cohesion'],
+    'fluency': ['conversion', 'cohesion'],
+}
+_CET6_PAST_IMPORTED = False
+
+
+def _cet6_zh_len(text):
+    """中文段字数（含标点，不含空白）"""
+    return len([c for c in (text or '') if not c.isspace()])
+
+
+def _cet6_latest_practice_map():
+    """{passage_id: 最近一次 Cet6TranslationPractice}"""
+    latest = {}
+    for p in (Cet6TranslationPractice.objects
+              .only('id', 'passage_id', 'score_json', 'error_tags',
+                    'next_review_date', 'consecutive_correct')
+              .order_by('created_at')):
+        latest[p.passage_id] = p
+    return latest
+
+
+def _cet6_parse_total(practice):
+    score = practice.get_score()
+    total = score.get('total')
+    return total if isinstance(total, (int, float)) else None
+
+
+def _cet6_is_error_practice(practice):
+    """是否错段：最近一次总分 < 达标线 或带错因标签"""
+    total = _cet6_parse_total(practice)
+    if total is None:
+        return bool(practice.error_tags)
+    return total < CET6_GRADE_PASS or bool(practice.error_tags)
+
+
+def _cet6_import_past_papers():
+    """幂等导入六级真题段落：ExamQuestion(cet6 翻译) → Cet6TranslationPassage。
+    现有真题仅有中文（参考译文库中为空），导入时 reference_en 留空、verified=False，
+    参考译文由首次 AI 批改的 model_translation 回填。"""
+    created = 0
+    for q in ExamQuestion.objects.filter(exam_type='cet6', question_type='translation'):
+        zh = (q.content or '').strip()
+        if not zh:
+            continue
+        _, is_new = Cet6TranslationPassage.objects.get_or_create(
+            question=q, source_type='past_paper',
+            defaults={
+                'source_zh': zh,
+                'reference_en': (q.model_answer or '').strip(),
+                'topic_tags': [t for t in (q.tags or []) if t in CET6_TOPICS][:3],
+                'skill_tags': [],
+                'difficulty': q.difficulty or 3,
+                'verified': bool((q.model_answer or '').strip()),
+                'source_note': f'{q.year}年真题',
+            })
+        if is_new:
+            created += 1
+    return created
+
+
+def _cet6_error_focus(limit=3):
+    """根据错段错因标签推导近期薄弱考点（六级专项代码）"""
+    from collections import Counter
+    counter = Counter()
+    for p in Cet6TranslationPractice.objects.all():
+        if _cet6_is_error_practice(p):
+            for t in (p.error_tags or []):
+                for s in CET6_ERROR_TO_SKILL.get(t, []):
+                    counter[s] += 1
+    return [c for c, _ in counter.most_common(limit)]
+
+
+def _cet6_recommendation():
+    """默认推荐配置：专项取错因推导，目标表达取近期错词"""
+    skills = _cet6_error_focus(2) or ['culture', 'collocation']
+    words = _trans_pick_words('error', 4) or _trans_pick_words('unmastered', 4)
+    cfg = {
+        'mode': 'weakness', 'difficulty': 3, 'count': 1, 'length': 'standard',
+        'topics': [], 'skills': skills,
+        'word_source': 'error' if words else 'unmastered',
+        'target_word_ids': [w.id for w in words],
+        'target_words': [w.word for w in words],
+    }
+    skill_names = '、'.join(CET6_SKILL_TAG_NAMES.get(c, c) for c in skills)
+    summary = f'1 段 · 标准难度 · 约 15 分钟。重点：{skill_names}'
+    return cfg, summary
+
+
+def cet6_home(request):
+    """六级汉译英专题首页：今日推荐 + 真题段落列表（年份筛选）+ 统计"""
+    global _CET6_PAST_IMPORTED
+    if not _CET6_PAST_IMPORTED:
+        _cet6_import_past_papers()
+        _CET6_PAST_IMPORTED = True
+
+    year = request.GET.get('year', '')
+    try:
+        year_int = int(year) if year else None
+    except (TypeError, ValueError):
+        year_int = None
+    passages = Cet6TranslationPassage.objects.select_related('question')
+    past = passages.filter(source_type='past_paper')
+    years = list(ExamQuestion.objects.filter(
+        exam_type='cet6', question_type='translation')
+        .values_list('year', flat=True).distinct().order_by('-year'))
+    if year_int in years:
+        past = past.filter(question__year=year_int)
+
+    latest = _cet6_latest_practice_map()
+    today = timezone.localdate()
+    due_ids = [pid for pid, p in latest.items()
+               if p.next_review_date and p.next_review_date <= today]
+    err_ids = [pid for pid, p in latest.items() if _cet6_is_error_practice(p)]
+    unpracticed = list(past.exclude(id__in=latest.keys()).values_list('id', flat=True))
+    if due_ids:
+        rec = Cet6TranslationPassage.objects.select_related('question').get(
+            id=random.choice(due_ids))
+        rec_reason = '到期的复习段落'
+    elif err_ids:
+        rec = Cet6TranslationPassage.objects.select_related('question').get(
+            id=random.choice(err_ids))
+        rec_reason = '你的错段，重练巩固'
+    elif unpracticed:
+        rec = Cet6TranslationPassage.objects.select_related('question').get(
+            id=random.choice(unpracticed))
+        rec_reason = '未练过的真题段落'
+    else:
+        rec = past.order_by('-created_at').first()
+        rec_reason = '今日练习'
+    focus = _cet6_error_focus(2)
+    focus_names = '、'.join(CET6_SKILL_TAG_NAMES.get(c, c) for c in focus) \
+        if focus else '文化表达、动词搭配'
+
+    rows = []
+    for p in past:
+        lp = latest.get(p.id)
+        rows.append({
+            'id': p.id, 'year': p.question.year if p.question else None,
+            'title': (p.question.title if p.question else '') or p.source_note,
+            'head': p.source_zh[:60],
+            'difficulty': p.difficulty,
+            'status': ('new' if lp is None
+                       else ('error' if _cet6_is_error_practice(lp) else 'ok')),
+            'total': _cet6_parse_total(lp) if lp else None,
+            'due': bool(lp and lp.next_review_date and lp.next_review_date <= today),
+        })
+    recent = (Cet6TranslationPractice.objects.select_related('passage')
+              .order_by('-created_at')[:8])
+    stats = {
+        'total': past.count(),
+        'practiced': past.filter(id__in=list(latest.keys())).count(),
+        'errors': len(err_ids),
+        'due': len(due_ids),
+    }
+    return render(request, 'cet6_home.html', {
+        'passages': rows, 'years': years, 'year': year_int,
+        'rec': rec, 'rec_reason': rec_reason, 'focus_names': focus_names,
+        'stats': stats, 'recent': recent,
+        'pass_name': CET6_GRADE_PASS,
+        'active_nav': 'workshop', 'ws_active': 'cet6',
+    })
+
+
+def cet6_practice_page(request, pid):
+    """六级段落翻译练习页：先独立翻译，批改后展示分维结果与解析（默认折叠）"""
+    passage = get_object_or_404(Cet6TranslationPassage, id=pid)
+    latest = _cet6_latest_practice_map().get(passage.id)
+    return render(request, 'cet6_practice.html', {
+        'passage': passage,
+        'is_ai': passage.source_type == 'ai_generated',
+        'latest': latest,
+        'last_total': _cet6_parse_total(latest) if latest else None,
+        'skill_names': [CET6_SKILL_TAG_NAMES.get(t, t) for t in (passage.skill_tags or [])],
+        'key_points': passage.key_points or [],
+        'error_tag_names': {t: n for t, n in CET6_ERROR_TAGS.items()},
+        'pass_name': CET6_GRADE_PASS,
+        'active_nav': 'workshop', 'ws_active': 'cet6',
+    })
+
+
+@require_http_methods(['POST'])
+def api_cet6_submit(request, pid):
+    """提交六级段落翻译：AI 五维批改（无 AI 时兜底展示参考译文）+ SRS 排期"""
+    passage = get_object_or_404(Cet6TranslationPassage, id=pid)
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    user_trans = (data.get('translation') or '').strip()
+    if not user_trans:
+        return JsonResponse({'error': '请先输入你的英文译文'}, status=400)
+    try:
+        duration = max(0, int(data.get('duration') or 0))
+    except (TypeError, ValueError):
+        duration = 0
+
+    prev = _cet6_latest_practice_map().get(passage.id)
+    prompt = cet6_grading_prompt_v2(
+        passage.source_zh, user_trans,
+        reference=(passage.reference_en or '').strip() or None,
+        key_points=passage.key_points or [], skill_tags=passage.skill_tags or [])
+    content, err = builtin_ai_exam_call(
+        prompt, temperature=0.3, action='cet6_grade_passage',
+        settings_model_field='cet6_translation_model')
+
+    score_data = extract_json_object(content) if content else None
+    if err or not isinstance(score_data, dict) or not score_data:
+        # 无 AI 兜底：不评分，保存作答并展示参考译文供自评，次日安排重练
+        sim = None
+        if passage.reference_en:
+            sim = round(difflib.SequenceMatcher(
+                None, user_trans.lower().split(), passage.reference_en.lower().split()).ratio(), 4)
+        Cet6TranslationPractice.objects.create(
+            passage=passage, user_translation=user_trans,
+            score_json=json.dumps({'fallback': True, 'similarity': sim}, ensure_ascii=False),
+            feedback='AI 服务暂不可用，已展示参考译文供自评；本次不计入达标统计。',
+            error_tags=[], duration_seconds=duration,
+            next_review_date=timezone.localdate() + timedelta(days=1),
+            consecutive_correct=(prev.consecutive_correct if prev else 0))
+        return JsonResponse({
+            'success': True, 'fallback': True,
+            'reference_en': passage.reference_en or '',
+            'message': 'AI 批改暂不可用，已保留本次作答并展示参考译文，稍后可重试。',
+        })
+
+    error_tags = [t for t in (score_data.get('error_tags') or [])
+                  if t in CET6_ERROR_TAGS][:6]
+    practice = Cet6TranslationPractice.objects.create(
+        passage=passage, user_translation=user_trans,
+        score_json=json.dumps(score_data, ensure_ascii=False),
+        feedback=str(score_data.get('comments') or ''),
+        error_tags=error_tags, duration_seconds=duration)
+    total = _cet6_parse_total(practice)
+    today = timezone.localdate()
+    if total is not None and total >= CET6_GRADE_PASS and not error_tags:
+        practice.next_review_date = today + timedelta(days=7)
+        practice.consecutive_correct = (prev.consecutive_correct + 1) if prev else 1
+    else:
+        practice.next_review_date = today + timedelta(days=1)
+        practice.consecutive_correct = 0
+    practice.save(update_fields=['next_review_date', 'consecutive_correct'])
+
+    # 参考译文回填：真题段库中无参考译文时，采用 AI 批改返回的更佳译文
+    if not passage.reference_en:
+        mt = (score_data.get('model_translation') or '').strip()
+        if mt:
+            passage.reference_en = mt
+            passage.save(update_fields=['reference_en'])
+    # 表达词库沉淀：把批改给出的替换表达合并进 key_points（按中文概念去重）
+    _cet6_merge_key_points(passage, score_data.get('replacements') or [])
+
+    return JsonResponse({
+        'success': True, 'fallback': False, 'result': score_data,
+        'practice_id': practice.id,
+        'reference_en': passage.reference_en or '',
+        'next_review': practice.next_review_date.isoformat() if practice.next_review_date else None,
+    })
+
+
+def _cet6_merge_key_points(passage, replacements):
+    """把 AI 批改的替换表达合并进段落 key_points（按中文概念去重，最多 12 条）"""
+    existing = {str(kp.get('zh') or '').strip().lower()
+                for kp in (passage.key_points or []) if isinstance(kp, dict)}
+    merged = list(passage.key_points or [])
+    for r in replacements:
+        if not isinstance(r, dict):
+            continue
+        zh = str(r.get('zh') or '').strip()
+        better = str(r.get('better') or '').strip()
+        if not zh or not better or zh.lower() in existing:
+            continue
+        merged.append({'zh': zh, 'recommended_en': better,
+                       'alternatives': [str(r.get('basic') or '').strip()] if r.get('basic') else []})
+        existing.add(zh.lower())
+    if merged != list(passage.key_points or []):
+        passage.key_points = merged[:12]
+        passage.save(update_fields=['key_points'])
+
+
+def cet6_errors_page(request):
+    """我的错段：最近一次练习未达标或带错因标签的段落 + SRS 到期状态"""
+    latest = _cet6_latest_practice_map()
+    today = timezone.localdate()
+    rows = []
+    for pid, p in latest.items():
+        if not _cet6_is_error_practice(p):
+            continue
+        rows.append((pid, p))
+    rows.sort(key=lambda x: x[1].created_at, reverse=True)
+    passages = Cet6TranslationPassage.objects.in_bulk([pid for pid, _ in rows])
+    items = []
+    for pid, p in rows:
+        passage = passages.get(pid)
+        if not passage:
+            continue
+        items.append({
+            'passage': passage,
+            'total': _cet6_parse_total(p),
+            'error_names': [CET6_ERROR_TAGS.get(t, t) for t in (p.error_tags or [])],
+            'next_review': p.next_review_date,
+            'due': bool(p.next_review_date and p.next_review_date <= today),
+            'attempts': Cet6TranslationPractice.objects.filter(passage_id=pid).count(),
+        })
+    return render(request, 'cet6_errors.html', {
+        'items': items, 'pass_name': CET6_GRADE_PASS,
+        'active_nav': 'workshop', 'ws_active': 'cet6',
+    })
+
+
+def cet6_expressions_page(request):
+    """表达词库：聚合各段落关键表达点（中文概念 → 推荐英文 → 替代表达），标注掌握状态"""
+    kp_map = {}
+    for p in Cet6TranslationPassage.objects.all():
+        for kp in (p.key_points or []):
+            if not isinstance(kp, dict):
+                continue
+            zh = str(kp.get('zh') or '').strip()
+            en = str(kp.get('recommended_en') or '').strip()
+            if not zh or not en:
+                continue
+            item = kp_map.setdefault(zh.lower(), {
+                'zh': zh, 'recommended_en': en, 'alternatives': [],
+                'count': 0, 'status': ''})
+            item['count'] += 1
+            for a in (kp.get('alternatives') or []):
+                a = str(a).strip()
+                if a and a not in item['alternatives'] and a.lower() != en.lower():
+                    item['alternatives'].append(a)
+    # 掌握状态：以最近一次练习的关键表达点判定结果为准
+    latest = _cet6_latest_practice_map()
+    for p in latest.values():
+        for r in (p.get_score().get('key_point_results') or []):
+            if not isinstance(r, dict):
+                continue
+            item = kp_map.get(str(r.get('zh') or '').strip().lower())
+            if not item:
+                continue
+            status = r.get('status')
+            if status == 'missed':
+                item['status'] = 'missed'
+            elif status in ('conveyed', 'rephrased') and item['status'] != 'missed':
+                item['status'] = 'conveyed'
+    items = sorted(kp_map.values(),
+                   key=lambda x: (x['status'] != 'missed', -x['count'], x['zh']))
+    return render(request, 'cet6_expressions.html', {
+        'items': items,
+        'active_nav': 'workshop', 'ws_active': 'cet6',
+    })
+
+
+def cet6_report_page(request):
+    """学习报告：练习量、平均分、达标率、分维均分、错因分布、最近练习"""
+    practices = list(Cet6TranslationPractice.objects
+                     .select_related('passage').order_by('created_at'))
+    dim_names = {'accuracy': '信息完整', 'culture': '文化表达', 'grammar': '语法句法',
+                 'collocation': '搭配词性', 'fluency': '衔接自然'}
+    dim_acc, tag_counter, totals, rows = {}, {}, [], []
+    for p in practices:
+        s = p.get_score()
+        for k, v in (s.get('scores') or {}).items():
+            if isinstance(v, (int, float)):
+                dim_acc.setdefault(k, []).append(v)
+        for t in (p.error_tags or []):
+            tag_counter[t] = tag_counter.get(t, 0) + 1
+        t = s.get('total')
+        if isinstance(t, (int, float)):
+            totals.append(t)
+        rows.append({'practice': p, 'total': t if isinstance(t, (int, float)) else None})
+    dims = [{'key': k, 'name': dim_names.get(k, k), 'avg': round(sum(v) / len(v), 1)}
+            for k, v in dim_acc.items()]
+    dims.sort(key=lambda d: d['avg'])
+    max_tag = max(tag_counter.values()) if tag_counter else 1
+    tags = [{'name': CET6_ERROR_TAGS.get(t, t), 'count': c,
+             'pct': int(100 * c / max_tag)}
+            for t, c in sorted(tag_counter.items(), key=lambda x: (-x[1], x[0]))]
+    recent = list(reversed(rows))[:10]
+    stats = {
+        'count': len(practices),
+        'avg': round(sum(totals) / len(totals), 1) if totals else None,
+        'best': max(totals) if totals else None,
+        'pass_rate': (int(100 * sum(1 for t in totals if t >= CET6_GRADE_PASS) / len(totals))
+                      if totals else None),
+    }
+    return render(request, 'cet6_report.html', {
+        'stats': stats, 'dims': dims, 'tags': tags, 'recent': recent,
+        'pass_name': CET6_GRADE_PASS,
+        'active_nav': 'workshop', 'ws_active': 'cet6',
+    })
+
+
+def _cet6_seed_passages(difficulty, count):
+    """改写模式：按难度抽取真题段作为改写参考"""
+    qs = Cet6TranslationPassage.objects.filter(source_type='past_paper')
+    if difficulty <= 2:
+        qs = qs.filter(difficulty__lte=2)
+    elif difficulty >= 4:
+        qs = qs.filter(difficulty__gte=4)
+    ids = list(qs.values_list('id', flat=True))
+    if len(ids) > count:
+        ids = random.sample(ids, count)
+    seeds = list(Cet6TranslationPassage.objects.filter(id__in=ids))
+    if not seeds:  # 难度档无段时回退全部真题
+        seeds = list(Cet6TranslationPassage.objects.filter(
+            source_type='past_paper').order_by('?')[:count])
+    return seeds
+
+
+def _cet6_dup_pool(paper, seed_ids):
+    """重复度比对池：近期 AI 段 + 本卷已生成 + 真题中文段（改写种子标记 is_seed）"""
+    pool = []
+    recent = (Cet6TranslationPassage.objects.filter(source_type='ai_generated')
+              .order_by('-id').values_list('source_zh', flat=True)[:40])
+    pool += [(_trans_norm_ws(x), False) for x in recent]
+    for gq in paper.questions.select_related('passage'):
+        pool.append((_trans_norm_ws(gq.passage.source_zh), False))
+    past = (Cet6TranslationPassage.objects.filter(source_type='past_paper')
+            .values_list('id', 'source_zh'))
+    for sid, zh in past:
+        pool.append((_trans_norm_ws(zh), sid in seed_ids))
+    return pool
+
+
+def _cet6_validate_batch(raw_passages, expected, length_key, target_words,
+                         dup_pool, focus_skills=None, already_hit=None,
+                         required_words=None):
+    """本地质量校验。返回 (kept[归一化段], feedback[失败说明行])。
+    - target_words：本批提示词要求使用的目标表达
+    - required_words：截至本批整卷应覆盖的词（分批时为前 N 批的并集）
+    - already_hit：此前批次参考译文中已经命中的词"""
+    already_hit = already_hit or set()
+    if required_words is None:
+        required_words = target_words
+    lo, hi, _ = CET6_LENGTH_RANGES[length_key]
+    feedback, kept = [], []
+    if not isinstance(raw_passages, list):
+        return [], ['返回的 passages 不是数组，无法解析']
+    if len(raw_passages) != expected:
+        feedback.append(f'数量不符：要求 {expected} 段，实际返回 {len(raw_passages)} 段')
+
+    batch_zh_norm = []
+    for i, q in enumerate(raw_passages, 1):
+        if not isinstance(q, dict):
+            feedback.append(f'第 {i} 段不是有效对象')
+            continue
+        problems = []
+        zh = _trans_norm_ws(str(q.get('source_zh') or ''))
+        en = _trans_norm_ws(str(q.get('reference_en') or ''))
+        if not zh:
+            feedback.append(f'第 {i} 段缺少中文材料')
+            continue
+        zh_n = _cet6_zh_len(zh)
+        if not (lo <= zh_n <= hi):
+            problems.append(f'中文字数 {zh_n}，超出要求 {lo}-{hi} 字')
+        en_words = len(_trans_word_tokens(en))
+        if not en or not (0.35 * zh_n <= en_words <= 1.1 * zh_n):
+            problems.append('参考英文译文为空或长度异常')
+        skills = []
+        for t in (q.get('skill_tags') or []):
+            if t in CET6_SKILL_TAGS and t not in skills:
+                skills.append(t)
+        if not skills:
+            problems.append('缺少合法的考点标签')
+        elif focus_skills and not (set(skills) & set(focus_skills)):
+            problems.append('考点标签与所选专项不符（需包含：'
+                            + '、'.join(CET6_SKILL_TAG_NAMES.get(t, t)
+                                        for t in focus_skills) + '）')
+        topics = [t for t in (q.get('topic_tags') or []) if t in CET6_TOPICS]
+
+        # 关键表达点：只保留推荐英文确实出现在参考译文中的点（允许词形变化）
+        en_flat = en.lower()
+        key_points = []
+        for kp in (q.get('key_points') or []):
+            if not isinstance(kp, dict):
+                continue
+            kp_zh = _trans_norm_ws(str(kp.get('zh') or ''))
+            kp_en = _trans_norm_ws(str(kp.get('recommended_en') or ''))
+            if not kp_zh or not kp_en:
+                continue
+            toks = [t.lower() for t in _trans_word_tokens(kp_en) if len(t) >= 3]
+            if toks and all(_trans_word_in_sentence(t, en_flat) for t in toks):
+                alts = [str(a).strip() for a in (kp.get('alternatives') or [])
+                        if str(a).strip()][:3]
+                key_points.append({'zh': kp_zh, 'recommended_en': kp_en,
+                                   'alternatives': alts})
+        if len(key_points) < 2:
+            problems.append('关键表达点不足 2 条或与参考译文不符')
+
+        # 禁止无依据统计数字（AI 生成材料；真题含数据不在校验范围）
+        if re.search(r'\d+(\.\d+)?\s*(%|％|万|亿)|\d+\s*个百分点', zh):
+            problems.append('包含疑似统计数据，请改用定性描述')
+
+        # 重复度：同卷 / 近期 AI 段 / 真题（改写种子用更宽松阈值）
+        for other in batch_zh_norm:
+            if difflib.SequenceMatcher(None, zh, other).ratio() > 0.85:
+                problems.append('与同卷其他段落高度相似')
+                break
+        for other, is_seed in dup_pool:
+            if difflib.SequenceMatcher(None, zh, other).ratio() > (0.92 if is_seed else 0.88):
+                problems.append('与近期已有材料高度相似')
+                break
+
+        # AI 自报目标表达：只保留确实出现在参考译文中的
+        hit_words = [w for w in target_words if _trans_word_in_sentence(w, en_flat)]
+        diff_in = q.get('difficulty')
+        try:
+            diff_in = int(diff_in)
+            if not 1 <= diff_in <= 5:
+                diff_in = None
+        except (TypeError, ValueError):
+            diff_in = None
+
+        if problems:
+            feedback.append(f'第 {i} 段：' + '；'.join(problems))
+        else:
+            kept.append({
+                'source_zh': zh, 'reference_en': en, 'topic_tags': topics,
+                'skill_tags': skills, 'key_points': key_points,
+                'target_words': hit_words, 'difficulty': diff_in,
+                'difficulty_reason': str(q.get('difficulty_reason') or '')[:300],
+            })
+            batch_zh_norm.append(zh)
+
+    # 超出要求数量时按顺序截断，避免入库段数超出配置
+    if len(kept) > expected:
+        kept = kept[:expected]
+
+    # 目标表达覆盖率按整卷累计（截至本批应覆盖的词 ≥80%）
+    if required_words:
+        hit_set = ({w for item in kept for w in item['target_words']}
+                   | set(already_hit))
+        required = list(dict.fromkeys(required_words))
+        ratio = sum(1 for w in required if w in hit_set) / len(required)
+        if ratio < CET6_COVER_RATIO:
+            missing = [w for w in required if w not in hit_set]
+            feedback.append('目标表达覆盖率不足 80%，缺失：' + '、'.join(missing))
+    return kept, feedback
+
+
+def _cet6_build_config(raw, latest=None):
+    """校验并归一化前端组卷配置；目标表达完全由后端决定。返回 (config_dict, error)。"""
+    mode = raw.get('mode', 'weakness')
+    if mode not in ('weakness', 'topic', 'expressions', 'rewrite'):
+        mode = 'weakness'
+    diff_key = raw.get('difficulty', 'standard')
+    difficulty = CET6_DIFFS.get(diff_key, 3)
+    try:
+        count = int(raw.get('count', 1))
+    except (TypeError, ValueError):
+        count = 1
+    if count not in CET6_PAPER_COUNTS:
+        count = 1
+    length = raw.get('length', 'standard')
+    if length not in CET6_LENGTH_RANGES:
+        length = 'standard'
+    topics = [t for t in (raw.get('topics') or []) if t in CET6_TOPICS][:4]
+    skills = [c for c in (raw.get('skills') or []) if c in CET6_SKILL_TAGS][:4]
+    word_source = raw.get('word_source', 'unmastered')
+    if word_source not in CET6_WORD_SOURCES:
+        word_source = 'unmastered'
+
+    # 专项：各模式默认推导
+    if mode == 'weakness':
+        skills = _cet6_error_focus(2) or ['culture', 'collocation']
+    elif mode in ('topic', 'rewrite') and not skills:
+        skills = ['culture', 'collocation']
+    elif mode == 'expressions' and not skills:
+        skills = ['collocation', 'conversion']
+
+    # 目标表达：仅 expressions/topic/weakness 模式使用，由后端从词库挑选
+    target_words = []
+    if mode == 'expressions':
+        target_words = _trans_pick_words(word_source, 6)
+    elif mode == 'weakness':
+        target_words = _trans_pick_words('error', 4) or _trans_pick_words('unmastered', 4)
+    elif mode == 'topic':
+        target_words = _trans_pick_words(word_source, 4)
+
+    cfg = {
+        'mode': mode, 'difficulty': difficulty, 'count': count,
+        'length': length, 'topics': topics, 'skills': skills,
+        'word_source': word_source,
+        'target_word_ids': [w.id for w in target_words],
+        'target_words': [w.word for w in target_words],
+    }
+    return cfg, None
+
+
+def _cet6_run_paper(paper):
+    """执行六级组卷（生成与重试共用）：分批 ≤2 段，每批失败带原因重试一次。"""
+    cfg = paper.config_json or {}
+    expected = int(cfg.get('count', 1))
+    length_key = cfg.get('length', 'standard')
+    difficulty = int(cfg.get('difficulty', 3))
+    skills = cfg.get('skills') or []
+    topics = cfg.get('topics') or []
+    target_words = cfg.get('target_words') or []
+    word_map = {w.word.lower(): w for w in Word.objects.filter(
+        id__in=cfg.get('target_word_ids') or [])}
+
+    paper.status = 'generating'
+    paper.save(update_fields=['status'])
+    t0 = time.monotonic()
+    last_err = ''
+    last_raw = ''
+
+    # 分批计划：每批 ≤2 段；目标表达按批轮转分配，覆盖率按整卷累计
+    remaining = expected - paper.questions.count()
+    batch_sizes = []
+    while remaining > 0:
+        batch_sizes.append(min(CET6_BATCH_SIZE, remaining))
+        remaining -= batch_sizes[-1]
+    batch_targets = [[] for _ in batch_sizes]
+    for i, w in enumerate(target_words):
+        batch_targets[i % len(batch_sizes)].append(w)
+
+    def _existing_hits():
+        hits = set()
+        for g in paper.questions.select_related('passage'):
+            en = ' '.join(g.passage.reference_en.split()).lower()
+            hits.update(w for w in target_words if _trans_word_in_sentence(w, en))
+        return hits
+
+    for bi, batch_n in enumerate(batch_sizes):
+        batch_words = batch_targets[bi]
+        required_so_far = [w for chunk in batch_targets[:bi + 1] for w in chunk]
+        seeds, seed_ids = [], set()
+        if cfg.get('mode') == 'rewrite':
+            # 每次按缺口取新种子，已被本卷参考过的种子尽量不重复
+            used = set()
+            for gq in paper.questions.select_related('passage'):
+                used.update(re.findall(r'#(\d+)#', gq.passage.source_note))
+            seeds = _cet6_seed_passages(difficulty, batch_n)
+            seeds = [s for s in seeds if str(s.id) not in used] or seeds
+            seed_ids = {s.id for s in seeds}
+        avoid = [_trans_norm_ws(g.passage.source_zh)
+                 for g in (GeneratedCet6Question.objects.filter(paper=paper)
+                           .select_related('passage').order_by('-id')[:4])]
+        avoid += [_trans_norm_ws(x) for x in
+                  Cet6TranslationPassage.objects.filter(source_type='ai_generated')
+                  .order_by('-id').values_list('source_zh', flat=True)[:6]]
+        already_hit = _existing_hits()
+        prompt = cet6_paper_generation_prompt(
+            batch_n, length_key, difficulty, topics, skills, batch_words,
+            rewrite_sources=[s.source_zh for s in seeds] or None,
+            avoid_texts=avoid or None)
+        data = {}
+        settings_obj = UserSettings.get_settings()
+        if settings_obj.cet6_translation_model_id:
+            data['model_id'] = settings_obj.cet6_translation_model_id
+            paper.model_id = settings_obj.cet6_translation_model_id
+        content, err = builtin_ai_exam_call(
+            prompt, temperature=0.8, data=data, action='cet6_paper_generate',
+            settings_model_field='cet6_translation_model')
+        if err:
+            last_err = err
+            break
+        last_raw = (content or '')[:8000]
+        parsed = extract_json_object(content)
+        raw_passages = parsed.get('passages') if isinstance(parsed, dict) else None
+        dup_pool = _cet6_dup_pool(paper, seed_ids)
+        kept, fb = _cet6_validate_batch(
+            raw_passages, batch_n, length_key, batch_words,
+            dup_pool, focus_skills=skills or None,
+            already_hit=already_hit, required_words=required_so_far)
+
+        # 不合格：带原因定向重试一次
+        if fb or len(kept) != batch_n:
+            paper.retry_count += 1
+            paper.save(update_fields=['retry_count'])
+            retry_prompt = cet6_paper_generation_prompt(
+                batch_n, length_key, difficulty, topics, skills, batch_words,
+                rewrite_sources=[s.source_zh for s in seeds] or None,
+                avoid_texts=avoid or None,
+                retry_feedback='\n'.join(fb) or '上一批段落未全部达标，请重新生成。')
+            content2, err2 = builtin_ai_exam_call(
+                retry_prompt, temperature=0.8, data=data,
+                action='cet6_paper_generate',
+                settings_model_field='cet6_translation_model')
+            if err2:
+                last_err = err2
+                break
+            last_raw = (content2 or '')[:8000]
+            parsed2 = extract_json_object(content2)
+            raw2 = parsed2.get('passages') if isinstance(parsed2, dict) else None
+            kept2, fb2 = _cet6_validate_batch(
+                raw2, batch_n, length_key, batch_words,
+                dup_pool, focus_skills=skills or None,
+                already_hit=already_hit, required_words=required_so_far)
+            if kept2:
+                kept, fb = kept2, fb2
+
+        if not kept:
+            last_err = '生成结果未通过本地校验：' + '；'.join(fb[:4])
+            break
+
+        start_order = paper.questions.count() + 1
+        with transaction.atomic():
+            for idx, item in enumerate(kept):
+                order = start_order + idx
+                note = f"AI组卷#{paper.id} {paper.get_mode_display()}"
+                if cfg.get('mode') == 'rewrite' and idx < len(seeds):
+                    note += f' 改写自真题段#{seeds[idx].id}#'
+                cp = Cet6TranslationPassage.objects.create(
+                    question=None, source_type='ai_generated', source_note=note,
+                    source_zh=item['source_zh'], reference_en=item['reference_en'],
+                    topic_tags=item['topic_tags'], skill_tags=item['skill_tags'],
+                    key_points=item['key_points'],
+                    difficulty=item['difficulty'] or difficulty, verified=False)
+                tids = [word_map[w].id for w in item['target_words'] if w in word_map]
+                GeneratedCet6Question.objects.create(
+                    paper=paper, passage=cp, order=order,
+                    quality_score=100.0 if not fb else max(40.0, 100.0 - 12 * len(fb)),
+                    quality_notes='\n'.join(fb)[:1000],
+                    is_approved=not fb)
+
+    paper.duration_ms = int((time.monotonic() - t0) * 1000)
+    paper.raw_response = last_raw[:8000]
+    paper.prompt_hash = hashlib.sha256(
+        json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    done = paper.questions.count()
+    if done >= expected:
+        # 整卷复检目标表达覆盖率：达标则全部题目视为通过校验（覆盖是整卷性质）
+        required = list(dict.fromkeys(target_words))
+        hits = _existing_hits()
+        ratio = (sum(1 for w in required if w in hits) / len(required)
+                 if required else 1.0)
+        if ratio >= CET6_COVER_RATIO:
+            paper.questions.filter(is_approved=False).update(
+                is_approved=True, quality_score=100.0, quality_notes='')
+            paper.status = 'ready'
+            paper.error_message = ''
+        else:
+            missing = [w for w in required if w not in hits]
+            paper.status = 'failed'
+            paper.error_message = (
+                '已生成 %d/%d 段，但整卷目标表达覆盖率不足 80%%（缺失：%s）。'
+                '重试将替换未达标的段落，也可降低难度/减少条件后重新组卷。'
+                % (done, expected, '、'.join(missing[:6])))
+    elif done > 0:
+        paper.status = 'failed'
+        paper.error_message = f'已生成 {done}/{expected} 段。' + (last_err or '部分段落未通过校验，请重试补齐，或降低难度/减少条件。')
+    else:
+        paper.status = 'failed'
+        paper.error_message = last_err or 'AI 返回内容未通过本地校验，请降低难度或减少条件后重试。'
+    paper.save()
+    return done, paper.error_message
+
+
+@require_http_methods(['GET'])
+def api_cet6_recommendation(request):
+    """六级组卷默认推荐配置"""
+    cfg, summary = _cet6_recommendation()
+    return JsonResponse({
+        'success': True, 'config': cfg, 'summary': summary,
+        'skill_names': {k: CET6_SKILL_TAG_NAMES[k] for k in cfg['skills']},
+    })
+
+
+def cet6_paper_new_page(request):
+    """六级 AI 专项组卷配置页"""
+    cfg, summary = _cet6_recommendation()
+    recent_papers = []
+    for p in GeneratedCet6Paper.objects.all()[:6]:
+        recent_papers.append({
+            'id': p.id, 'title': p.title, 'status': p.status,
+            'mode_name': p.get_mode_display(),
+            'count': p.questions.count(),
+            'expected': (p.config_json or {}).get('count', 1),
+            'created_at': p.created_at,
+        })
+    return render(request, 'cet6_paper_new.html', {
+        'cfg': cfg, 'summary': summary,
+        'skills': CET6_SKILL_TAGS, 'skill_names': CET6_SKILL_TAG_NAMES,
+        'topics': CET6_TOPICS, 'word_sources': CET6_WORD_SOURCES,
+        'counts': CET6_PAPER_COUNTS,
+        'diffs': [('basic', '基础'), ('standard', '标准'), ('advanced', '拔高')],
+        'lengths': [(k, v[2]) for k, v in CET6_LENGTH_RANGES.items()],
+        'recent_papers': recent_papers,
+        'active_nav': 'workshop', 'ws_active': 'cet6',
+    })
+
+
+@require_http_methods(['POST'])
+def api_cet6_paper_generate(request):
+    """创建并执行六级 AI 组卷（同步生成，段落分批）"""
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    cfg, error = _cet6_build_config(data)
+    if error:
+        return JsonResponse({'error': error}, status=400)
+    title = f'六级翻译专项卷 {timezone.localtime():%m-%d %H:%M}'
+    paper = GeneratedCet6Paper.objects.create(
+        title=title, mode=cfg['mode'], config_json=cfg,
+        target_word_ids=cfg['target_word_ids'])
+    done, err_msg = _cet6_run_paper(paper)
+    return JsonResponse({
+        'success': paper.status == 'ready',
+        'paper_id': paper.id, 'status': paper.status,
+        'created': done, 'expected': cfg['count'],
+        'error': err_msg,
+        'redirect': f'/workshop/cet6/papers/{paper.id}/',
+    })
+
+
+def cet6_paper_detail_page(request, pid):
+    """六级 AI 卷详情：状态、段落列表、失败重试入口"""
+    paper = get_object_or_404(GeneratedCet6Paper, id=pid)
+    latest = _cet6_latest_practice_map()
+    questions = []
+    for gq in paper.questions.select_related('passage').order_by('order'):
+        p = latest.get(gq.passage_id)
+        total = _cet6_parse_total(p) if p else None
+        questions.append({
+            'pid': gq.passage_id, 'order': gq.order,
+            'source_zh': gq.passage.source_zh,
+            'has_ref': bool(gq.passage.reference_en),
+            'topic_tags': gq.passage.topic_tags or [],
+            'skill_tags': [CET6_SKILL_TAG_NAMES.get(t, t)
+                           for t in (gq.passage.skill_tags or [])],
+            'difficulty': gq.passage.difficulty,
+            'quality_score': gq.quality_score,
+            'is_approved': gq.is_approved,
+            'status': ('new' if p is None
+                       else ('error' if _cet6_is_error_practice(p) else 'ok')),
+            'last_total': int(total) if total is not None else None,
+        })
+    cfg = paper.config_json or {}
+    return render(request, 'cet6_paper_detail.html', {
+        'paper': paper, 'questions': questions,
+        'expected': cfg.get('count', 0),
+        'mode_name': paper.get_mode_display(),
+        'diff_name': CET6_DIFFICULTY_NAMES.get(cfg.get('difficulty', 3), '标准'),
+        'length_name': CET6_LENGTH_RANGES.get(cfg.get('length'),
+                                              ('', '', '标准段'))[2],
+        'skill_names': '、'.join(CET6_SKILL_TAG_NAMES.get(t, t)
+                                for t in (cfg.get('skills') or [])),
+        'target_words': cfg.get('target_words') or [],
+        'active_nav': 'workshop', 'ws_active': 'cet6',
+    })
+
+
+@require_http_methods(['POST'])
+def api_cet6_paper_retry(request, pid):
+    """重试失败/部分失败的六级试卷：只补齐缺失段落；
+    整卷段数已够但存在未通过整卷校验的段落时，删除后重新生成替换。"""
+    paper = get_object_or_404(GeneratedCet6Paper, id=pid)
+    if paper.status == 'generating':
+        return JsonResponse({'error': '试卷正在生成中，请勿重复提交'}, status=409)
+    expected = int((paper.config_json or {}).get('count', 1))
+    if paper.questions.count() >= expected:
+        bad = paper.questions.filter(is_approved=False)
+        if not bad.exists():
+            return JsonResponse({'success': True, 'paper_id': paper.id,
+                                 'status': paper.status, 'created': 0,
+                                 'redirect': f'/workshop/cet6/papers/{paper.id}/'})
+        # 删除未通过校验的段落（级联删除组卷题目），再按升序重排卷内序号
+        Cet6TranslationPassage.objects.filter(
+            id__in=list(bad.values_list('passage_id', flat=True))).delete()
+        for i, gq in enumerate(
+                paper.questions.select_related('passage').order_by('order'), 1):
+            if gq.order != i:
+                gq.order = i
+                gq.save(update_fields=['order'])
+    done, err_msg = _cet6_run_paper(paper)
+    return JsonResponse({
+        'success': paper.status == 'ready',
+        'paper_id': paper.id,
+        'status': paper.status,
+        'created': done,
+        'expected': expected,
+        'error': err_msg,
+        'redirect': f'/workshop/cet6/papers/{paper.id}/',
+    })

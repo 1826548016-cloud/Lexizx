@@ -1,0 +1,97 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}学习报告 - 六级汉译英{% endblock %}
+
+{% block page_title %}六级学习报告{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+
+{% include 'partials/exam_nav.html' with ws_active='cet6' %}
+
+<!-- 统计卡 -->
+<div class="ws-tile-grid mb-4">
+  <div class="study-tile">
+    <div class="study-tile-icon study-tile-icon--blue"><i class="ph ph-pencil-line"></i></div>
+    <div class="study-tile-title">{{ stats.count }}</div>
+    <div class="study-tile-desc">累计练习段数</div>
+  </div>
+  <div class="study-tile">
+    <div class="study-tile-icon study-tile-icon--green"><i class="ph ph-chart-bar"></i></div>
+    <div class="study-tile-title">{% if stats.avg is not None %}{{ stats.avg }}{% else %}—{% endif %}<span class="text-secondary text-sm">/50</span></div>
+    <div class="study-tile-desc">平均总分{% if stats.best is not None %} · 最高 {{ stats.best }}{% endif %}</div>
+  </div>
+  <div class="study-tile">
+    <div class="study-tile-icon study-tile-icon--amber"><i class="ph ph-check-circle"></i></div>
+    <div class="study-tile-title">{% if stats.pass_rate is not None %}{{ stats.pass_rate }}%{% else %}—{% endif %}</div>
+    <div class="study-tile-desc">达标率（≥{{ pass_name }} 分且无错因）</div>
+  </div>
+</div>
+
+<!-- 分维均分：从弱到强 -->
+{% if dims %}
+<div class="card mb-4">
+  <div class="card-header">五个维度平均分（弱项在前）</div>
+  <div style="padding:12px 16px; display:grid; gap:10px;">
+    {% for d in dims %}
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span style="min-width:90px;">{{ d.name }}</span>
+      <span style="flex:1; min-width:120px; height:8px; background:var(--c-surface); border:1px solid var(--c-border-light); border-radius:999px; overflow:hidden;">
+        <span style="display:block; height:100%; width:{% widthratio d.avg 10 100 %}%; background:var(--c-blue);"></span>
+      </span>
+      <span class="text-sm" style="min-width:36px; text-align:right;">{{ d.avg }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- 错因分布 -->
+{% if tags %}
+<div class="card mb-4">
+  <div class="card-header">高频错因分布</div>
+  <div style="padding:12px 16px; display:grid; gap:10px;">
+    {% for t in tags %}
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span style="min-width:90px;">{{ t.name }}</span>
+      <span style="flex:1; min-width:120px; height:8px; background:var(--c-surface); border:1px solid var(--c-border-light); border-radius:999px; overflow:hidden;">
+        <span style="display:block; height:100%; width:{{ t.pct }}%; background:var(--c-red);"></span>
+      </span>
+      <span class="text-sm" style="min-width:60px; text-align:right;">{{ t.count }} 次</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- 最近练习 -->
+<div class="card">
+  <div class="card-header flex justify-between items-center">
+    <span>最近练习</span>
+    <a href="{% url 'words:cet6_errors' %}" class="text-secondary text-sm">我的错段 →</a>
+  </div>
+  <div>
+    {% for r in recent %}
+    <a href="{% url 'words:cet6_practice' r.practice.passage_id %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span class="btn btn-xs btn-secondary" style="min-width:96px; text-align:center;">{{ r.practice.created_at|date:'m-d H:i' }}</span>
+      <span style="flex:1; min-width:160px; color:var(--c-text-2);">{{ r.practice.passage.source_zh|truncatechars:40 }}</span>
+      {% if r.total is None %}
+        <span class="text-sm" style="color:var(--c-amber); border:1px solid var(--c-amber); border-radius:999px; padding:1px 10px; white-space:nowrap;">未批改</span>
+      {% elif r.total >= pass_name %}
+        <span class="text-sm" style="color:var(--c-green); border:1px solid var(--c-green); border-radius:999px; padding:1px 10px; white-space:nowrap;">{{ r.total }}/50</span>
+      {% else %}
+        <span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:1px 10px; white-space:nowrap;">{{ r.total }}/50</span>
+      {% endif %}
+    </a>
+    {% empty %}
+    <div class="empty-state" style="padding:32px 16px;">
+      <div class="empty-state-title">还没有练习记录</div>
+      <div>去<a href="{% url 'words:cet6_home' %}">专题首页</a>开始第一段翻译练习。</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}{% endblock %}

@@ -1,0 +1,233 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}AI 专项组卷 - 长难句翻译{% endblock %}
+
+{% block page_title %}AI 专项组卷{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+<style>
+  .tp-mode { display:block; padding:12px 14px; border:1px solid var(--c-border); border-radius:10px; cursor:pointer; text-decoration:none; color:inherit; }
+  .tp-mode input { margin-right:8px; }
+  .tp-mode:has(input:checked) { border-color:var(--c-blue); background:color-mix(in srgb, var(--c-blue) 8%, transparent); }
+  .tp-mode-title { font-weight:600; }
+  .tp-mode-desc { color:var(--c-text-2); font-size:.82rem; margin-top:2px; }
+  .tp-chip { display:inline-flex; align-items:center; gap:6px; padding:6px 14px; border:1px solid var(--c-border); border-radius:999px; cursor:pointer; font-size:.88rem; user-select:none; }
+  .tp-chip input { display:none; }
+  .tp-chip:has(input:checked) { background:var(--c-blue); border-color:var(--c-blue); color:#fff; }
+</style>
+
+{% include 'partials/exam_nav.html' with ws_active='trans' %}
+
+<!-- 默认推荐 -->
+<div class="card mb-4" style="border-color:var(--c-blue);">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:260px;">
+      <div class="ws-head-title"><i class="ph ph-sparkle" style="color:var(--c-blue);"></i> 根据你的错句生成</div>
+      <div class="text-secondary text-sm mt-2">{{ rec_summary }}</div>
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+        {% for w in rec_cfg.target_words %}<span class="date-chip"><i class="ph ph-bookmark-simple"></i> {{ w }}</span>{% endfor %}
+      </div>
+    </div>
+    <button type="button" id="recBtn" class="btn btn-primary" onclick="quickStart()"><i class="ph ph-wand"></i> 开始组卷</button>
+  </div>
+</div>
+
+<form id="paperForm" onsubmit="return false;">
+<!-- 组卷目标 -->
+<div class="card mb-4">
+  <div class="card-header">组卷目标</div>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="weakness" checked onchange="onModeChange()">按我的薄弱点推荐</span>
+      <div class="tp-mode-desc">根据错句句法与近期错词自动配置</div>
+    </label>
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="syntax" onchange="onModeChange()">指定句法专项</span>
+      <div class="tp-mode-desc">定语从句、非谓语、倒装等定向训练</div>
+    </label>
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="words" onchange="onModeChange()">按词库单词组卷</span>
+      <div class="tp-mode-desc">未掌握 / 近期错词 / 收藏词入句</div>
+    </label>
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="rewrite" onchange="onModeChange()">真题同难度改写</span>
+      <div class="tp-mode-desc">模仿真题句式难度，内容全新创作</div>
+    </label>
+  </div>
+</div>
+
+<!-- 基础配置 -->
+<div class="card mb-4">
+  <div class="card-header">难度与数量</div>
+  <div class="form-group">
+    <label class="form-label">难度</label>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      <label class="tp-chip"><input type="radio" name="difficulty" value="basic">基础</label>
+      <label class="tp-chip"><input type="radio" name="difficulty" value="standard" checked>标准</label>
+      <label class="tp-chip"><input type="radio" name="difficulty" value="advanced">拔高</label>
+    </div>
+  </div>
+  <div class="form-group">
+    <label class="form-label">数量</label>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      <label class="tp-chip"><input type="radio" name="count" value="3">3 句 · 约 8 分钟</label>
+      <label class="tp-chip"><input type="radio" name="count" value="5" checked>5 句 · 约 12 分钟</label>
+      <label class="tp-chip"><input type="radio" name="count" value="10">10 句 · 约 24 分钟（分两批生成）</label>
+    </div>
+  </div>
+  <div class="form-group" style="margin-bottom:0;">
+    <label class="form-label">句长</label>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      <label class="tp-chip"><input type="radio" name="length" value="short">短句 20-30 词</label>
+      <label class="tp-chip"><input type="radio" name="length" value="standard" checked>标准 30-45 词</label>
+      <label class="tp-chip"><input type="radio" name="length" value="long">长难句 45-65 词</label>
+    </div>
+  </div>
+</div>
+
+<!-- 高级选项 -->
+<details class="card mb-4">
+  <summary class="card-header" style="cursor:pointer; list-style:none;"><i class="ph ph-caret-right"></i> 高级调整（句法 / 主题 / 选词）</summary>
+  <div style="padding:0 16px 16px;">
+    <div class="form-group" id="syntaxGroup">
+      <label class="form-label">句法专项（最多 4 项；薄弱点模式由系统自动决定）</label>
+      <div class="flex gap-2" style="flex-wrap:wrap;">
+        {% for code, name in syntax_options.items %}
+        <label class="tp-chip"><input type="checkbox" name="syntax" value="{{ code }}">{{ name }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">主题（可不选）</label>
+      <div class="flex gap-2" style="flex-wrap:wrap;">
+        {% for t in topics %}
+        <label class="tp-chip"><input type="checkbox" name="topics" value="{{ t }}">{{ t }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-group" id="wordSourceGroup">
+      <label class="form-label">目标词来源（词库单词组卷 / 句法专项时生效）</label>
+      <div class="flex gap-2" style="flex-wrap:wrap;">
+        {% for code, name in word_sources.items %}
+        <label class="tp-chip"><input type="radio" name="word_source" value="{{ code }}" {% if code == 'unmastered' %}checked{% endif %}>{{ name }}</label>
+        {% endfor %}
+      </div>
+      <div class="form-help mt-2">目标词由系统从本地词库选取，不接受手动输入词库外单词。</div>
+    </div>
+    <div class="form-group" style="margin-bottom:0;" id="reuseGroup">
+      <label class="tp-chip" style="padding:8px 16px;"><input type="checkbox" name="reuse_error" checked style="display:inline-block;">允许复用近期错句的句法结构（薄弱点模式推荐开启）</label>
+    </div>
+  </div>
+</details>
+
+<div class="flex justify-between items-center" style="flex-wrap:wrap; gap:8px;">
+  <a href="{% url 'words:trans_home' %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回训练首页</a>
+  <button type="button" id="genBtn" class="btn btn-primary" onclick="generatePaper()"><i class="ph ph-wand"></i> 开始组卷</button>
+</div>
+</form>
+
+<!-- 生成状态 -->
+<div class="card mb-4" id="statusCard" style="display:none;">
+  <div id="statusBox" class="text-secondary" style="padding:8px 0;"></div>
+</div>
+
+<!-- 最近的组卷 -->
+{% if recent_papers %}
+<div class="card">
+  <div class="card-header"><i class="ph ph-clock-counter-clockwise"></i> 我最近的 AI 卷</div>
+  <div>
+    {% for p in recent_papers %}
+    <a href="{% url 'words:trans_paper_detail' p.id %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span style="flex:1; min-width:180px;">{{ p.title }}</span>
+      <span class="text-secondary text-sm">{{ p.mode_name }} · {{ p.count }}/{{ p.total }} 句</span>
+      {% if p.status == 'ready' %}
+        <span class="text-sm" style="color:var(--c-green); border:1px solid var(--c-green); border-radius:999px; padding:1px 10px;">{{ p.status_name }}</span>
+      {% elif p.status == 'failed' %}
+        <span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:1px 10px;">{{ p.status_name }}</span>
+      {% else %}
+        <span class="text-sm" style="color:var(--c-amber); border:1px solid var(--c-amber); border-radius:999px; padding:1px 10px;">{{ p.status_name }}</span>
+      {% endif %}
+      <span class="text-secondary text-sm">{{ p.created_at }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function currentMode() {
+  var el = document.querySelector('input[name=mode]:checked');
+  return el ? el.value : 'weakness';
+}
+
+function onModeChange() {
+  var mode = currentMode();
+  document.getElementById('syntaxGroup').style.opacity = (mode === 'weakness') ? '.55' : '1';
+  document.getElementById('wordSourceGroup').style.opacity = (mode === 'rewrite') ? '.55' : '1';
+  document.getElementById('reuseGroup').style.opacity = (mode === 'weakness') ? '1' : '.55';
+}
+onModeChange();
+
+function collectPayload() {
+  var mode = currentMode();
+  var vals = function (name) {
+    return Array.prototype.map.call(document.querySelectorAll('input[name=' + name + ']:checked'), function (i) { return i.value; });
+  };
+  var checks = function (name) {
+    return Array.prototype.map.call(document.querySelectorAll('input[name=' + name + ']:checked'), function (i) { return i.value; });
+  };
+  var reuse = document.querySelector('input[name=reuse_error]').checked;
+  var payload = {
+    mode: mode,
+    difficulty: vals('difficulty')[0] || 'standard',
+    count: parseInt(vals('count')[0] || '5', 10),
+    length: vals('length')[0] || 'standard',
+    word_source: vals('word_source')[0] || 'unmastered',
+    reuse_error: reuse,
+    topics: checks('topics'),
+    syntax: [],
+  };
+  // 薄弱点模式句法交给后端推导，前端不传
+  if (mode !== 'weakness') payload.syntax = checks('syntax').slice(0, 4);
+  return payload;
+}
+
+function quickStart() {
+  document.querySelector('input[name=mode][value=weakness]').checked = true;
+  document.querySelector('input[name=difficulty][value=standard]').checked = true;
+  document.querySelector('input[name=count][value="5"]').checked = true;
+  document.querySelector('input[name=length][value=standard]').checked = true;
+  onModeChange();
+  generatePaper();
+}
+
+function generatePaper() {
+  var payload = collectPayload();
+  var btns = [document.getElementById('genBtn'), document.getElementById('recBtn')];
+  btns.forEach(function (b) { b.disabled = true; });
+  var card = document.getElementById('statusCard');
+  var box = document.getElementById('statusBox');
+  card.style.display = 'block';
+  var nBatches = payload.count >= 10 ? 2 : 1;
+  box.innerHTML = '<div class="report-loading">AI 正在组卷（共 ' + nBatches + ' 批，每批先生成再本地校验，不合格会自动重试一次），通常需要 30-90 秒，请勿关闭页面…</div>';
+  VOCAB_API.post('{% url "words:api_trans_paper_generate" %}', payload).then(function (res) {
+    if (res && res.redirect) {
+      window.location.href = res.redirect;
+    } else {
+      box.innerHTML = '<div style="color:var(--c-red);"><i class="ph ph-warning-circle"></i> ' + (res.error || '组卷失败') + '</div>'
+        + '<div class="mt-2"><a class="btn btn-secondary btn-sm" href="{% url 'words:trans_home' %}">改用真题练习</a></div>';
+      btns.forEach(function (b) { b.disabled = false; });
+    }
+  }).catch(function () {
+    box.innerHTML = '<div style="color:var(--c-red);"><i class="ph ph-warning-circle"></i> 网络异常，请检查 AI 模型配置后重试。已生成的题目不会丢失。</div>'
+      + '<div class="flex gap-2 mt-2"><a class="btn btn-secondary btn-sm" href="{% url 'words:settings_page' %}">前往模型设置</a>'
+      + '<a class="btn btn-secondary btn-sm" href="{% url 'words:trans_home' %}">改用真题练习</a></div>';
+    btns.forEach(function (b) { b.disabled = false; });
+  });
+}
+</script>
+{% endblock %}

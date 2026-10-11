@@ -1,0 +1,225 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}AI 专项组卷 - 六级汉译英{% endblock %}
+
+{% block page_title %}六级 AI 专项组卷{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+<style>
+  .tp-mode { display:block; padding:12px 14px; border:1px solid var(--c-border); border-radius:10px; cursor:pointer; text-decoration:none; color:inherit; }
+  .tp-mode input { margin-right:8px; }
+  .tp-mode:has(input:checked) { border-color:var(--c-blue); background:color-mix(in srgb, var(--c-blue) 8%, transparent); }
+  .tp-mode-title { font-weight:600; }
+  .tp-mode-desc { color:var(--c-text-2); font-size:.82rem; margin-top:2px; }
+  .tp-chip { display:inline-flex; align-items:center; gap:6px; padding:6px 14px; border:1px solid var(--c-border); border-radius:999px; cursor:pointer; font-size:.88rem; user-select:none; }
+  .tp-chip input { display:none; }
+  .tp-chip:has(input:checked) { background:var(--c-blue); border-color:var(--c-blue); color:#fff; }
+</style>
+
+{% include 'partials/exam_nav.html' with ws_active='cet6' %}
+
+<!-- 默认推荐 -->
+<div class="card mb-4" style="border-color:var(--c-blue);">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:260px;">
+      <div class="ws-head-title"><i class="ph ph-sparkle" style="color:var(--c-blue);"></i> 根据你的错段生成</div>
+      <div class="text-secondary text-sm mt-2">{{ summary }}</div>
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap;">
+        {% for w in cfg.target_words %}<span class="date-chip"><i class="ph ph-bookmark-simple"></i> {{ w }}</span>{% endfor %}
+      </div>
+    </div>
+    <button type="button" id="recBtn" class="btn btn-primary" onclick="quickStart()"><i class="ph ph-wand"></i> 开始组卷</button>
+  </div>
+</div>
+
+<form id="paperForm" onsubmit="return false;">
+<!-- 组卷模式 -->
+<div class="card mb-4">
+  <div class="card-header">组卷模式</div>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="weakness" checked onchange="onModeChange()">按薄弱点推荐</span>
+      <div class="tp-mode-desc">根据漏译、语法、搭配等历史错因自动配置</div>
+    </label>
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="topic" onchange="onModeChange()">按主题组卷</span>
+      <div class="tp-mode-desc">文化、社会、科技、教育等定向命题</div>
+    </label>
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="expressions" onchange="onModeChange()">按表达词库组卷</span>
+      <div class="tp-mode-desc">用本地词库待掌握表达作为目标</div>
+    </label>
+    <label class="tp-mode">
+      <span class="tp-mode-title"><input type="radio" name="mode" value="rewrite" onchange="onModeChange()">真题同难度改写</span>
+      <div class="tp-mode-desc">参考真题主题与难度，内容全新创作</div>
+    </label>
+  </div>
+</div>
+
+<!-- 基础配置 -->
+<div class="card mb-4">
+  <div class="card-header">难度与数量</div>
+  <div class="form-group">
+    <label class="form-label">难度</label>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      {% for key, label in diffs %}
+      <label class="tp-chip"><input type="radio" name="difficulty" value="{{ key }}" {% if key == 'standard' %}checked{% endif %}>{{ label }}</label>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="form-group">
+    <label class="form-label">数量</label>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      {% for c in counts %}
+      <label class="tp-chip"><input type="radio" name="count" value="{{ c }}" {% if c == 1 %}checked{% endif %}>{{ c }} 段{% if c == 1 %} · 约 15 分钟{% elif c == 3 %} · 约 45 分钟{% else %} · 约 75 分钟{% endif %}</label>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="form-group" style="margin-bottom:0;">
+    <label class="form-label">段落长度</label>
+    <div class="flex gap-2" style="flex-wrap:wrap;">
+      {% for key, label in lengths %}
+      <label class="tp-chip"><input type="radio" name="length" value="{{ key }}" {% if key == 'standard' %}checked{% endif %}>{{ label }}</label>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<!-- 高级选项 -->
+<details class="card mb-4">
+  <summary class="card-header" style="cursor:pointer; list-style:none;"><i class="ph ph-caret-right"></i> 高级调整（专项 / 主题 / 目标表达）</summary>
+  <div style="padding:0 16px 16px;">
+    <div class="form-group" id="skillGroup">
+      <label class="form-label">专项（最多 4 项；薄弱点模式由系统自动决定）</label>
+      <div class="flex gap-2" style="flex-wrap:wrap;">
+        {% for code, name in skill_names.items %}
+        <label class="tp-chip"><input type="checkbox" name="skills" value="{{ code }}">{{ name }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-group" id="topicGroup">
+      <label class="form-label">主题（可不选；按主题组卷时生效）</label>
+      <div class="flex gap-2" style="flex-wrap:wrap;">
+        {% for t in topics %}
+        <label class="tp-chip"><input type="checkbox" name="topics" value="{{ t }}">{{ t }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:0;" id="wordSourceGroup">
+      <label class="form-label">目标表达来源（按主题 / 表达词库组卷时生效）</label>
+      <div class="flex gap-2" style="flex-wrap:wrap;">
+        {% for code, name in word_sources.items %}
+        <label class="tp-chip"><input type="radio" name="word_source" value="{{ code }}" {% if code == 'unmastered' %}checked{% endif %}>{{ name }}</label>
+        {% endfor %}
+      </div>
+      <div class="form-help mt-2">目标表达由系统从本地词库选取，不接受手动输入词库外单词。</div>
+    </div>
+  </div>
+</details>
+
+<div class="flex justify-between items-center" style="flex-wrap:wrap; gap:8px;">
+  <a href="{% url 'words:cet6_home' %}" class="btn btn-secondary btn-sm"><i class="ph ph-arrow-left"></i> 返回专题首页</a>
+  <button type="button" id="genBtn" class="btn btn-primary" onclick="generatePaper()"><i class="ph ph-wand"></i> 开始组卷</button>
+</div>
+</form>
+
+<!-- 生成状态 -->
+<div class="card mb-4" id="statusCard" style="display:none;">
+  <div id="statusBox" class="text-secondary" style="padding:8px 0;"></div>
+</div>
+
+<!-- 最近的组卷 -->
+{% if recent_papers %}
+<div class="card">
+  <div class="card-header"><i class="ph ph-clock-counter-clockwise"></i> 我最近的六级 AI 卷</div>
+  <div>
+    {% for p in recent_papers %}
+    <a href="{% url 'words:cet6_paper_detail' p.id %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+      <span style="flex:1; min-width:180px;">{{ p.title }}</span>
+      <span class="text-secondary text-sm">{{ p.mode_name }} · {{ p.count }}/{{ p.expected }} 段</span>
+      {% if p.status == 'ready' %}
+        <span class="text-sm" style="color:var(--c-green); border:1px solid var(--c-green); border-radius:999px; padding:1px 10px;">已完成</span>
+      {% elif p.status == 'failed' %}
+        <span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:1px 10px;">失败</span>
+      {% else %}
+        <span class="text-sm" style="color:var(--c-amber); border:1px solid var(--c-amber); border-radius:999px; padding:1px 10px;">生成中</span>
+      {% endif %}
+      <span class="text-secondary text-sm">{{ p.created_at|date:'m-d H:i' }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function currentMode() {
+  var el = document.querySelector('input[name=mode]:checked');
+  return el ? el.value : 'weakness';
+}
+
+function onModeChange() {
+  var mode = currentMode();
+  document.getElementById('skillGroup').style.opacity = (mode === 'weakness') ? '.55' : '1';
+  document.getElementById('topicGroup').style.opacity = (mode === 'topic') ? '1' : '.75';
+  document.getElementById('wordSourceGroup').style.opacity = (mode === 'rewrite') ? '.55' : '1';
+}
+onModeChange();
+
+function collectPayload() {
+  var mode = currentMode();
+  var vals = function (name) {
+    return Array.prototype.map.call(document.querySelectorAll('input[name=' + name + ']:checked'), function (i) { return i.value; });
+  };
+  var payload = {
+    mode: mode,
+    difficulty: vals('difficulty')[0] || 'standard',
+    count: parseInt(vals('count')[0] || '1', 10),
+    length: vals('length')[0] || 'standard',
+    word_source: vals('word_source')[0] || 'unmastered',
+    topics: vals('topics'),
+    skills: []
+  };
+  // 薄弱点模式专项交给后端推导，前端不传
+  if (mode !== 'weakness') payload.skills = vals('skills').slice(0, 4);
+  return payload;
+}
+
+function quickStart() {
+  document.querySelector('input[name=mode][value=weakness]').checked = true;
+  document.querySelector('input[name=difficulty][value=standard]').checked = true;
+  document.querySelector('input[name=count][value="1"]').checked = true;
+  document.querySelector('input[name=length][value=standard]').checked = true;
+  onModeChange();
+  generatePaper();
+}
+
+function generatePaper() {
+  var payload = collectPayload();
+  var btns = [document.getElementById('genBtn'), document.getElementById('recBtn')];
+  btns.forEach(function (b) { b.disabled = true; });
+  var card = document.getElementById('statusCard');
+  var box = document.getElementById('statusBox');
+  card.style.display = 'block';
+  var nBatches = payload.count >= 3 ? Math.ceil(payload.count / 2) : 1;
+  box.innerHTML = '<div class="report-loading">AI 正在组卷（共 ' + nBatches + ' 批，每批先生成再本地校验，不合格会自动重试一次），段落较长通常需要 1-3 分钟，请勿关闭页面…</div>';
+  VOCAB_API.post('{% url "words:api_cet6_paper_generate" %}', payload).then(function (res) {
+    if (res && res.redirect) {
+      window.location.href = res.redirect;
+    } else {
+      box.innerHTML = '<div style="color:var(--c-red);"><i class="ph ph-warning-circle"></i> ' + (res.error || '组卷失败') + '</div>'
+        + '<div class="mt-2"><a class="btn btn-secondary btn-sm" href="{% url 'words:cet6_home' %}">改用真题练习</a></div>';
+      btns.forEach(function (b) { b.disabled = false; });
+    }
+  }).catch(function () {
+    box.innerHTML = '<div style="color:var(--c-red);"><i class="ph ph-warning-circle"></i> 网络异常，请检查 AI 模型配置后重试。已生成的段落不会丢失。</div>'
+      + '<div class="flex gap-2 mt-2"><a class="btn btn-secondary btn-sm" href="{% url 'words:settings_page' %}">前往模型设置</a>'
+      + '<a class="btn btn-secondary btn-sm" href="{% url 'words:cet6_home' %}">改用真题练习</a></div>';
+    btns.forEach(function (b) { b.disabled = false; });
+  });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}表达词库 - 六级汉译英{% endblock %}
+
+{% block page_title %}六级表达词库{% endblock %}
+
+{% block content %}
+<form style="display:none;">{% csrf_token %}</form>
+
+{% include 'partials/exam_nav.html' with ws_active='cet6' %}
+
+<div class="card mb-4">
+  <div class="ws-head-title"><i class="ph ph-cards" style="color:var(--c-green);"></i> 中文概念 → 英文表达</div>
+  <div class="text-secondary text-sm mt-2">汇总自真题解析与 AI 批改沉淀的关键表达点；标红的概念在你最近的练习中未达成，建议优先掌握。替代表达同样可接受。</div>
+</div>
+
+{% if items %}
+<div class="flex gap-2 mb-3" style="flex-wrap:wrap;">
+  <span class="date-chip"><i class="ph ph-stack"></i> 共 {{ items|length }} 个表达点</span>
+</div>
+<div class="card">
+  <div>
+    {% for it in items %}
+    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--c-border-light);">
+      <span style="min-width:120px; font-weight:600;">{{ it.zh }}</span>
+      <i class="ph ph-arrow-right" style="color:var(--c-text-2);"></i>
+      <span style="min-width:140px; color:var(--c-blue);">{{ it.recommended_en }}</span>
+      {% if it.alternatives %}
+      <span class="text-secondary text-sm">也可用：{{ it.alternatives|join:'、' }}</span>
+      {% endif %}
+      <span style="flex:1;"></span>
+      {% if it.count > 1 %}<span class="text-secondary text-sm">出现 {{ it.count }} 次</span>{% endif %}
+      {% if it.status == 'missed' %}
+        <span class="text-sm" style="color:var(--c-red); border:1px solid var(--c-red); border-radius:999px; padding:1px 10px; white-space:nowrap;">未达成</span>
+      {% elif it.status == 'conveyed' %}
+        <span class="text-sm" style="color:var(--c-green); border:1px solid var(--c-green); border-radius:999px; padding:1px 10px; white-space:nowrap;">已掌握</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="empty-state" style="padding:32px 16px;">
+    <div class="empty-state-title">还没有表达沉淀</div>
+    <div>完成段落翻译批改后，AI 给出的关键表达点会自动汇总到这里。</div>
+    <div class="mt-2"><a href="{% url 'words:cet6_home' %}" class="btn btn-primary btn-sm">去练习</a></div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}{% endblock %}

@@ -1,11 +1,17 @@
 {% comment %}
-写作工坊二级导航：六个工坊页面统一入口。
+写作工坊二级导航：各工坊页面统一入口。
 用法：{% include 'partials/exam_nav.html' with ws_active='workshop' %}
-可选 ws_active：workshop | questions | phrases | history | logs
+可选 ws_active：workshop | trans | cet6 | questions | phrases | history | logs
 {% endcomment %}
 <nav class="ws-nav" aria-label="写作工坊导航">
   <a href="{% url 'words:exam_workshop' %}"{% if ws_active == 'workshop' %} class="active"{% endif %}>
     <i class="ph ph-house"></i> 工坊首页
+  </a>
+  <a href="{% url 'words:trans_home' %}"{% if ws_active == 'trans' %} class="active"{% endif %}>
+    <i class="ph ph-translate"></i> 长难句翻译
+  </a>
+  <a href="{% url 'words:cet6_home' %}"{% if ws_active == 'cet6' %} class="active"{% endif %}>
+    <i class="ph ph-text-t"></i> 六级汉译英
   </a>
   <a href="{% url 'words:exam_questions' %}"{% if ws_active == 'questions' %} class="active"{% endif %}>
     <i class="ph ph-books"></i> 历年真题
