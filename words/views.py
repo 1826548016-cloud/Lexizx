@@ -2268,10 +2268,10 @@ def api_privacy_agree(request):
 
 GITHUB_LATEST_RELEASE_API = (
     'https://api.github.com/repos/'
-    '1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/releases/latest'
+    '1826548016-cloud/Lexizx/releases/latest'
 )
 RELEASE_PAGE = ('https://github.com/1826548016-cloud/'
-                'Postgraduate-Vocabulary-Memorization-System/releases/latest')
+                'Lexizx/releases/latest')
 
 
 def _parse_version(text):

@@ -5,8 +5,8 @@
 > **一句话**：市面上背单词 App 的大多数功能它都有；背过的词还会喂给写作工坊，AI 范文与模板严格贴合你的词汇水平——背得越多，写得越贴身。
 
 <p align="center">
-  <b>⬇ <a href="https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/releases/latest/download/word.exe">点此下载 word.exe（Windows 单文件 · 约 58 MB）</a></b><br>
-  <sub>点击即下载，无需安装；首次启动自动建库。<a href="https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/releases/latest">查看全部版本与更新说明 →</a></sub>
+  <b>⬇ <a href="https://github.com/1826548016-cloud/Lexizx/releases/latest/download/word.exe">点此下载 word.exe（Windows 单文件 · 约 58 MB）</a></b><br>
+  <sub>点击即下载，无需安装；首次启动自动建库。<a href="https://github.com/1826548016-cloud/Lexizx/releases/latest">查看全部版本与更新说明 →</a></sub>
 </p>
 
 <p align="center">
@@ -42,7 +42,7 @@
 
 ### 桌面客户端（推荐）
 
-**[点此下载最新版 word.exe](https://github.com/1826548016-cloud/Postgraduate-Vocabulary-Memorization-System/releases/latest/download/word.exe)**，双击运行，弹出原生桌面窗口即可使用；首次启动约 1 分钟自动建库并导入词库与真题。
+**[点此下载最新版 word.exe](https://github.com/1826548016-cloud/Lexizx/releases/latest/download/word.exe)**，双击运行，弹出原生桌面窗口即可使用；首次启动约 1 分钟自动建库并导入词库与真题。
 
 学习数据保存在 `word.exe` 同目录的 `data/` 文件夹中，更换电脑或重装前请先在设置页备份；启动异常可查看 `data/launch.log`。
 
