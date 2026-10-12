@@ -1,0 +1,196 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}今日已背 - 考研单词背诵系统{% endblock %}
+{% block page_title %}今日已背{% endblock %}
+
+{% block extra_head %}
+<style>
+  .tw-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .tw-toolbar .form-input { flex: 1; min-width: 180px; }
+  .tw-list { display: flex; flex-direction: column; gap: 8px; }
+  .tw-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; min-height: 44px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius-sm); cursor: pointer;
+    transition: border-color .15s ease;
+  }
+  .tw-row:hover { border-color: var(--c-green); }
+  .tw-row input[type="checkbox"] {
+    width: 20px; height: 20px; flex-shrink: 0; cursor: pointer; accent-color: var(--c-green);
+  }
+  .tw-word { font-weight: 700; font-size: var(--fs-lg); }
+  .tw-ph { color: var(--c-text-secondary); font-size: var(--fs-sm); }
+  .tw-meaning {
+    flex: 1; min-width: 0; color: var(--c-text-secondary); font-size: var(--fs-sm);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tw-badge {
+    flex-shrink: 0; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--c-border); color: var(--c-text-secondary);
+  }
+  .tw-badge.mastered { color: var(--c-green); border-color: var(--c-green); }
+  .tw-badge.learning { color: var(--c-red); border-color: var(--c-red); }
+  .tw-badge.reviewing { color: var(--c-blue); border-color: var(--c-blue); }
+  .tw-unit { flex-shrink: 0; font-size: var(--fs-xs); color: var(--c-text-secondary); }
+  .tw-footer {
+    position: sticky; bottom: 0; margin-top: 16px; padding: 12px 0;
+    background: var(--c-bg); border-top: 1px solid var(--c-border);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .tw-empty { text-align: center; padding: 48px 16px; }
+  @media (max-width: 640px) {
+    .tw-meaning { display: none; }
+    .tw-row { padding: 10px 12px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{% csrf_token %}
+
+<div class="card" style="margin-bottom: 16px;">
+  <div class="card-header"><i class="ph ph-arrows-clockwise" style="color: var(--c-green);"></i> 今日已背 · 重复练习</div>
+  <p class="text-secondary text-sm" style="margin: 0;">
+    今天实际背过 / 复习过的单词都在这里（{{ today }}）。勾选后再练一轮：<strong>只作临时自测，不会改变掌握状态、复习排期和打卡统计</strong>。跨天后列表按日期自动更新。
+  </p>
+</div>
+
+{% if word_count > 0 %}
+<div class="tw-toolbar">
+  <input type="search" id="twSearch" class="form-input" placeholder="搜索单词或释义…" aria-label="搜索今日已背单词">
+  <button type="button" class="btn btn-secondary" id="twSelectAll"><i class="ph ph-check-square"></i> 全选</button>
+  <button type="button" class="btn btn-secondary" id="twClear"><i class="ph ph-square"></i> 清空</button>
+</div>
+
+<div id="twList" class="tw-list" role="group" aria-label="今日已背单词列表"></div>
+<p id="twNoResult" class="text-secondary text-sm hidden" style="text-align: center; padding: 24px 0;">没有匹配的单词</p>
+
+<div class="tw-footer">
+  <span class="text-secondary text-sm">已选 <strong id="twSelectedCount">0</strong> / {{ word_count }} 词</span>
+  <span style="flex: 1;"></span>
+  <a href="{% url 'words:learn_start' %}" class="btn btn-ghost"><i class="ph ph-arrow-left"></i> 返回背诵</a>
+  <button type="button" class="btn btn-primary btn-lg" id="twStartBtn" disabled>
+    <i class="ph ph-play"></i> 再练所选（<span id="twStartCount">0</span>）
+  </button>
+</div>
+{% else %}
+<div class="card tw-empty">
+  <i class="ph ph-coffee" style="font-size: 40px; color: var(--c-text-secondary);"></i>
+  <h3 style="margin: 12px 0 6px;">今天还没有背过单词</h3>
+  <p class="text-secondary text-sm">先去背一轮，背过的词会出现在这里，方便当天再巩固一遍。</p>
+  <a href="{% url 'words:learn_start' %}" class="btn btn-primary btn-lg" style="margin-top: 10px;"><i class="ph ph-play"></i> 去背单词</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+{% if word_count > 0 %}
+<script>
+(function () {
+  var allWords = {{ words_json|safe }};
+  var selected = {};
+  allWords.forEach(function (w) { selected[w.id] = true; }); // 默认全选，方便直接开练
+
+  var listEl = document.getElementById('twList');
+  var searchEl = document.getElementById('twSearch');
+  var countEl = document.getElementById('twSelectedCount');
+  var startCountEl = document.getElementById('twStartCount');
+  var startBtn = document.getElementById('twStartBtn');
+  var noResultEl = document.getElementById('twNoResult');
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function currentKeyword() {
+    return (searchEl.value || '').trim().toLowerCase();
+  }
+
+  function render() {
+    var kw = currentKeyword();
+    var html = '';
+    var visible = 0;
+    allWords.forEach(function (w) {
+      var hay = (w.w + ' ' + (w.m || '')).toLowerCase();
+      if (kw && hay.indexOf(kw) === -1) return;
+      visible++;
+      html += '<label class="tw-row" data-id="' + w.id + '">' +
+        '<input type="checkbox" data-id="' + w.id + '"' + (selected[w.id] ? ' checked' : '') + '>' +
+        '<span><span class="tw-word">' + escapeHtml(w.w) + '</span> <span class="tw-ph">' + escapeHtml(w.ph || '') + '</span></span>' +
+        '<span class="tw-meaning">' + escapeHtml(w.m || '') + '</span>' +
+        '<span class="tw-badge ' + escapeHtml(w.s) + '">' + escapeHtml(w.sn) + '</span>' +
+        (w.u ? '<span class="tw-unit">U' + w.u + '</span>' : '') +
+      '</label>';
+    });
+    listEl.innerHTML = html;
+    noResultEl.classList.toggle('hidden', visible > 0);
+    syncCount();
+  }
+
+  function syncCount() {
+    var n = 0;
+    allWords.forEach(function (w) { if (selected[w.id]) n++; });
+    countEl.textContent = n;
+    startCountEl.textContent = n;
+    startBtn.disabled = n === 0;
+  }
+
+  listEl.addEventListener('change', function (e) {
+    var cb = e.target.closest('input[type="checkbox"]');
+    if (!cb) return;
+    selected[parseInt(cb.dataset.id, 10)] = cb.checked;
+    syncCount();
+  });
+
+  searchEl.addEventListener('input', render);
+
+  document.getElementById('twSelectAll').addEventListener('click', function () {
+    var kw = currentKeyword();
+    allWords.forEach(function (w) {
+      var hay = (w.w + ' ' + (w.m || '')).toLowerCase();
+      if (kw && hay.indexOf(kw) === -1) return; // 全选只作用于当前筛选结果
+      selected[w.id] = true;
+    });
+    render();
+  });
+
+  document.getElementById('twClear').addEventListener('click', function () {
+    var kw = currentKeyword();
+    allWords.forEach(function (w) {
+      var hay = (w.w + ' ' + (w.m || '')).toLowerCase();
+      if (kw && hay.indexOf(kw) === -1) return;
+      selected[w.id] = false;
+    });
+    render();
+  });
+
+  startBtn.addEventListener('click', function () {
+    var ids = allWords.filter(function (w) { return selected[w.id]; }).map(function (w) { return w.id; });
+    if (!ids.length) return;
+    startBtn.disabled = true;
+    VOCAB_API.post('/api/today-practice/start/', { word_ids: ids })
+      .then(function (res) {
+        if (res && res.success && res.url) {
+          window.location.href = res.url;
+        } else {
+          startBtn.disabled = false;
+          if (typeof showToast === 'function') showToast((res && res.error) || '启动失败，请重试', 'error');
+        }
+      })
+      .catch(function () {
+        startBtn.disabled = false;
+        if (typeof showToast === 'function') showToast('请求失败，请重试', 'error');
+      });
+  });
+
+  render();
+})();
+</script>
+{% endif %}
+{% endblock %}

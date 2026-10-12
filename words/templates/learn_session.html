@@ -1,8 +1,8 @@
 {% extends 'base.html' %}
 {% load static %}
 
-{% block title %}背诵中{% endblock %}
-{% block page_title %}背诵中{% endblock %}
+{% block title %}{% if practice_only %}重复练习{% else %}背诵中{% endif %}{% endblock %}
+{% block page_title %}{% if practice_only %}重复练习{% else %}背诵中{% endif %}{% endblock %}
 {% block body_class %}session-page{% endblock %}
 
 {% block extra_head %}
@@ -38,12 +38,16 @@
   <header class="card learn-progress session-header" aria-label="背诵进度与计时">
     <div class="session-header-grid">
       <div class="session-header-side">
+        {% if practice_only %}
+        <a href="{% url 'words:today_words' %}" class="session-exit"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>返回今日列表</span></a>
+        {% else %}
         <a href="{% url 'words:learn_start' %}" class="session-exit"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>退出并保存</span></a>
+        {% endif %}
       </div>
       <div class="session-center">
         <div class="session-progress-row">
           <span class="text-secondary text-sm" id="progressText">-</span>
-          <span class="badge badge-learning">{{ mode }}</span>
+          {% if practice_only %}<span class="badge badge-review">自测 · 不计入正式进度</span>{% else %}<span class="badge badge-learning">{{ mode }}</span>{% endif %}
         </div>
         <div class="progress-bar" role="progressbar" aria-label="背诵进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressFill" class="progress-bar-fill" style="width: 0%;"></div></div>
         <input type="range" id="progressSlider" class="learn-progress-slider" min="0" max="1" value="0" step="1" aria-label="拖动跳转单词" title="拖动跳转单词">
@@ -90,7 +94,9 @@
     <div class="study-mark-actions">
       <button data-action="unknown" class="mark-btn btn btn-ghost-danger btn-lg">不会 <span class="kbd-hint">2</span></button>
       <button data-action="mastered" class="mark-btn btn btn-primary btn-lg">会 <span class="kbd-hint">1</span></button>
+      {% if not practice_only %}
       <button id="skipBtn" class="btn btn-secondary btn-lg" title="这个单词永远不会忘记，标记后不再出现在背诵/复习中"><i class="ph ph-check-fat"></i> 永不忘记 <span class="kbd-hint">3</span></button>
+      {% endif %}
     </div>
   </div>
 
@@ -122,12 +128,16 @@
   </div>
   <div class="flex gap-2" style="justify-content: center; margin-top: 6px; flex-wrap: wrap;">
     <button id="nextBatchBtn" class="btn btn-primary btn-lg"><i class="ph ph-arrow-right"></i> 继续下一批</button>
+    {% if practice_only %}
+    <a href="{% url 'words:today_words' %}" class="btn btn-secondary btn-lg"><i class="ph ph-sign-out"></i> 返回今日列表</a>
+    {% else %}
     <a href="{% url 'words:learn_start' %}" class="btn btn-secondary btn-lg"><i class="ph ph-sign-out"></i> 退出并保存</a>
+    {% endif %}
   </div>
 </div>
 <div id="completionCard" class="card word-card completion-card hidden">
   <div class="completion-stamp">完成</div>
-  <div class="card-header"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> 背诵完成</div>
+  <div class="card-header"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> {% if practice_only %}自测完成{% else %}背诵完成{% endif %}</div>
   <p class="text-secondary" id="completionMsg"></p>
   <div class="summary-grid">
     <div class="summary-card">
@@ -139,7 +149,15 @@
       <div class="summary-label">不会</div>
     </div>
   </div>
+  {% if practice_only %}
+  <p class="text-secondary text-sm" style="margin-top: 4px;">本次自测结果仅用于当场参考，未改变掌握状态、复习排期与打卡统计。</p>
+  <div class="flex gap-2" style="justify-content: center; margin-top: 10px; flex-wrap: wrap;">
+    <button id="practiceRetryWrongBtn" class="btn btn-primary btn-lg"><i class="ph ph-arrows-counter-clockwise"></i> 再练错词（<span id="practiceWrongCount">0</span>）</button>
+    <a href="{% url 'words:today_words' %}" class="btn btn-secondary btn-lg"><i class="ph ph-list-checks"></i> 返回今日列表</a>
+  </div>
+  {% else %}
   <a href="{% url 'words:dashboard' %}" class="btn btn-primary btn-lg"><i class="ph ph-house"></i> 返回仪表盘</a>
+  {% endif %}
 </div>
 </div>
 {% endblock %}
@@ -154,9 +172,13 @@
   var wordCount = wordsData.length;
   var mode = '{{ mode|escapejs }}';
   var checkMode = '{{ check|escapejs }}';
+  // 重复练习（今日已背 · 临时自测）：所有「会/不会」操作只更新页面内临时状态，
+  // 不调用任何写库 API，不写 sessionStorage/localStorage 断点，不上报学习时长。
+  var practiceOnly = {{ practice_only|yesno:'true,false' }};
+  var practiceWrongIds = []; // 本轮自测标记「不会」的词（用于「再练错词」）
 
-  // Restore index from sessionStorage (survives page refresh)
-  var savedIndex = sessionStorage.getItem('vocab-learn-idx');
+  // Restore index from sessionStorage (survives page refresh)；自测模式不恢复也不写入
+  var savedIndex = practiceOnly ? null : sessionStorage.getItem('vocab-learn-idx');
   var currentIndex = (savedIndex !== null) ? parseInt(savedIndex) : 0;
   var currentWord = null;
   var revealDone = false; // 是否已显示释义
@@ -176,14 +198,14 @@
   var passedThisAppearance = false; // 本次出现的阶段是否已完成（允许前进）
   var gateBaseTotal = wordCount;    // 高效模式进度基于原始单词数，不随穿插副本增加
   var gateBaseIds = {};             // 原始单词 ID 集合，用于过滤旧会话残留状态
-  try {
+  if (!practiceOnly) try {
     (JSON.parse(sessionStorage.getItem('vocab-learn-gate-ids') || '[]') || []).forEach(function (id) { gateDoneIds[id] = true; });
   } catch (e) {}
   var gateAutoShow = {{ gate_answer_show|yesno:'true,false' }}; // 答错后直接显示答案；否则先自己重试，连错 3 次才显示答案
 
   var counts = { mastered: 0, unknown: 0 };
-  // Restore counts so refresh keeps 会/不会统计
-  try {
+  // Restore counts so refresh keeps 会/不会统计；自测模式始终从零开始
+  if (!practiceOnly) try {
     var savedCounts = JSON.parse(sessionStorage.getItem('vocab-learn-counts') || 'null');
     if (savedCounts) {
       counts.mastered = savedCounts.mastered || 0;
@@ -196,15 +218,15 @@
   var totalBatches = Math.max(1, Math.ceil(wordCount / batchSize));
   var batchPaused = false; // 批完成暂停中，忽略操作键
   var batchStartCounts = { mastered: counts.mastered, unknown: counts.unknown };
-  try {
+  if (!practiceOnly) try {
     var savedBatchStart = JSON.parse(sessionStorage.getItem('vocab-learn-batch-start') || 'null');
     if (savedBatchStart) batchStartCounts = savedBatchStart;
   } catch (e) {}
 
-  // —— 跨会话断点续背：?resume=1 时用 localStorage 快照覆盖本次会话（词列表/配置/进度）——
+  // —— 跨会话断点续背：?resume=1 时用 localStorage 快照覆盖本次会话（词列表/配置/进度）；自测模式禁用 ——
   var RESUME_KEY = 'vocab-learn-resume';
   var resumeSnap = null;
-  if (/[?&]resume=1/.test(location.search)) {
+  if (!practiceOnly && /[?&]resume=1/.test(location.search)) {
     try { resumeSnap = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch (e) { resumeSnap = null; }
   }
   if (resumeSnap && Array.isArray(resumeSnap.words) && resumeSnap.words.length) {
@@ -251,7 +273,7 @@
     Object.keys(gateDoneIds).forEach(function (id) {
       if (gateBaseIds[id] === undefined) delete gateDoneIds[id];
     });
-    sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
+    if (!practiceOnly) sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
   })();
 
   var els = {
@@ -284,12 +306,14 @@
   };
 
   function saveProgress() {
+    if (practiceOnly) return; // 自测模式不留任何断点
     sessionStorage.setItem('vocab-learn-idx', currentIndex);
     persistResume();
   }
 
   // 断点快照：写入 localStorage 供跨会话「继续上次背诵」（超过 800 词的场次跳过，避免超限）
   function persistResume() {
+    if (practiceOnly) return; // 自测模式不覆盖正式背诵的断点
     try {
       if (wordCount === 0 || wordCount > 800 || wordCount === undefined) { localStorage.removeItem(RESUME_KEY); return; }
       localStorage.setItem(RESUME_KEY, JSON.stringify({
@@ -638,6 +662,15 @@
 
   function mark(action) {
     if (!currentWord || checked) return;
+    if (practiceOnly) {
+      // 临时自测：只更新页面内统计与错词清单，不写库、不留断点
+      counts[action] = (counts[action] || 0) + 1;
+      var wi = practiceWrongIds.indexOf(currentWord.id);
+      if (action === 'unknown' && wi === -1) practiceWrongIds.push(currentWord.id);
+      if (action === 'mastered' && wi !== -1) practiceWrongIds.splice(wi, 1); // 改判「会」则从错词移除
+      advance();
+      return;
+    }
     counts[action] = (counts[action] || 0) + 1;
     sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
     persistResume();
@@ -983,6 +1016,16 @@
     els.unknownCount.textContent = counts.unknown;
     var uniq = {};
     wordsData.forEach(function (w) { uniq[w.id] = 1; });
+    if (practiceOnly) {
+      // 自测完成：更新「再练错词」按钮；不清除任何存储（自测从未写入）
+      var msg = '本次自测共 ' + Object.keys(uniq).length + ' 个单词（不计入正式进度）';
+      els.completionMsg.textContent = msg;
+      var wrongBtn = document.getElementById('practiceRetryWrongBtn');
+      var wrongCountEl = document.getElementById('practiceWrongCount');
+      if (wrongCountEl) wrongCountEl.textContent = practiceWrongIds.length;
+      if (wrongBtn) wrongBtn.disabled = practiceWrongIds.length === 0;
+      return;
+    }
     var msg = '本次共学习 ' + Object.keys(uniq).length + ' 个单词';
     els.completionMsg.textContent = msg;
     sessionStorage.removeItem('vocab-learn-idx');
@@ -993,11 +1036,33 @@
     try { localStorage.removeItem('vocab-learn-resume'); } catch (e) {} // 背完清除断点
   }
 
+  // 自测模式：只重练本轮标记「不会」的词（纯前端重置，词已在启动时经服务端校验）
+  function practiceRetryWrong() {
+    if (!practiceOnly || !practiceWrongIds.length) return;
+    var wrongSet = {};
+    practiceWrongIds.forEach(function (id) { wrongSet[id] = true; });
+    wordsData = wordsData.filter(function (w) { return wrongSet[w.id]; });
+    if (!wordsData.length) return;
+    wordCount = wordsData.length;
+    currentIndex = 0;
+    counts = { mastered: 0, unknown: 0 };
+    batchStartCounts = { mastered: 0, unknown: 0 };
+    practiceWrongIds = [];
+    totalBatches = Math.max(1, Math.ceil(wordCount / batchSize));
+    var sliderEl = document.getElementById('progressSlider');
+    if (sliderEl) sliderEl.max = Math.max(0, wordCount - 1);
+    els.completionCard.classList.add('hidden');
+    els.wordCard.classList.remove('hidden');
+    renderWord();
+  }
+  var practiceRetryBtn = document.getElementById('practiceRetryWrongBtn');
+  if (practiceRetryBtn) practiceRetryBtn.addEventListener('click', practiceRetryWrong);
+
   // 继续下一批
   if (els.nextBatchBtn) els.nextBatchBtn.addEventListener('click', function () {
     batchPaused = false;
     batchStartCounts = { mastered: counts.mastered || 0, unknown: counts.unknown || 0 };
-    sessionStorage.setItem('vocab-learn-batch-start', JSON.stringify(batchStartCounts));
+    if (!practiceOnly) sessionStorage.setItem('vocab-learn-batch-start', JSON.stringify(batchStartCounts));
     els.batchCard.classList.add('hidden');
     els.wordCard.classList.remove('hidden');
     currentIndex++;
@@ -1010,8 +1075,9 @@
   document.getElementById('prevBtn').addEventListener('click', goPrev);
   document.getElementById('nextBtn').addEventListener('click', goNext);
 
-  // 永不忘记：标记后当前词直接跳过，不计入统计
+  // 永不忘记：标记后当前词直接跳过，不计入统计（自测模式无此按钮，函数不会触发）
   async function skipWord() {
+    if (practiceOnly) return;
     if (!currentWord || checked) return;
     var w = currentWord;
     if (!await appConfirm('标记「' + w.word + '」为永不忘记？之后它将不再出现在背诵/复习中。')) return;
@@ -1125,8 +1191,8 @@
     }
   });
 
-  // Init
-  if (wordCount > 0 && window.VocabStudyTimer) VocabStudyTimer.start();
+  // Init（自测模式不上报学习时长）
+  if (wordCount > 0 && window.VocabStudyTimer && !practiceOnly) VocabStudyTimer.start();
   if (wordCount === 0) {
     els.wordText.textContent = '没有可学习的单词';
     els.revealBtn.style.display = 'none';

@@ -20,7 +20,8 @@ from django.core.paginator import Paginator
 from django.db import close_old_connections, transaction
 from django.db.models import Q, Count, Sum, Avg, F, Max
 from django.http import JsonResponse, HttpResponse, FileResponse, Http404
-from django.shortcuts import render, get_object_or_404
+from django.shortcuts import render, get_object_or_404, redirect
+from django.urls import reverse
 from django.utils import timezone
 from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
@@ -248,6 +249,23 @@ def rollover_daily_picks(today=None):
     DailyPick.objects.filter(date__lt=today).delete()
 
 
+def _today_practiced_word_ids(today=None):
+    """今日已背单词 ID 集合（用于「今日已背 · 重复练习」）。
+
+    口径：当天背词明细（StudyRecord，忽略单独的「永不忘记/skip」记录）
+    ∪ 当天新学（StudyProgress.learned_date = today，补无明细的新学词）。
+    按本地日期划分，跨天后集合自然更新。
+    """
+    today = today or timezone.localdate()
+    record_ids = StudyRecord.objects.filter(
+        created_at__date=today,
+    ).exclude(action='skip').values_list('word_id', flat=True)
+    learned_ids = StudyProgress.objects.filter(
+        learned_date=today,
+    ).values_list('word_id', flat=True)
+    return set(record_ids) | set(learned_ids)
+
+
 def learn_start(request):
     units = Unit.objects.all()
     today = timezone.localdate()
@@ -265,6 +283,78 @@ def learn_start(request):
         'units': units, 'plan_today': plan_today, 'batch_size': settings_obj.batch_size,
         'batch_options': [10, 20, 30, 50], 'presets': presets,
         'daily_pick_count': daily_pick_count,
+        'today_practiced_count': len(_today_practiced_word_ids(today)),
+    })
+
+
+def today_words(request):
+    """今日已背列表页：查看今天背过/复习过的词，勾选后进入重复练习。"""
+    today = timezone.localdate()
+    ids = _today_practiced_word_ids(today)
+    progress_map = {
+        p.word_id: p for p in StudyProgress.objects.filter(word_id__in=ids)
+    }
+    status_names = dict(StudyProgress.STATUS_CHOICES)
+    word_items = []
+    for w in Word.objects.filter(id__in=ids).select_related('unit').only(
+            'id', 'word', 'phonetic_us', 'meanings', 'unit__number', 'list_number'):
+        p = progress_map.get(w.id)
+        meaning = w.meanings_display()
+        if len(meaning) > 40:
+            meaning = meaning[:40] + '…'
+        word_items.append({
+            'id': w.id,
+            'w': w.word,
+            'ph': w.phonetic_us,
+            'm': meaning,
+            'u': w.unit.number if w.unit else 0,
+            's': p.status if p else 'new',
+            'sn': status_names.get(p.status, '未学') if p else '未学',
+        })
+    # 按单元号 + 单元内序号排序，与词书顺序一致
+    word_items.sort(key=lambda x: (x['u'], x['id']))
+    settings_obj = UserSettings.get_settings()
+    return render(request, 'today_words.html', {
+        'words_json': json.dumps(word_items, ensure_ascii=False),
+        'word_count': len(word_items),
+        'batch_size': settings_obj.batch_size,
+        'today': today,
+    })
+
+
+@require_http_methods(['POST'])
+def api_today_practice_start(request):
+    """从今日已背列表启动重复练习。
+
+    服务端校验所选 ID 必须属于今日已背集合（不信任浏览器传入），
+    校验通过后暂存 session，由背诵页 practice=1 读取。
+    """
+    try:
+        data = json.loads(request.body or '{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'success': False, 'error': '请求数据格式错误'}, status=400)
+    raw_ids = data.get('word_ids') or []
+    if not isinstance(raw_ids, list):
+        return JsonResponse({'success': False, 'error': '参数格式错误'}, status=400)
+    try:
+        selected = {int(x) for x in raw_ids}
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': '单词 ID 格式错误'}, status=400)
+    valid_ids = _today_practiced_word_ids() & selected
+    if not valid_ids:
+        return JsonResponse({
+            'success': False,
+            'error': '所选单词不在今日已背列表中，请刷新后重选',
+        }, status=400)
+    # 保留用户勾选顺序（列表页按词书顺序勾选），去重后落 session
+    ordered = [w.id for w in Word.objects.filter(id__in=valid_ids)
+               .select_related('unit').order_by('unit__number', 'list_number')]
+    request.session['practice_word_ids'] = ordered
+    request.session['practice_date'] = timezone.localdate().isoformat()
+    return JsonResponse({
+        'success': True,
+        'count': len(ordered),
+        'url': reverse('words:learn_session') + '?practice=1',
     })
 
 
@@ -273,6 +363,23 @@ def learn_session(request):
     check = request.GET.get('check', 'none')
     unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     scope = request.GET.get('scope', 'unknown')
+
+    # 重复练习（今日已背 · 临时自测）：词表来自 session 中经服务端校验的 ID，
+    # 二次限制在今日已背集合内；强制纯背诵（不写任何正式学习数据）。
+    practice_only = request.GET.get('practice') == '1'
+    practice_ids = None
+    if practice_only:
+        check = 'none'
+        raw = request.session.get('practice_word_ids') or []
+        try:
+            session_ids = [int(x) for x in raw]
+        except (TypeError, ValueError):
+            session_ids = []
+        valid = _today_practiced_word_ids() & set(session_ids)
+        if not valid:
+            return redirect('words:today_words')
+        # 保持勾选时的词书顺序
+        practice_ids = [wid for wid in session_ids if wid in valid]
 
     settings_obj = UserSettings.get_settings()
     try:
@@ -304,7 +411,10 @@ def learn_session(request):
     query = Word.objects.all()
     daily_pick_ids = None
     fav_ids = None
-    if scope == 'daily':
+    if practice_only:
+        # 重复练习：词表完全由 session 中校验过的 ID 决定，忽略 scope/units 等参数
+        query = query.filter(id__in=practice_ids)
+    elif scope == 'daily':
         # 今日自选：以当天勾选清单为准（跨天未背完的自动顺延），忽略单元参数
         rollover_daily_picks()
         daily_pick_ids = list(
@@ -322,7 +432,7 @@ def learn_session(request):
         query = query.filter(unit__number__in=unit_ids)
 
     # 今日自选 / 收藏词汇均为「选了就背」，不做掌握状态/永不忘记过滤；其余范围沿用旧规则
-    if scope not in ('daily', 'favorites'):
+    if not practice_only and scope not in ('daily', 'favorites'):
         # 永不忘记的词（is_excluded）不再出现
         query = query.exclude(progress__is_excluded=True)
 
@@ -340,6 +450,10 @@ def learn_session(request):
 
     if mode in ('random', 'cover_en', 'cover_zh'):
         random.shuffle(words)
+    elif practice_only and practice_ids:
+        # 顺序模式按勾选顺序排列
+        practice_order = {wid: i for i, wid in enumerate(practice_ids)}
+        words.sort(key=lambda w: practice_order.get(w.id, 1 << 30))
     elif scope == 'daily' and daily_pick_ids:
         # 顺序模式下按用户勾选的先后排列
         pick_order = {wid: i for i, wid in enumerate(daily_pick_ids)}
@@ -381,9 +495,10 @@ def learn_session(request):
             'is_favorite': w.id in favorite_ids,
         })
 
-    # 用 session 记录词 ID 列表（供复习页用）
-    request.session['learn_words'] = [w['id'] for w in word_data]
-    request.session['learn_mode'] = mode
+    # 用 session 记录词 ID 列表（供复习页用）；重复练习不覆盖，避免污染正式背诵的断点
+    if not practice_only:
+        request.session['learn_words'] = [w['id'] for w in word_data]
+        request.session['learn_mode'] = mode
 
     return render(request, 'learn_session.html', {
         'word_count': len(word_data),
@@ -394,6 +509,7 @@ def learn_session(request):
         'gate_repeats': gate_repeats,
         'gate_interleave': gate_interleave,
         'words_json': json.dumps(word_data, ensure_ascii=False),
+        'practice_only': practice_only,
     })
 
 

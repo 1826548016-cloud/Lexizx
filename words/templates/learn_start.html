@@ -75,6 +75,11 @@
         <div class="quick-title">收藏词汇</div>
         <div class="quick-desc">只背收藏过的重点词，顺序按收藏时间倒序</div>
       </a>
+      <a href="{% url 'words:today_words' %}" class="quick-card">
+        <div class="quick-icon"><i class="ph ph-arrows-clockwise"></i></div>
+        <div class="quick-title">今日已背</div>
+        <div class="quick-desc">{% if today_practiced_count %}今日已背 <strong>{{ today_practiced_count }}</strong> 词 · 查看/再练（自测不改进度）{% else %}今天还没有背词记录，背过后可在这里再练一轮{% endif %}</div>
+      </a>
     </div>
   </div>
 
