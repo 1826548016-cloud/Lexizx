@@ -779,7 +779,7 @@ class GeneratedPaper(models.Model):
         default='pending', db_index=True, verbose_name='状态')
     error_message = models.TextField(blank=True, default='', verbose_name='失败原因')
     retry_count = models.IntegerField(default=0, verbose_name='已重试次数')
-    model_id = models.IntegerField(null=True, blank=True, verbose_name='使用的AI模型')
+    model_id = models.CharField(max_length=120, blank=True, default='', verbose_name='使用的AI模型')
     prompt_hash = models.CharField(max_length=64, blank=True, default='', verbose_name='提示词指纹')
     raw_response = models.TextField(blank=True, default='', verbose_name='AI原始返回')
     duration_ms = models.IntegerField(null=True, blank=True, verbose_name='生成耗时(毫秒)')
@@ -969,6 +969,12 @@ class AICallLog(models.Model):
         on_delete=models.SET_NULL, verbose_name='用户')
     practice = models.ForeignKey(WritingPractice, null=True, blank=True,
         on_delete=models.SET_NULL, related_name='ai_calls', verbose_name='关联练习')
+    translation_practice = models.ForeignKey(
+        'TranslationPractice', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='ai_calls', verbose_name='关联长难句练习')
+    cet6_practice = models.ForeignKey(
+        'Cet6TranslationPractice', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='ai_calls', verbose_name='关联六级翻译练习')
     action = models.CharField(max_length=40, default='exam_generate',
         verbose_name='调用功能')
     model_id = models.CharField(max_length=120, blank=True, default='',

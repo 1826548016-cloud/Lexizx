@@ -19,7 +19,7 @@ excluded module named _frozen_importlib - imported by importlib (optional), impo
 missing module named urllib.unquote - imported by urllib (conditional), bottle (conditional)
 missing module named urllib.quote - imported by urllib (conditional), bottle (conditional)
 missing module named urllib.urlencode - imported by urllib (conditional), bottle (conditional)
-missing module named posix - imported by posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional), os (conditional, optional), _pyrepl.unix_console (delayed, optional)
+missing module named posix - imported by os (conditional, optional), posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional), _pyrepl.unix_console (delayed, optional)
 missing module named resource - imported by posix (top-level)
 missing module named _dummy_thread - imported by numpy._core.arrayprint (optional), cffi.lock (conditional, optional)
 missing module named _posixshmem - imported by multiprocessing.resource_tracker (conditional), multiprocessing.shared_memory (conditional)

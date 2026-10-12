@@ -45,7 +45,7 @@
           <span class="text-secondary text-sm" id="progressText">-</span>
           <span class="badge badge-learning">{{ mode }}</span>
         </div>
-        <div class="progress-bar"><div id="progressFill" class="progress-bar-fill" style="width: 0%;"></div></div>
+        <div class="progress-bar" role="progressbar" aria-label="背诵进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressFill" class="progress-bar-fill" style="width: 0%;"></div></div>
         <input type="range" id="progressSlider" class="learn-progress-slider" min="0" max="1" value="0" step="1" aria-label="拖动跳转单词" title="拖动跳转单词">
       </div>
       <div class="session-header-side session-header-right">
@@ -174,6 +174,8 @@
   var gateCountedAs = {};           // wordId -> 'mastered' | 'unknown'（连续遍完成时计入的统计）
   var gateFlipped = {};             // wordId -> 穿插答错后已把「会」改记「不会」
   var passedThisAppearance = false; // 本次出现的阶段是否已完成（允许前进）
+  var gateBaseTotal = wordCount;    // 高效模式进度基于原始单词数，不随穿插副本增加
+  var gateBaseIds = {};             // 原始单词 ID 集合，用于过滤旧会话残留状态
   try {
     (JSON.parse(sessionStorage.getItem('vocab-learn-gate-ids') || '[]') || []).forEach(function (id) { gateDoneIds[id] = true; });
   } catch (e) {}
@@ -231,6 +233,27 @@
         persistResume();
   }
 
+  // 为高效模式建立稳定的原始单词序号；穿插副本沿用原词序号。
+  (function initGateProgressMeta() {
+    var nextBaseIndex = 0;
+    wordsData.forEach(function (word) {
+      var id = String(word.id);
+      if (word.interleave_no && gateBaseIds[id] !== undefined) {
+        word._gateBaseIndex = gateBaseIds[id];
+        return;
+      }
+      if (gateBaseIds[id] === undefined) {
+        gateBaseIds[id] = nextBaseIndex++;
+      }
+      word._gateBaseIndex = gateBaseIds[id];
+    });
+    gateBaseTotal = nextBaseIndex || wordCount;
+    Object.keys(gateDoneIds).forEach(function (id) {
+      if (gateBaseIds[id] === undefined) delete gateDoneIds[id];
+    });
+    sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
+  })();
+
   var els = {
     progressText: document.getElementById('progressText'),
     progressFill: document.getElementById('progressFill'),
@@ -286,9 +309,22 @@
   }
 
   function updateProgress() {
-    var pct = wordCount > 0 ? ((currentIndex + 1) / wordCount * 100) : 0;
-    els.progressText.textContent = (currentIndex + 1) + ' / ' + wordCount;
+    var displayTotal = wordCount;
+    var displayDone = currentIndex + 1;
+    if (checkMode === 'gates') {
+      displayTotal = gateBaseTotal;
+      var completed = Object.keys(gateDoneIds).filter(function (id) {
+        return gateBaseIds[id] !== undefined;
+      }).length;
+      var currentBaseIndex = currentWord && currentWord._gateBaseIndex !== undefined
+        ? currentWord._gateBaseIndex : currentIndex;
+      displayDone = Math.min(displayTotal, Math.max(completed, currentBaseIndex + 1));
+    }
+    var pct = displayTotal > 0 ? (displayDone / displayTotal * 100) : 0;
+    els.progressText.textContent = displayDone + ' / ' + displayTotal;
     els.progressFill.style.width = pct + '%';
+    var progressBar = els.progressFill.parentElement;
+    if (progressBar) progressBar.setAttribute('aria-valuenow', String(Math.round(pct)));
     var slider = document.getElementById('progressSlider');
     if (slider && !slider.dataset.dragging) slider.value = currentIndex;
   }
@@ -1102,17 +1138,18 @@
 })();
 </script>
 <script>
-// 会话页计时显示（仅展示，实际学习时长由 VocabStudyTimer 上报）
+// 会话页计时显示：与有效学习时间一致，切到后台自动暂停。
 (function () {
   var el = document.getElementById('sessionTimer');
   if (!el) return;
-  var start = Date.now();
+  var sessionClock = VocabActiveClock();
+  sessionClock.start();
   var t = setInterval(function () {
-    var s = Math.floor((Date.now() - start) / 1000);
+    var s = sessionClock.seconds();
     var m = Math.floor(s / 60); s = s % 60;
     el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
   }, 1000);
-  window.addEventListener('pagehide', function () { clearInterval(t); });
+  window.addEventListener('pagehide', function () { clearInterval(t); sessionClock.stop(); sessionClock.destroy(); });
 })();
 </script>
 {% endblock %}

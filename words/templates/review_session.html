@@ -1143,17 +1143,18 @@
 })();
 </script>
 <script>
-// 会话页计时显示（仅展示，实际学习时长由 VocabStudyTimer 上报）
+// 会话页计时显示：与有效学习时间一致，切到后台自动暂停。
 (function () {
   var el = document.getElementById('sessionTimer');
   if (!el) return;
-  var start = Date.now();
+  var sessionClock = VocabActiveClock();
+  sessionClock.start();
   var t = setInterval(function () {
-    var s = Math.floor((Date.now() - start) / 1000);
+    var s = sessionClock.seconds();
     var m = Math.floor(s / 60); s = s % 60;
     el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
   }, 1000);
-  window.addEventListener('pagehide', function () { clearInterval(t); });
+  window.addEventListener('pagehide', function () { clearInterval(t); sessionClock.stop(); sessionClock.destroy(); });
 })();
 </script>
 {% endblock %}

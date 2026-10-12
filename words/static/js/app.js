@@ -154,6 +154,9 @@ function showToast(message, type, duration) {
   }
   var t = document.createElement('div');
   t.className = 'toast toast-' + type;
+  t.setAttribute('role', type === 'error' || type === 'err' ? 'alert' : 'status');
+  t.setAttribute('aria-live', type === 'error' || type === 'err' ? 'assertive' : 'polite');
+  t.setAttribute('aria-atomic', 'true');
   t.textContent = message;
   container.appendChild(t);
   setTimeout(function () {
@@ -330,6 +333,30 @@ window.VocabStudyTimer = (function () {
 
   return { start: start, stop: stop, flush: flush };
 })();
+
+// 页面内作答/会话计时：只累计页面可见的有效时间，切后台立即暂停。
+window.VocabActiveClock = function (initialSeconds) {
+  var elapsed = Math.max(0, Number(initialSeconds) || 0) * 1000;
+  var running = false;
+  var lastAt = 0;
+  function collect() {
+    if (!running || document.hidden || !lastAt) return;
+    elapsed += Math.max(0, Date.now() - lastAt);
+    lastAt = Date.now();
+  }
+  function pause() { collect(); if (running) lastAt = 0; }
+  function resume() { if (running && !document.hidden && !lastAt) lastAt = Date.now(); }
+  function start() { running = true; lastAt = document.hidden ? 0 : Date.now(); }
+  function stop() { collect(); running = false; lastAt = 0; return seconds(); }
+  function seconds() { collect(); return Math.floor(elapsed / 1000); }
+  function onVisibility() { if (document.hidden) pause(); else if (running) resume(); }
+  document.addEventListener('visibilitychange', onVisibility);
+  return {
+    start: start, pause: pause, resume: resume, stop: stop,
+    seconds: seconds,
+    destroy: function () { document.removeEventListener('visibilitychange', onVisibility); }
+  };
+};
 
 // ===== 刷新当前页 =====
 // 全站共用的刷新按钮（base.html 顶栏）。刷新前先把学习时长同步给服务端，

@@ -68,7 +68,9 @@
     <span>我的译文</span>
     <span class="text-secondary text-sm">先独立翻译，解析与参考译文在下方折叠区</span>
   </div>
-  <textarea id="myTrans" class="form-input" rows="5" placeholder="写下你的译文…建议先抓主干（主谓宾），再处理从句与修饰成分。"></textarea>
+  <label class="sr-only" for="myTrans">我的译文</label>
+  <textarea id="myTrans" class="form-input" rows="5" aria-describedby="transHint" placeholder="写下你的译文…建议先抓主干（主谓宾），再处理从句与修饰成分。"></textarea>
+  <div id="transHint" class="sr-only">请先独立翻译，再提交 AI 批改。</div>
   <div class="flex justify-between items-center mt-2" style="flex-wrap:wrap; gap:8px;">
     <button type="button" class="btn btn-secondary btn-sm" onclick="resetPractice()"><i class="ph ph-arrow-counter-clockwise"></i> 清空重写</button>
     <button type="button" id="submitBtn" class="btn btn-primary" onclick="submitTranslation()"><i class="ph ph-check-square"></i> 提交批改</button>
@@ -81,7 +83,7 @@
     <span><i class="ph ph-chart-line"></i> 批改结果</span>
     <i class="ph ph-sparkle text-accent"></i>
   </div>
-  <div id="resultBox">
+  <div id="resultBox" role="status" aria-live="polite" aria-atomic="true">
     <div class="empty-state"><div class="empty-state-title">还没有批改</div><div>写下译文后点击「提交批改」，AI 将按五个维度评分并逐条指出问题依据</div></div>
   </div>
 </div>
@@ -130,9 +132,10 @@
 <script>
 var SID = {{ sentence.id }};
 var passScore = {{ pass_score }};
-var startedAt = Date.now();
+var practiceClock = VocabActiveClock();
+practiceClock.start();
 var timerId = setInterval(function () {
-  var s = Math.floor((Date.now() - startedAt) / 1000);
+  var s = practiceClock.seconds();
   var m = Math.floor(s / 60), r = s % 60;
   document.getElementById('transTimer').textContent =
     (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
@@ -145,14 +148,16 @@ function submitTranslation() {
   if (!trans) { showToast('请先输入你的译文', 'error'); return; }
   var btn = document.getElementById('submitBtn');
   btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
   var box = document.getElementById('resultBox');
   box.innerHTML = '<div class="report-loading">AI 五维批改中，请稍候…（主干 / 从句 / 词义 / 逻辑 / 中文表达）</div>';
-  var duration = Math.floor((Date.now() - startedAt) / 1000);
+  var duration = practiceClock.stop();
   VOCAB_API.post('{% url "words:api_trans_submit" sentence.id %}', {
     translation: trans, duration_seconds: duration
   }).then(function (res) {
     stopTimer();
     btn.disabled = false;
+    btn.removeAttribute('aria-busy');
     if (res.success && res.graded) {
       box.innerHTML = renderTransResult(res.result);
       highlightFragments(res.result.errors || []);
@@ -167,6 +172,7 @@ function submitTranslation() {
   }).catch(function () {
     stopTimer();
     btn.disabled = false;
+    btn.removeAttribute('aria-busy');
     box.innerHTML = '<div class="empty-state">请求失败，请检查网络或 AI 配置</div>';
     showToast('请求失败', 'error');
   });
@@ -242,15 +248,9 @@ function resetPractice() {
     '<div class="empty-state"><div class="empty-state-title">还没有批改</div><div>写下译文后点击「提交批改」</div></div>';
   var el = document.getElementById('transSource');
   el.textContent = el.getAttribute('data-raw') || el.textContent;
-  startedAt = Date.now();
-  if (!timerId) {
-    timerId = setInterval(function () {
-      var s = Math.floor((Date.now() - startedAt) / 1000);
-      var m = Math.floor(s / 60), r = s % 60;
-      document.getElementById('transTimer').textContent =
-        (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
-    }, 1000);
-  }
+  practiceClock.stop();
+  practiceClock = VocabActiveClock();
+  practiceClock.start();
   document.getElementById('myTrans').focus();
 }
 

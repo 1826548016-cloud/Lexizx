@@ -170,8 +170,9 @@
 <script>
 // ===== 状态 =====
 const EXAM_KEY = 'vocab-exam-state';
-var examState = null; // {phase, config, questions, answers, judgments, start}
+var examState = null; // {phase, config, questions, answers, judgments, elapsed}
 var examTimerInt = null;
+var examClock = null;
 // 逐题 AI 判定（不持久化）：judgeInFlight[id]=进行中的 Promise；judgeSeq[id]=最新请求序号
 var judgeInFlight = {};
 var judgeSeq = {};
@@ -244,7 +245,7 @@ async function startExam() {
       config: { scope, category, direction, count, units },
       questions: res.questions,
       answers: {},
-      start: Date.now(),
+      elapsed: 0,
     };
     saveExamState();
     renderAnswer();
@@ -524,9 +525,14 @@ function renderNavigator() {
 // ===== 计时 =====
 function startExamTimer() {
   if (window.VocabStudyTimer) VocabStudyTimer.start();
+  if (examClock) examClock.destroy();
+  examClock = VocabActiveClock(examState.elapsed || 0);
+  examClock.start();
   if (examTimerInt) clearInterval(examTimerInt);
   examTimerInt = setInterval(function () {
-    const sec = Math.floor((Date.now() - examState.start) / 1000);
+    const sec = examClock.seconds();
+    examState.elapsed = sec;
+    saveExamState();
     document.getElementById('examTimer').textContent = formatTime(sec);
   }, 1000);
 }
@@ -546,8 +552,9 @@ async function submitExam() {
     if (!await appConfirm('确定交卷吗？交卷后将自动更新单词掌握状态。')) return;
   }
   if (examTimerInt) { clearInterval(examTimerInt); examTimerInt = null; }
-
-  const duration = Math.floor((Date.now() - examState.start) / 1000);
+  const duration = examClock ? examClock.stop() : (examState.elapsed || 0);
+  examState.elapsed = duration;
+  if (examClock) { examClock.destroy(); examClock = null; }
   const isType = examState.config.direction === 'spelling' || examState.config.direction === 'meaning';
   const answers = examState.questions.map(q => {
     if (isType) {
@@ -716,6 +723,10 @@ function restoreExamState() {
     // 答题/结果阶段恢复
     if (st.phase === 'answer' && st.questions && st.questions.length) {
       examState = st;
+      if (!Number.isFinite(Number(examState.elapsed))) {
+        examState.elapsed = examState.start
+          ? Math.max(0, Math.floor((Date.now() - Number(examState.start)) / 1000)) : 0;
+      }
       if (!examState.judgments) examState.judgments = {};
       judgeInFlight = {};
       judgeSeq = {};

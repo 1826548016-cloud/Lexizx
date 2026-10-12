@@ -4,10 +4,10 @@
 
 ## 使用
 
-1. 下载 `dist.zip` 解压，双击 `word.exe`——弹出**原生桌面窗口**，首次启动约 1–2 分钟自动建库并导入词库与真题
+1. 从 [GitHub Releases](https://github.com/1826548016-cloud/Lexizx/releases/latest) 下载最新版 `word.exe`，双击运行——弹出**原生桌面窗口**，首次启动约 1–2 分钟自动建库并导入词库与真题
 2. AI 功能需先在「设置」页配置模型 API key
 3. **关闭窗口即退出程序**
 
-## 最后更新于2026年10月11日（v3.4.1）
+## 最后更新于2026年10月12日（v3.4.1）
 
-学习数据保存在 `word.exe` 同目录的 `data` 文件夹中，删除软件前请先备份。启动异常可查看 `data/launch.log`。如使用中发现bug欢迎提交 issue。
+学习数据保存在 `word.exe` 同目录的 `data` 文件夹中，删除软件前请先备份。启动异常可查看 `data/launch.log`。如使用中发现 bug，欢迎提交 issue。

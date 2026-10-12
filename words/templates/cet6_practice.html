@@ -53,7 +53,9 @@
     <span>我的英文译文</span>
     <span class="text-secondary text-sm">先独立翻译，参考译文与关键表达在下方折叠区</span>
   </div>
-  <textarea id="myTrans" class="form-input" rows="7" placeholder="将整段中文译成英文…建议先按意群拆句，再确定每句的时态、语态与衔接词。"></textarea>
+  <label class="sr-only" for="myTrans">我的英文译文</label>
+  <textarea id="myTrans" class="form-input" rows="7" aria-describedby="cet6TransHint" placeholder="将整段中文译成英文…建议先按意群拆句，再确定每句的时态、语态与衔接词。"></textarea>
+  <div id="cet6TransHint" class="sr-only">请先独立完成整段翻译，再提交 AI 批改。</div>
   <div class="flex justify-between items-center mt-2" style="flex-wrap:wrap; gap:8px;">
     <button type="button" class="btn btn-secondary btn-sm" onclick="resetPractice()"><i class="ph ph-arrow-counter-clockwise"></i> 清空重写</button>
     <button type="button" id="submitBtn" class="btn btn-primary" onclick="submitTranslation()"><i class="ph ph-check-square"></i> 提交批改</button>
@@ -66,7 +68,7 @@
     <span><i class="ph ph-chart-line"></i> 批改结果</span>
     <i class="ph ph-sparkle text-accent"></i>
   </div>
-  <div id="resultBox">
+  <div id="resultBox" role="status" aria-live="polite" aria-atomic="true">
     <div class="empty-state"><div class="empty-state-title">还没有批改</div><div>译完后点击「提交批改」，AI 按六级标准评分：信息完整 / 文化表达 / 语法句法 / 搭配词性 / 衔接自然</div></div>
   </div>
 </div>
@@ -105,9 +107,10 @@
 <script>
 var PID = {{ passage.id }};
 var passScore = {{ pass_name }};
-var startedAt = Date.now();
+var practiceClock = VocabActiveClock();
+practiceClock.start();
 var timerId = setInterval(function () {
-  var s = Math.floor((Date.now() - startedAt) / 1000);
+  var s = practiceClock.seconds();
   var m = Math.floor(s / 60), r = s % 60;
   document.getElementById('cet6Timer').textContent =
     (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
@@ -126,14 +129,16 @@ function submitTranslation() {
   if (!trans) { showToast('请先输入你的英文译文', 'error'); return; }
   var btn = document.getElementById('submitBtn');
   btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
   var box = document.getElementById('resultBox');
   box.innerHTML = '<div class="report-loading">AI 五维批改中，请稍候…（信息完整 / 文化表达 / 语法句法 / 搭配词性 / 衔接自然）</div>';
-  var duration = Math.floor((Date.now() - startedAt) / 1000);
+  var duration = practiceClock.stop();
   VOCAB_API.post('{% url "words:api_cet6_submit" passage.id %}', {
     translation: trans, duration: duration
   }).then(function (res) {
     stopTimer();
     btn.disabled = false;
+    btn.removeAttribute('aria-busy');
     if (res.success && res.result) {
       box.innerHTML = renderCet6Result(res.result);
       highlightFragments(res.result.errors || []);
@@ -150,6 +155,7 @@ function submitTranslation() {
   }).catch(function () {
     stopTimer();
     btn.disabled = false;
+    btn.removeAttribute('aria-busy');
     box.innerHTML = '<div class="empty-state">请求失败，请检查网络或 AI 配置</div>';
     showToast('请求失败', 'error');
   });
@@ -258,15 +264,9 @@ function resetPractice() {
     '<div class="empty-state"><div class="empty-state-title">还没有批改</div><div>译完后点击「提交批改」</div></div>';
   var el = document.getElementById('cet6Source');
   el.textContent = el.getAttribute('data-raw') || el.textContent;
-  startedAt = Date.now();
-  if (!timerId) {
-    timerId = setInterval(function () {
-      var s = Math.floor((Date.now() - startedAt) / 1000);
-      var m = Math.floor(s / 60), r = s % 60;
-      document.getElementById('cet6Timer').textContent =
-        (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
-    }, 1000);
-  }
+  practiceClock.stop();
+  practiceClock = VocabActiveClock();
+  practiceClock.start();
   document.getElementById('myTrans').focus();
 }
 

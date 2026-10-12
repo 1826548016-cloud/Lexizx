@@ -1029,6 +1029,7 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 .w-full     { width: 100%; }
 .hidden     { display: none !important; }
 .truncate   { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-only    { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* ===== Dashboard enhancements ===== */
 .hero-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }

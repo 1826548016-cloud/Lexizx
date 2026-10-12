@@ -47,7 +47,7 @@
         <tr>
           <td class="text-secondary text-sm">{{ l.created_at|date:"m-d H:i:s" }}</td>
           <td>{{ l.get_action_display }}</td>
-          <td>{% if l.practice.question %}{{ l.practice.question.year }} 年{% else %}-{% endif %}</td>
+          <td>{% if l.practice.question %}{{ l.practice.question.year }} 年{% elif l.translation_practice %}长难句 #{{ l.translation_practice.id }}{% elif l.cet6_practice %}六级 #{{ l.cet6_practice.id }}{% else %}-{% endif %}</td>
           <td class="text-secondary text-sm">{{ l.model_id }}</td>
           <td class="text-secondary text-sm">{{ l.duration_ms }} ms</td>
           <td>

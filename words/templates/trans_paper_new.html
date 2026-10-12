@@ -130,7 +130,7 @@
 
 <!-- 生成状态 -->
 <div class="card mb-4" id="statusCard" style="display:none;">
-  <div id="statusBox" class="text-secondary" style="padding:8px 0;"></div>
+  <div id="statusBox" class="text-secondary" role="status" aria-live="polite" aria-atomic="true" style="padding:8px 0;"></div>
 </div>
 
 <!-- 最近的组卷 -->
@@ -139,7 +139,8 @@
   <div class="card-header"><i class="ph ph-clock-counter-clockwise"></i> 我最近的 AI 卷</div>
   <div>
     {% for p in recent_papers %}
-    <a href="{% url 'words:trans_paper_detail' p.id %}" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light); text-decoration:none; color:inherit;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--c-border-light);">
+    <a href="{% url 'words:trans_paper_detail' p.id %}" style="display:flex; align-items:center; gap:10px; flex:1; min-width:240px; text-decoration:none; color:inherit;">
       <span style="flex:1; min-width:180px;">{{ p.title }}</span>
       <span class="text-secondary text-sm">{{ p.mode_name }} · {{ p.count }}/{{ p.total }} 句</span>
       {% if p.status == 'ready' %}
@@ -151,6 +152,10 @@
       {% endif %}
       <span class="text-secondary text-sm">{{ p.created_at }}</span>
     </a>
+      {% if p.status == 'failed' %}
+      <button type="button" class="btn btn-ghost btn-sm" style="color:var(--c-red);" onclick="deleteFailedTransPaper(event, {{ p.id }})" title="删除失败记录"><i class="ph ph-trash"></i> 删除</button>
+      {% endif %}
+    </div>
     {% endfor %}
   </div>
 </div>
@@ -171,6 +176,21 @@ function onModeChange() {
   document.getElementById('reuseGroup').style.opacity = (mode === 'weakness') ? '1' : '.55';
 }
 onModeChange();
+
+async function deleteFailedTransPaper(event, paperId) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (typeof appConfirm === 'function' && !await appConfirm('确定删除这条失败的组卷记录吗？')) return;
+  VOCAB_API.post('/api/trans/papers/' + paperId + '/delete/', {}).then(function (res) {
+    if (res && res.success) {
+      var row = event.target.closest('div[style*="border-bottom"]');
+      if (row) row.remove();
+      showToast('失败组卷记录已删除', 'success');
+    } else {
+      showToast((res && res.error) || '删除失败', 'error');
+    }
+  }).catch(function () { showToast('删除失败，请稍后重试', 'error'); });
+}
 
 function collectPayload() {
   var mode = currentMode();

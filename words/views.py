@@ -11,6 +11,7 @@ import hashlib
 import urllib.request
 import urllib.error
 import base64
+import math
 from datetime import date, timedelta, datetime
 from io import BytesIO
 
@@ -3788,6 +3789,7 @@ def api_exam_submit(request):
             duration = int(data.get('duration', 0) or 0)
         except (TypeError, ValueError):
             duration = 0
+        duration = max(0, min(duration, 7200))
         stored = request.session.get('exam_questions', [])
 
         if not stored:
@@ -5353,8 +5355,13 @@ def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_genera
 def _log_ai_call(action, practice, model_id, success, error, prompt, t0, duration_ms, response=''):
     """写入 AI 调用日志（内部辅助，异常不影响主流程）"""
     try:
+        log_kwargs = {
+            'practice': practice if isinstance(practice, WritingPractice) else None,
+            'translation_practice': practice if isinstance(practice, TranslationPractice) else None,
+            'cet6_practice': practice if isinstance(practice, Cet6TranslationPractice) else None,
+        }
         AICallLog.objects.create(
-            practice=practice,
+            **log_kwargs,
             action=action or 'exam_generate',
             model_id=model_id or '',
             success=bool(success),
@@ -5370,10 +5377,21 @@ def _log_ai_call(action, practice, model_id, success, error, prompt, t0, duratio
 def _bind_practice_to_last_log(action, practice):
     """把最近一条未关联练习的指定动作日志绑定到新建的练习记录"""
     try:
-        log = AICallLog.objects.filter(action=action, practice__isnull=True).order_by('-id').first()
+        log = (AICallLog.objects
+               .filter(action=action, practice__isnull=True,
+                       translation_practice__isnull=True,
+                       cet6_practice__isnull=True)
+               .order_by('-id').first())
         if log:
-            log.practice = practice
-            log.save(update_fields=['practice'])
+            if isinstance(practice, TranslationPractice):
+                log.translation_practice = practice
+                log.save(update_fields=['translation_practice'])
+            elif isinstance(practice, Cet6TranslationPractice):
+                log.cet6_practice = practice
+                log.save(update_fields=['cet6_practice'])
+            else:
+                log.practice = practice
+                log.save(update_fields=['practice'])
     except Exception:
         pass
 
@@ -5557,7 +5575,9 @@ def exam_history_page(request):
 def exam_logs_page(request):
     """AI 调用日志页"""
     action = request.GET.get('action', '')
-    qs = AICallLog.objects.select_related('practice__question').order_by('-created_at')
+    qs = AICallLog.objects.select_related(
+        'practice__question', 'translation_practice__sentence',
+        'cet6_practice__passage').order_by('-created_at')
     if action:
         qs = qs.filter(action=action)
     qs = qs[:300]
@@ -5578,7 +5598,9 @@ def exam_logs_page(request):
 @require_http_methods(['GET'])
 def api_exam_logs(request):
     """AI 调用日志 API：GET 列表，可按动作筛选"""
-    qs = AICallLog.objects.select_related('practice__question').order_by('-created_at')
+    qs = AICallLog.objects.select_related(
+        'practice__question', 'translation_practice__sentence',
+        'cet6_practice__passage').order_by('-created_at')
     action = request.GET.get('action', '')
     if action:
         qs = qs.filter(action=action)
@@ -5598,6 +5620,11 @@ def api_exam_logs(request):
             'response_preview': log.response_preview,
             'created_at': log.created_at.strftime('%Y-%m-%d %H:%M:%S') if log.created_at else '',
             'question': log.practice.question.year if log.practice and log.practice.question else None,
+            'practice_type': ('writing' if log.practice_id else
+                              'translation' if log.translation_practice_id else
+                              'cet6' if log.cet6_practice_id else None),
+            'practice_id': (log.practice_id or log.translation_practice_id
+                            or log.cet6_practice_id),
         })
     return JsonResponse({'success': True, 'logs': data})
 
@@ -6485,12 +6512,12 @@ def api_trans_submit(request, sid):
         user=_request_user(request),
         sentence=s,
         user_translation=user_trans,
-        duration_seconds=max(0, min(duration, 86400)),
+        duration_seconds=max(0, min(duration, 7200)),
     )
 
     content, err = builtin_ai_exam_call(
         trans_grading_prompt_v2(s.sentence_en, user_trans, s.sentence_zh or None),
-        temperature=0.3, data=data, action='trans_grade')
+        temperature=0.3, data=data, action='trans_grade', practice=practice)
     if err:
         # 无 AI 兜底：练习照存，返回对照与字面相似度
         practice.score_json = json.dumps({'ungraded': True}, ensure_ascii=False)
@@ -6506,9 +6533,13 @@ def api_trans_submit(request, sid):
         })
 
     score_data = extract_json_object(content)
-    if not score_data or not isinstance(score_data.get('scores'), dict):
+    score_data, validation_error = _validate_translation_grade_result(
+        score_data,
+        ('structure', 'clause', 'lexicon', 'logic', 'expression'))
+    if validation_error:
         practice.score_json = json.dumps(
-            {'ungraded': True, 'raw': (content or '')[:2000]}, ensure_ascii=False)
+            {'ungraded': True, 'validation_error': validation_error,
+             'raw': (content or '')[:2000]}, ensure_ascii=False)
         practice.save(update_fields=['score_json'])
         return JsonResponse({
             'success': True, 'graded': False,
@@ -6685,6 +6716,53 @@ TRANS_ERROR_TO_SYNTAX = {
     'meaning': ['non_finite', 'attributive_clause'],
     'expression': ['attributive_clause', 'parenthesis'],
 }
+
+
+def _validate_translation_grade_result(value, dimensions, allowed_error_tags=None):
+    """严格校验翻译批改 JSON，返回 (规范化结果, 错误信息)。"""
+    if not isinstance(value, dict):
+        return None, 'AI 返回不是 JSON 对象'
+    scores = value.get('scores')
+    if not isinstance(scores, dict):
+        return None, '缺少 scores 评分对象'
+    normalized_scores = {}
+    for key in dimensions:
+        raw = scores.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            return None, f'scores.{key} 不是有效数字'
+        if not 0 <= float(raw) <= 10:
+            return None, f'scores.{key} 超出 0-10 范围'
+        normalized_scores[key] = round(float(raw), 2)
+    total = value.get('total')
+    if isinstance(total, bool) or not isinstance(total, (int, float)) or not math.isfinite(total):
+        return None, 'total 不是有效数字'
+    if not 0 <= float(total) <= 50:
+        return None, 'total 超出 0-50 范围'
+    if abs(float(total) - sum(normalized_scores.values())) > 2.01:
+        return None, 'total 与分项分数不一致'
+    comments = value.get('comments')
+    model_translation = value.get('model_translation')
+    if not isinstance(comments, str) or not comments.strip():
+        return None, '缺少 comments 总评'
+    if not isinstance(model_translation, str) or not model_translation.strip():
+        return None, '缺少 model_translation 参考译文'
+    errors = value.get('errors')
+    if not isinstance(errors, list) or any(not isinstance(item, dict) for item in errors):
+        return None, 'errors 必须是对象数组'
+    suggestions = value.get('suggestions', [])
+    if not isinstance(suggestions, list) or any(not isinstance(item, str) for item in suggestions):
+        return None, 'suggestions 必须是字符串数组'
+    result = dict(value)
+    result['scores'] = normalized_scores
+    result['total'] = round(float(total), 2)
+    result['errors'] = errors
+    result['suggestions'] = suggestions
+    if allowed_error_tags is not None:
+        tags = value.get('error_tags', [])
+        if not isinstance(tags, list) or any(tag not in allowed_error_tags for tag in tags):
+            return None, 'error_tags 包含不支持的标签'
+        result['error_tags'] = list(dict.fromkeys(tags))[:6]
+    return result, None
 # 真题中文句法标签 → 句法代码（改写模式用）
 TRANS_ZH_SYNTAX_MAP = [
     ('定语从句', 'attributive_clause'), ('同位语', 'noun_clause'),
@@ -7026,7 +7104,8 @@ def _trans_run_paper(paper):
         settings_obj = UserSettings.get_settings()
         if settings_obj.exam_model_id:
             data['model_id'] = settings_obj.exam_model_id
-            paper.model_id = settings_obj.exam_model_id
+            paper.model_id = (AIModel.objects.filter(
+                id=settings_obj.exam_model_id).values_list('model_id', flat=True).first() or '')
         content, err = builtin_ai_exam_call(
             prompt, temperature=0.8, data=data, action='trans_paper_generate')
         if err:
@@ -7255,6 +7334,19 @@ def api_trans_paper_retry(request, pid):
     })
 
 
+@require_http_methods(['POST'])
+def api_trans_paper_delete(request, pid):
+    """删除失败的英语一 AI 组卷记录，保留已有练习数据。"""
+    paper = get_object_or_404(GeneratedPaper, id=pid)
+    if paper.status != 'failed':
+        return JsonResponse({'error': '只能删除失败的组卷记录'}, status=400)
+    sentence_ids = list(paper.questions.values_list('sentence_id', flat=True))
+    if TranslationPractice.objects.filter(sentence_id__in=sentence_ids).exists():
+        return JsonResponse({'error': '该组卷已有练习记录，不能删除，请保留后重试'}, status=409)
+    paper.delete()
+    return JsonResponse({'success': True, 'deleted': pid})
+
+
 # ============================================================
 # 六级汉译英专题（中文段落 → 英文表达；训练单位与英语一逐句英译汉不同）
 # ============================================================
@@ -7465,6 +7557,7 @@ def api_cet6_submit(request, pid):
         duration = max(0, int(data.get('duration') or 0))
     except (TypeError, ValueError):
         duration = 0
+    duration = max(0, min(duration, 7200))
 
     prev = _cet6_latest_practice_map().get(passage.id)
     prompt = cet6_grading_prompt_v2(
@@ -7476,32 +7569,37 @@ def api_cet6_submit(request, pid):
         settings_model_field='cet6_translation_model')
 
     score_data = extract_json_object(content) if content else None
-    if err or not isinstance(score_data, dict) or not score_data:
+    score_data, validation_error = _validate_translation_grade_result(
+        score_data,
+        ('accuracy', 'culture', 'grammar', 'collocation', 'fluency'),
+        allowed_error_tags=CET6_ERROR_TAGS)
+    if err or validation_error:
         # 无 AI 兜底：不评分，保存作答并展示参考译文供自评，次日安排重练
         sim = None
         if passage.reference_en:
             sim = round(difflib.SequenceMatcher(
                 None, user_trans.lower().split(), passage.reference_en.lower().split()).ratio(), 4)
-        Cet6TranslationPractice.objects.create(
+        fallback_practice = Cet6TranslationPractice.objects.create(
             passage=passage, user_translation=user_trans,
             score_json=json.dumps({'fallback': True, 'similarity': sim}, ensure_ascii=False),
             feedback='AI 服务暂不可用，已展示参考译文供自评；本次不计入达标统计。',
             error_tags=[], duration_seconds=duration,
             next_review_date=timezone.localdate() + timedelta(days=1),
             consecutive_correct=(prev.consecutive_correct if prev else 0))
+        _bind_practice_to_last_log('cet6_grade_passage', fallback_practice)
         return JsonResponse({
             'success': True, 'fallback': True,
             'reference_en': passage.reference_en or '',
             'message': 'AI 批改暂不可用，已保留本次作答并展示参考译文，稍后可重试。',
         })
 
-    error_tags = [t for t in (score_data.get('error_tags') or [])
-                  if t in CET6_ERROR_TAGS][:6]
+    error_tags = score_data.get('error_tags', [])
     practice = Cet6TranslationPractice.objects.create(
         passage=passage, user_translation=user_trans,
         score_json=json.dumps(score_data, ensure_ascii=False),
         feedback=str(score_data.get('comments') or ''),
         error_tags=error_tags, duration_seconds=duration)
+    _bind_practice_to_last_log('cet6_grade_passage', practice)
     total = _cet6_parse_total(practice)
     today = timezone.localdate()
     if total is not None and total >= CET6_GRADE_PASS and not error_tags:
@@ -7919,7 +8017,8 @@ def _cet6_run_paper(paper):
         settings_obj = UserSettings.get_settings()
         if settings_obj.cet6_translation_model_id:
             data['model_id'] = settings_obj.cet6_translation_model_id
-            paper.model_id = settings_obj.cet6_translation_model_id
+            paper.model_id = (AIModel.objects.filter(
+                id=settings_obj.cet6_translation_model_id).values_list('model_id', flat=True).first() or '')
         content, err = builtin_ai_exam_call(
             prompt, temperature=0.8, data=data, action='cet6_paper_generate',
             settings_model_field='cet6_translation_model')
@@ -8145,3 +8244,16 @@ def api_cet6_paper_retry(request, pid):
         'error': err_msg,
         'redirect': f'/workshop/cet6/papers/{paper.id}/',
     })
+
+
+@require_http_methods(['POST'])
+def api_cet6_paper_delete(request, pid):
+    """删除失败的六级 AI 组卷记录，避免失败草稿长期出现在最近记录中。"""
+    paper = get_object_or_404(GeneratedCet6Paper, id=pid)
+    if paper.status != 'failed':
+        return JsonResponse({'error': '只能删除失败的组卷记录'}, status=400)
+    passage_ids = list(paper.questions.values_list('passage_id', flat=True))
+    if Cet6TranslationPractice.objects.filter(passage_id__in=passage_ids).exists():
+        return JsonResponse({'error': '该组卷已有练习记录，不能删除，请保留后重试'}, status=409)
+    paper.delete()
+    return JsonResponse({'success': True, 'deleted': pid})
