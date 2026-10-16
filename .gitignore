@@ -14,8 +14,11 @@ media/
 *.log
 .DS_Store
 
-# 打包产物
+# 打包产物（中间 build 与产物均为可再生，日常清理）
 dist/
+build/
+product/dist/
+product/build/
 packaging/
 
 # 交接文档（仅本地协作使用，不提交到 GitHub）

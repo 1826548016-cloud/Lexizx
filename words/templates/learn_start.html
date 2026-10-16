@@ -534,28 +534,14 @@ function renderMission() {
 }
 renderMission();
 
-// 一键开始今日学习：按计划单元范围自动跳转
+// 一键开始今日学习：按计划单元范围与目标自动进入会话
 function quickStartToday(type) {
-  var unitCheckboxes = document.querySelectorAll('.unit-checkbox');
-
   if (type === 'review') {
-    // 复习模式：跳转复习范围选择页
-    window.location.href = '{% url "words:review_start" %}';
+    // 复习：直接进入按今日计划的复习会话（范围+目标由服务端按计划确定）
+    window.location.href = '{% url "words:review_session" %}?plan=1&mode=random&batch={{ batch_size }}';
   } else {
-    // 背新词：确保至少选了一个单元
-    var checked = document.querySelectorAll('.unit-checkbox:checked');
-    if (checked.length === 0) {
-      // 没有选单元时自动全选
-      unitCheckboxes.forEach(function(cb) { cb.checked = true; });
-    }
-    // 按今日计划自动补量：剩余 = 今日目标 − 已学（无计划或已完成则不限量）
-    var remaining = {{ plan_today.daily_new_target|default:0 }} - {{ plan_today.today_new_done|default:0 }};
-    var countInput = document.getElementById('countInput');
-    if (countInput) {
-      countInput.value = remaining > 0 ? remaining : '';
-      if (typeof syncCountHint === 'function') syncCountHint();
-    }
-    document.getElementById('learnForm').submit();
+    // 背新词：直接进入按今日计划的背诵会话（计划范围 + 新学剩余量）
+    window.location.href = '{% url "words:learn_session" %}?plan=1&mode=sequential&batch={{ batch_size }}&check=none';
   }
 }
 

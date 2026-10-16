@@ -29,10 +29,10 @@
   <div class="card" style="margin-bottom: 20px;">
     <div class="card-header">快速开始</div>
     <div class="quick-start-grid">
-      <a href="{% url 'words:review_session' %}?scope=all&mode=random&batch={{ batch_size }}&count={{ daily_review_target|default:50 }}" class="quick-card">
+      <a href="{% url 'words:review_session' %}?plan=1&mode=random&batch={{ batch_size }}" class="quick-card">
         <div class="quick-icon"><i class="ph ph-calendar-check"></i></div>
         <div class="quick-title">今日复习</div>
-        <div class="quick-desc">今日到期 {{ due_today|default:0 }} 个优先复习，不足自动补足旧词</div>
+        <div class="quick-desc">{% if plan %}{{ plan.name }}范围内{% else %}全范围{% endif %}复习 {{ daily_review_target|default:50 }} 个，今日到期优先、不足自动补足</div>
       </a>
 
       {% if new_yesterday > 0 %}

@@ -171,10 +171,8 @@
 
       <p class="settings-sub">
         集中管理用于 <strong>AI 单词导入（图片 / 文本 / 文件识别）、AI 复审、速记生成、小助手问答</strong> 的模型。
-        未单独指定时各功能自动使用「已启用」的模型。API 密钥可通过保险箱密码加密存储，重启软件后需重新解锁。
+        未单独指定时各功能自动使用「已启用」的模型。API 密钥仅保存在本机数据库，不会上传服务器。
       </p>
-
-      <div id="vaultBar" class="vault-bar vault-locked" style="margin-bottom: 16px;"></div>
 
       <div class="flex justify-between items-center" style="margin-bottom: 12px;">
         <span class="text-sm text-secondary"><span id="modelCount">0</span> 个模型</span>
@@ -332,7 +330,7 @@
             <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
             <span class="about-stat-title">最后更新</span>
           </div>
-          <div class="stat-value">2026-10-11</div>
+          <div class="stat-value">2026-10-15</div>
         </div>
       </div>
 
@@ -903,9 +901,8 @@ function loadAIModels() {
   });
 }
 
-// 全局 API 填写窗口保存成功后刷新本页模型列表与保险箱状态条
+// 全局 API 填写窗口保存成功后刷新本页模型列表
 window.aiModelModalOnSaved = function () {
-  if (window.Vault && Vault.refresh) Vault.refresh();
   return loadAIModels();
 };
 
@@ -965,7 +962,7 @@ function renderModelList() {
       '<div class="flex justify-between items-center">' +
         '<div style="min-width: 0;">' +
           '<strong>' + escapeHtml(m.display_name || m.model_id) + '</strong> ' + visionTag(m) +
-          '<div class="text-sm text-secondary" style="margin-top: 2px;">' + escapeHtml(p.name) + ' · ' + escapeHtml(m.model_id) + ' · ' + (m.has_key ? ('<i class="ph ph-' + (m.encrypted ? 'lock-key' : 'lock-open') + '"></i> ' + (m.encrypted ? '密钥已加密' : '密钥已保存')) : '未设置密钥') + ' · ' + escapeHtml(m.context || '128K') + '</div>' +
+          '<div class="text-sm text-secondary" style="margin-top: 2px;">' + escapeHtml(p.name) + ' · ' + escapeHtml(m.model_id) + ' · ' + (m.has_key ? '密钥已保存' : '未设置密钥') + ' · ' + escapeHtml(m.context || '128K') + '</div>' +
         '</div>' +
         '<div class="flex items-center gap-2">' +
           '<span class="text-sm" style="color: ' + (m.enabled ? 'var(--c-green)' : 'var(--c-text-3)') + ';">' + (m.enabled ? '已启用' : '已禁用') + '</span>' +
@@ -1005,7 +1002,6 @@ async function deleteAIModel(id) {
     if (res && res.success) {
       aiModels = aiModels.filter(function (x) { return x.id !== id; });
       renderModelList();
-      if (window.Vault && Vault.refresh) Vault.refresh();
       showToast('模型已删除', 'success');
     } else {
       showToast((res && res.error) || '删除失败', 'error');
@@ -1015,9 +1011,15 @@ async function deleteAIModel(id) {
   });
 }
 
-function editAIModel(id) {
+async function editAIModel(id) {
   var m = aiModels.find(function (x) { return x.id === id; });
   if (!m) return;
+  if (m.has_key) {
+    try {
+      var res = await VOCAB_API.post('/api/ai-models/key/', { id: id });
+      if (res && res.success) m.api_key = res.api_key || '';
+    } catch (e) {}
+  }
   openAddModel(m);
 }
 

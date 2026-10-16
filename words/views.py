@@ -23,6 +23,7 @@ from django.http import JsonResponse, HttpResponse, FileResponse, Http404
 from django.shortcuts import render, get_object_or_404, redirect
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
@@ -48,7 +49,6 @@ from .ai_exam_prompts import (
     CET6_SKILL_TAGS, CET6_SKILL_TAG_NAMES, CET6_TOPICS, CET6_ERROR_TAGS,
     CET6_DIFFICULTY_NAMES, CET6_LENGTH_RANGES, CET6_BATCH_SIZE,
 )
-from . import vault
 
 
 def parse_uncommon_pos(value):
@@ -165,9 +165,16 @@ def dashboard(request):
     if active_plan:
         plan_today = _get_plan_today_data(active_plan, today)
 
+    # 统一今日任务：顶部「今日新学/复习」的目标与完成数按计划（无计划则全局）
+    task = _get_today_task(today)
+
     context = {
         'today_new': today_new,
         'today_review': today_review,
+        'daily_new_done': task['new_done'],
+        'daily_new_target': task['new_target'],
+        'daily_review_done': task['review_done'],
+        'daily_review_target': task['review_target'],
         'settings': settings_obj,
         'plan': active_plan,
         'plan_today': plan_today,
@@ -364,6 +371,13 @@ def learn_session(request):
     unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     scope = request.GET.get('scope', 'unknown')
 
+    # 「按今日计划背新词」：有激活计划时限定计划单元范围与新学剩余量；
+    # 无计划时范围=全部单元、数量沿用默认（与既有行为一致）。
+    plan_mode = request.GET.get('plan') == '1'
+    plan_task = _get_today_task() if plan_mode else None
+    if plan_task:
+        unit_ids = plan_task['unit_nums']
+
     # 重复练习（今日已背 · 临时自测）：词表来自 session 中经服务端校验的 ID，
     # 二次限制在今日已背集合内；强制纯背诵（不写任何正式学习数据）。
     practice_only = request.GET.get('practice') == '1'
@@ -407,6 +421,9 @@ def learn_session(request):
                 count_limit = min(v, 5000)
         except (TypeError, ValueError):
             count_limit = None
+    elif plan_task and plan_task['new_remaining'] > 0:
+        # 按今日计划：新学剩余量作为本轮数量上限
+        count_limit = plan_task['new_remaining']
 
     query = Word.objects.all()
     daily_pick_ids = None
@@ -641,10 +658,13 @@ def review_start(request):
     presets = StudyPreset.objects.filter(preset_type='review')
     for p in presets:
         p.params_json = json.dumps(p.params or {}, ensure_ascii=False)
-    # 今日到期总数：供「今日复习」卡片展示（昨天学的今天自动到期）
+    # 今日复习数据：目标与到期数/昨日新学/今日新学均按计划范围（无计划则全部单元）
     today = timezone.localdate()
     yesterday = today - timedelta(days=1)
+    task = _get_today_task(today)
     base_progress = StudyProgress.objects.exclude(status='new').exclude(is_excluded=True)
+    if task['unit_nums']:
+        base_progress = base_progress.filter(word__unit__number__in=task['unit_nums'])
     due_today = base_progress.filter(
         Q(next_review__isnull=True) | Q(next_review__lte=today)).count()
     # 每日新学记录：昨天新学的词今天可专项复习；今天新学的明天可复习
@@ -653,7 +673,8 @@ def review_start(request):
     return render(request, 'review_start.html', {
         'units': units, 'batch_size': settings_obj.batch_size,
         'batch_options': [10, 20, 30, 50],
-        'daily_review_target': settings_obj.daily_review_target,
+        'daily_review_target': task['review_target'],
+        'plan': task['plan'],
         'due_today': due_today,
         'new_yesterday': new_yesterday,
         'new_today': new_today,
@@ -681,6 +702,16 @@ def review_session(request):
     unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     scope = request.GET.get('scope', 'all')
 
+    # 「按今日计划复习」：有激活计划时以计划单元范围为唯一范围、计划目标为复习量；
+    # 无计划时回退为全部单元 + 设置里的每日复习目标（与既有行为一致）。
+    plan_mode = request.GET.get('plan') == '1'
+    if plan_mode:
+        task = _get_today_task(today)
+        unit_ids = task['unit_nums']
+        review_target = task['review_target']
+    else:
+        review_target = settings_obj.daily_review_target
+
     # 随机复习模式
     random_mode = request.GET.get('mode') == 'random' or request.GET.get('random') == '1'
     if request.GET.get('mode') == 'random':
@@ -688,7 +719,7 @@ def review_session(request):
         request.session['random_review_done'] = []
 
     # 本轮抽取数量
-    target = max(1, settings_obj.daily_review_target)
+    target = max(1, review_target)
     if request.GET.get('count'):
         try:
             target = max(1, min(int(request.GET.get('count')), 500))
@@ -1597,10 +1628,10 @@ def api_mark_uncommon_pos(request, word_id):
 
 def api_today(request):
     today = timezone.localdate()
-    settings_obj = UserSettings.get_settings()
+    task = _get_today_task(today)
 
-    # 今日新词 - 如果没有设置今日新词，从新词中取 daily_new_target 个
-    new_words = Word.objects.filter(progress__isnull=True)[:settings_obj.daily_new_target]
+    # 今日新词：范围内未学词，取今日剩余量（不足则有多少取多少）
+    new_words = task['new_candidates'][:task['new_remaining']]
     new_list = [{
         'id': w.id,
         'word': w.word,
@@ -1610,20 +1641,8 @@ def api_today(request):
         'meanings_by_pos': w.get_meanings_by_pos(),
     } for w in new_words]
 
-    # 今日需复习：优先「今日到期」的词（昨天学的今天自动到期），
-    # 不够目标量时从更早已学但今天尚未安排的词中补足；今天刚学的安排在明天。
-    all_progress = list(StudyProgress.objects.exclude(status='new')
-                        .exclude(is_excluded=True).select_related('word'))
-    due_list = [p for p in all_progress
-                if p.next_review is None or p.next_review <= today]
-    if len(due_list) < settings_obj.daily_review_target:
-        due_ids = {p.id for p in due_list}
-        fill_pool = [p for p in all_progress if p.id not in due_ids
-                     and (p.learned_date is None or p.learned_date < today)]
-        fill_pool.sort(key=lambda p: (p.learned_date or today))
-        due_list.extend(fill_pool)
-    random.shuffle(due_list)
-    review_batch = due_list[:settings_obj.daily_review_target]
+    # 今日需复习：按统一优先级（昨天答错→昨天新学→今日到期→较早补足）取今日剩余量
+    review_batch = task['review_ordered'][:task['review_remaining']]
 
     review_list = [{
         'id': p.word.id,
@@ -1636,9 +1655,9 @@ def api_today(request):
         'uncommon_pos': parse_uncommon_pos(p.uncommon_pos),
     } for p in review_batch]
 
-    # 今日到期数：昨天学会/复习过的词今天自动到期（供界面「今日待复习」展示）
-    due_count = len([p for p in all_progress
-                     if p.next_review is None or p.next_review <= today])
+    # 今日到期数（范围内：昨天学会/复习过的词今天自动到期）
+    due_count = sum(1 for p in task['review_ordered']
+                    if p.next_review is None or p.next_review <= today)
 
     return JsonResponse({
         'new_words': new_list,
@@ -1646,8 +1665,8 @@ def api_today(request):
         'new_count': len(new_list),
         'review_count': len(review_list),
         'due_count': due_count,
-        'daily_new_target': settings_obj.daily_new_target,
-        'daily_review_target': settings_obj.daily_review_target,
+        'daily_new_target': task['new_target'],
+        'daily_review_target': task['review_target'],
     })
 
 
@@ -1795,6 +1814,80 @@ def api_preset_delete(request, preset_id):
         })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+def _get_today_task(today=None):
+    """统一今日学习任务：供仪表盘、背诵/复习首页与会话、api_today 共用。
+
+    有激活计划时，以 StudyPlan 为唯一来源（新学目标、复习目标、单元范围）；
+    无计划时回退到 UserSettings 的每日目标，范围为全部单元。
+    返回结构：
+      plan / unit_nums / new_target / review_target /
+      new_done / review_done / new_remaining / review_remaining /
+      new_candidates(queryset) / review_ordered(list[StudyProgress])
+    """
+    today = today or timezone.localdate()
+    settings_obj = UserSettings.get_settings()
+    plan = StudyPlan.objects.filter(is_active=True).first()
+    unit_nums = plan.get_unit_range() if plan else []
+
+    new_target = plan.daily_new_words if plan else settings_obj.daily_new_target
+    review_target = plan.daily_review_count if plan else settings_obj.daily_review_target
+
+    def _in_range(qs, via_word=False):
+        if not unit_nums:
+            return qs
+        field = 'unit__number__in' if via_word else 'word__unit__number__in'
+        return qs.filter(**{field: unit_nums})
+
+    # 今日完成数（排除今日新学词被重复计入复习）
+    new_done = _in_range(StudyProgress.objects.filter(learned_date=today)).count()
+    review_done = _in_range(
+        StudyProgress.objects.filter(last_review__date=today, review_count__gt=0)
+    ).exclude(learned_date=today).count()
+
+    # 新词候选：范围内尚无学习进度的词
+    new_candidates = _in_range(Word.objects.all(), via_word=True).filter(progress__isnull=True)
+
+    # 复习候选：范围内已学、未排除的词，按固定优先级排序
+    # ① 昨天答错 → ② 昨天新学 → ③ 今日到期 → ④ 较早已学补足(学习日期最久优先)
+    all_progress = list(_in_range(
+        StudyProgress.objects.exclude(status='new').exclude(is_excluded=True)
+    ).select_related('word'))
+    yesterday = today - timedelta(days=1)
+
+    def _is_due(p):
+        return p.next_review is None or p.next_review <= today
+
+    def _priority(p):
+        if p.learned_date == yesterday and p.error_count > 0:
+            return 0
+        if p.learned_date == yesterday:
+            return 1
+        if _is_due(p):
+            return 2
+        return 3
+
+    buckets = ([], [], [], [])
+    for p in all_progress:
+        buckets[_priority(p)].append(p)
+    for i in (0, 1, 2):
+        random.shuffle(buckets[i])
+    buckets[3].sort(key=lambda p: (p.learned_date or today))
+    review_ordered = buckets[0] + buckets[1] + buckets[2] + buckets[3]
+
+    return {
+        'plan': plan,
+        'unit_nums': unit_nums,
+        'new_target': new_target,
+        'review_target': review_target,
+        'new_done': new_done,
+        'review_done': review_done,
+        'new_remaining': max(0, new_target - new_done),
+        'review_remaining': max(0, review_target - review_done),
+        'new_candidates': new_candidates,
+        'review_ordered': review_ordered,
+    }
 
 
 def _get_plan_today_data(plan, today):
@@ -2465,8 +2558,6 @@ def _build_backup_payload(settings_obj):
         'version': '2.1',
         'exported_at': timezone.localtime().isoformat(),
         'settings': _backup_settings(settings_obj),
-        # 密钥保险箱元数据：跨机恢复后可用原密码解锁；密码本身不在备份中
-        'vault': {'salt': settings_obj.vault_salt, 'verifier': settings_obj.vault_verifier},
         # 词库本体（v2.1 起携带，用于跨端恢复时自动补齐缺失的单元/词条）
         'units': [
             {'number': u.number, 'name': u.name,
@@ -2548,9 +2639,7 @@ def _build_backup_payload(settings_obj):
                 'id': m.id, 'provider': m.provider, 'model_id': m.model_id,
                 'display_name': m.display_name, 'base_url': m.base_url,
                 'endpoint': m.endpoint,
-                # 已设保险箱：导出密文、绝不导出明文；未设：照旧导出明文（兼容旧版）
-                'api_key': '' if settings_obj.vault_salt else m.api_key,
-                'api_key_enc': m.api_key_encrypted if settings_obj.vault_salt else '',
+                'api_key': m.api_key,
                 'context': m.context,
                 'vision': m.vision, 'enabled': m.enabled,
             }
@@ -2739,6 +2828,7 @@ def api_restore(request):
         data = json.loads(content)
 
         skipped = {}  # 跳过计数（{表名: 条数}）
+        time_missing = 0  # 无可靠记录时间的背词记录条数（不伪装成恢复当天）
 
         def _resolve_word_id(row, table):
             """严格按 word 字符串映射当前库的 word_id；查不到返回 None（跳过）。
@@ -2756,7 +2846,6 @@ def api_restore(request):
                 # --- 0) 补齐词库：v2.1 备份携带 units+words，只增不改 ---
                 units_added = 0
                 words_added = 0
-                skipped_keys = 0
                 existing_numbers = set(Unit.objects.values_list('number', flat=True))
                 for u in data.get('units', []):
                     num = u.get('number')
@@ -2809,50 +2898,23 @@ def api_restore(request):
                 # 补齐后重建映射，供后续所有表带 word 的记录使用
                 exe_word_map = dict(Word.objects.values_list('word', 'id'))
 
-                # --- 0) 密钥保险箱：本机未设密码时采纳备份的 salt/校验串，
-                #       跨机恢复后用原来的保险箱密码即可解锁；本机已设密码则保留本机体系 ---
-                cur_s = UserSettings.get_settings()
-                backup_vault = data.get('vault') or {}
-                if backup_vault.get('salt') and not cur_s.vault_salt:
-                    cur_s.vault_salt = backup_vault['salt']
-                    cur_s.vault_verifier = backup_vault.get('verifier', '')
-                    cur_s.save(update_fields=['vault_salt', 'vault_verifier'])
-                    vault.lock()  # 校验体系变更，强制下次重新解锁
-
                 # --- 1) AI 模型（必须先恢复，其他表 FK 引用模型 id）---
                 id_map = {}
                 if data.get('ai_models'):
                     AIModel.objects.all().delete()
-                    local_salt = UserSettings.get_settings().vault_salt
-                    backup_salt = backup_vault.get('salt', '')
                     for m in data['ai_models']:
                         old_id = m.get('id')
-                        enc = m.get('api_key_enc', '') or ''
                         plain = m.get('api_key', '') or ''
-                        key_field = {'api_key': '', 'api_key_encrypted': ''}
-                        if enc and backup_salt and backup_salt == local_salt:
-                            # 同一密码体系（同机自恢复 / 已采纳备份保险箱）：密文原样可用
-                            key_field['api_key_encrypted'] = enc
-                        elif plain:
-                            # 旧版备份明文：本机已设密码且已解锁 → 立即加密；
-                            # 已设但锁定 → 暂存明文，输入密码解锁时自动迁移加密
-                            if local_salt and vault.is_unlocked():
-                                key_field['api_key_encrypted'] = vault.encrypt(plain)
-                            else:
-                                key_field['api_key'] = plain
-                        elif enc:
-                            # 备份为密文但密码体系不同且无明文：无法还原，需重新填写
-                            skipped_keys += 1
                         m2 = AIModel.objects.create(
                             provider=m.get('provider', 'openai'),
                             model_id=m['model_id'],
                             display_name=m.get('display_name', ''),
                             base_url=m.get('base_url', 'https://api.openai.com/v1'),
                             endpoint=m.get('endpoint', ''),
+                            api_key=plain,
                             context=m.get('context', '128K'),
                             vision=m.get('vision', True),
                             enabled=m.get('enabled', True),
-                            **key_field
                         )
                         if old_id:
                             id_map[old_id] = m2.id
@@ -2919,10 +2981,18 @@ def api_restore(request):
                         new_wid = _resolve_word_id(r, 'study_records')
                         if new_wid is None:
                             continue
-                        StudyRecord.objects.create(
+                        raw_ca = r.get('created_at')
+                        parsed = parse_datetime(raw_ca) if raw_ca else None
+                        if parsed is None:
+                            # 旧备份无可靠记录时间：跳过，不把历史词伪装成恢复当天
+                            time_missing += 1
+                            continue
+                        rec = StudyRecord.objects.create(
                             word_id=new_wid, action=r['action'],
                             source=r.get('source', 'learn'), mode=r.get('mode', ''),
                         )
+                        # created_at 为 auto_now_add，先创建再用 update 写回原始时间
+                        StudyRecord.objects.filter(pk=rec.pk).update(created_at=parsed)
 
                 # --- 5) 打卡 ---
                 if 'checkins' in data:
@@ -3091,6 +3161,8 @@ def api_restore(request):
         msg = '恢复完成'
         if words_added or units_added:
             msg += f'（已随备份补齐 {units_added} 个单元、{words_added} 个词条）'
+        if time_missing:
+            msg += f'（另有 {time_missing} 条背词记录因缺少时间被跳过，未计入今日已背）'
         if skipped:
             total_skipped = sum(skipped.values())
             msg += f'（跳过 {total_skipped} 条词库中不存在的单词数据：'
@@ -3098,8 +3170,6 @@ def api_restore(request):
             if not data.get('words'):
                 msg += ('。该备份由旧版本生成，不包含词库本体，新增的单元/单词无法随备份恢复；'
                         '请在新版程序中重新备份，或先在本机导入对应词库后再恢复')
-        if skipped_keys:
-            msg += f'（另有 {skipped_keys} 个模型的 API 密钥因保险箱密码不同无法恢复，请重新填写）'
         return JsonResponse({'success': True, 'message': msg})
     except Exception as e:
         import traceback
@@ -4783,35 +4853,19 @@ def resolve_ai_endpoint(base_url, endpoint):
     return base_url.rstrip('/') + '/chat/completions'
 
 
-VAULT_LOCKED_MSG = 'API 密钥已加密，请先到「设置 → AI 模型」输入保险箱密码解锁后再使用'
-VAULT_LOCKED_CODE = 'vault_locked'
-
-
 def _model_has_key(m):
-    return bool(getattr(m, 'api_key_encrypted', '') or m.api_key)
+    return bool(m.api_key)
 
 
 def _model_plain_key(m):
-    """供 AI 调用取明文密钥：加密字段优先（需保险箱已解锁），否则回退旧版明文。"""
-    enc = getattr(m, 'api_key_encrypted', '')
-    if enc:
-        if not vault.is_unlocked():
-            raise ValueError(VAULT_LOCKED_MSG)
-        return vault.decrypt(enc)
+    """供 AI 调用取明文密钥：密钥以明文保存在本机数据库，直接读取。"""
     return m.api_key or ''
 
 
 def _store_model_key(m, plain):
-    """按保险箱状态写入密钥：已配置密码则加密并清空明文，未配置则按旧版明文存储。"""
-    s = UserSettings.get_settings()
-    if s.vault_salt:
-        if not vault.is_unlocked():
-            raise ValueError(VAULT_LOCKED_MSG)
-        m.api_key_encrypted = vault.encrypt(plain) if plain else ''
-        m.api_key = ''
-    else:
-        m.api_key = plain or ''
-        m.api_key_encrypted = ''
+    """密钥以明文保存在本机数据库（不加密、不上传服务器）。"""
+    m.api_key = plain or ''
+    m.api_key_encrypted = ''
 
 
 def build_ai_headers(api_key):
@@ -4829,8 +4883,8 @@ def build_ai_headers(api_key):
 
 
 def serialize_ai_model(m):
-    """AIModel 数据库记录 → 前端 JSON。安全原则：任何情况下都不回传密钥明文，
-    只给 has_key 供前端展示状态；查看明文走 /api/vault/reveal/（需解锁）。"""
+    """AIModel 数据库记录 → 前端 JSON。密钥明文不回传列表，
+    只给 has_key 供前端展示状态；查看明文走 /api/ai-models/key/。"""
     return {
         'id': m.id,
         'provider': m.provider,
@@ -4839,7 +4893,6 @@ def serialize_ai_model(m):
         'base_url': m.base_url,
         'endpoint': m.endpoint,
         'has_key': _model_has_key(m),
-        'encrypted': bool(getattr(m, 'api_key_encrypted', '')),
         'context': m.context,
         'vision': m.vision,
         'enabled': m.enabled,
@@ -4929,16 +4982,8 @@ def api_ai_models(request):
     # 仅当请求显式带 api_key 时才改密钥；留空且模型已有密钥 = 不修改（启停等操作不受影响）
     if 'api_key' in data:
         plain_key = (data.get('api_key') or '').strip()
-        if plain_key:
-            try:
-                _store_model_key(m, plain_key)
-            except ValueError as e:
-                return JsonResponse({'error': str(e), 'code': VAULT_LOCKED_CODE}, status=403)
-        elif not _model_has_key(m):
-            try:
-                _store_model_key(m, '')
-            except ValueError as e:
-                return JsonResponse({'error': str(e), 'code': VAULT_LOCKED_CODE}, status=403)
+        if plain_key or not _model_has_key(m):
+            _store_model_key(m, plain_key)
     m.context = (data.get('context') or '128K').strip() or '128K'
     if 'vision' in data:
         m.vision = bool(data.get('vision'))
@@ -4950,124 +4995,13 @@ def api_ai_models(request):
     return JsonResponse({'success': True, 'model': serialize_ai_model(m)})
 
 
-# ==================== API 密钥保险箱 ====================
-
-def _vault_payload(s):
-    return {
-        'configured': bool(s.vault_salt),
-        'unlocked': vault.is_unlocked(),
-        'key_count': AIModel.objects.exclude(api_key='', api_key_encrypted='').count(),
-    }
-
-
-@require_http_methods(['GET'])
-def api_vault_status(request):
-    """保险箱状态：是否已设密码、本次运行是否已解锁、已保存密钥数量"""
-    s = UserSettings.get_settings()
-    return JsonResponse(_vault_payload(s))
-
-
 @require_http_methods(['POST'])
-def api_vault_setup(request):
-    """首次设置保险箱密码：校验串落库、内存解锁，并把存量明文密钥全部迁移为密文。"""
+def api_ai_model_key(request):
+    """查看某个模型的 API 密钥明文（密钥仅保存在本机，编辑模型时回填用）。"""
     try:
         data = json.loads(request.body)
     except Exception:
         return JsonResponse({'error': '请求格式错误'}, status=400)
-    password = data.get('password') or ''
-    if len(password) < 4:
-        return JsonResponse({'error': '密码至少 4 位'}, status=400)
-    s = UserSettings.get_settings()
-    if s.vault_salt:
-        return JsonResponse({'error': '已设置过保险箱密码，无需重复设置'}, status=400)
-
-    salt = vault.new_salt()
-    verifier = vault.make_verifier(password, salt)
-    key = vault.verify_password(password, salt, verifier)
-    vault.unlock_in_memory(key)
-    s.vault_salt = salt
-    s.vault_verifier = verifier
-    s.save(update_fields=['vault_salt', 'vault_verifier'])
-
-    migrated = 0
-    for m in AIModel.objects.exclude(api_key=''):
-        m.api_key_encrypted = vault.encrypt(m.api_key)
-        m.api_key = ''
-        m.save(update_fields=['api_key', 'api_key_encrypted'])
-        migrated += 1
-    return JsonResponse({'success': True, 'migrated': migrated, **_vault_payload(s)})
-
-
-@require_http_methods(['POST'])
-def api_vault_unlock(request):
-    """用密码解锁保险箱（派生密钥只存进程内存，重启程序自动锁定）。"""
-    try:
-        data = json.loads(request.body)
-    except Exception:
-        return JsonResponse({'error': '请求格式错误'}, status=400)
-    password = data.get('password') or ''
-    s = UserSettings.get_settings()
-    if not s.vault_salt:
-        return JsonResponse({'error': '尚未设置保险箱密码'}, status=400)
-    key = vault.verify_password(password, s.vault_salt, s.vault_verifier)
-    if key is None:
-        return JsonResponse({'error': '密码不正确'}, status=403)
-    vault.unlock_in_memory(key)
-    # 恢复旧版备份时可能暂存了明文密钥，解锁后立即迁移为密文
-    migrated = 0
-    for m in AIModel.objects.exclude(api_key=''):
-        m.api_key_encrypted = vault.encrypt(m.api_key)
-        m.api_key = ''
-        m.save(update_fields=['api_key', 'api_key_encrypted'])
-        migrated += 1
-    return JsonResponse({'success': True, 'migrated': migrated, **_vault_payload(s)})
-
-
-@require_http_methods(['POST'])
-def api_vault_lock(request):
-    """立即锁定保险箱。"""
-    vault.lock()
-    s = UserSettings.get_settings()
-    return JsonResponse({'success': True, **_vault_payload(s)})
-
-
-@require_http_methods(['POST'])
-def api_vault_reset(request):
-    """忘记密码的唯一办法：清空全部已保存的 API 密钥与保险箱密码，
-    模型的其他配置（服务商/模型ID/地址）保留，之后重新填写密钥即可。"""
-    try:
-        data = json.loads(request.body or b'{}')
-    except Exception:
-        data = {}
-    if not data.get('confirm'):
-        return JsonResponse({'error': '缺少确认参数'}, status=400)
-    vault.lock()
-    cleared = AIModel.objects.exclude(api_key='', api_key_encrypted='').update(
-        api_key='', api_key_encrypted='')
-    s = UserSettings.get_settings()
-    s.vault_salt = ''
-    s.vault_verifier = ''
-    s.save(update_fields=['vault_salt', 'vault_verifier'])
-    return JsonResponse({'success': True, 'cleared': cleared, **_vault_payload(s)})
-
-
-@require_http_methods(['POST'])
-def api_vault_reveal(request):
-    """查看某个模型的密钥明文：必须已设置密码并在本次运行中解锁。"""
-    try:
-        data = json.loads(request.body)
-    except Exception:
-        return JsonResponse({'error': '请求格式错误'}, status=400)
-    s = UserSettings.get_settings()
-    if not s.vault_salt:
-        # 未设置保险箱 = 没有加密也没有锁，明文可直接查看
-        try:
-            m = AIModel.objects.get(id=int(data.get('id') or 0))
-        except (AIModel.DoesNotExist, ValueError, TypeError):
-            return JsonResponse({'error': '模型不存在'}, status=404)
-        return JsonResponse({'success': True, 'api_key': m.api_key or ''})
-    if not vault.is_unlocked():
-        return JsonResponse({'error': '请先输入保险箱密码解锁', 'code': VAULT_LOCKED_CODE}, status=403)
     try:
         m = AIModel.objects.get(id=int(data.get('id') or 0))
     except (AIModel.DoesNotExist, ValueError, TypeError):
@@ -5351,16 +5285,13 @@ def api_ai_test(request):
     """测试 API 密钥与模型连通性（发送最小请求验证）"""
     try:
         data = json.loads(request.body)
-        # 支持只传 model_id：直接用库里已保存的配置（密钥在后端解密，不经过前端）
+        # 支持只传 model_id：直接用库里已保存的配置（密钥从本机库读取，不经过前端）
         if data.get('model_id') and not data.get('api_key'):
             try:
                 saved = AIModel.objects.get(id=int(data['model_id']))
             except (AIModel.DoesNotExist, ValueError, TypeError):
                 return JsonResponse({'error': '模型不存在'}, status=404)
-            try:
-                api_key = _model_plain_key(saved)
-            except ValueError:
-                return JsonResponse({'error': VAULT_LOCKED_MSG, 'code': VAULT_LOCKED_CODE}, status=403)
+            api_key = _model_plain_key(saved)
             base_url = saved.base_url
             endpoint = saved.endpoint
             model = saved.model_id
@@ -5417,7 +5348,7 @@ def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_genera
     """考研工坊统一 AI 调用：复用现有模型配置体系（支持 DeepSeek 等 OpenAI 兼容接口）
     模型优先级：前端指定 model_id > 设置页 settings_model_field 对应模型 > 考研写作工坊模型
     > 第一个启用模型。六级相关接口传 settings_model_field='cet6_translation_model' 即可复用
-    模型调用、密钥保险箱、调用日志和异常处理逻辑。
+    模型调用、调用日志和异常处理逻辑。
     调用详情（模型、耗时、成败、提示词预览）写入 AICallLog 供追溯。
     """
     import time as _time

@@ -1,15 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller 打包配置：把 Django 项目打成单 exe（原生窗口版，无控制台、无浏览器）。
 用法：在项目根目录执行
-    cd d:\\word\\001
-    pyinstaller word.spec
-产物：dist\\word\\word.exe
+    python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath product/build product/word.spec
+产物：product/dist/word.exe（中间文件与旧产物为可再生垃圾，日常清理，见 HANDOVER.md）
 """
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-# spec 文件位于 001/，项目根在上一层
+# spec 文件位于 product/，项目根在上一层
 PROJECT_ROOT = str(Path(SPECPATH).parent)
 
 # 关键：把项目根插入 sys.path 顶部，让 collect_submodules/collect_data_files

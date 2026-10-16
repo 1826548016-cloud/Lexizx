@@ -18,10 +18,10 @@
 <!-- 今日学习任务卡：唯一首要任务，首屏最突出 -->
 <section class="section task-section" aria-labelledby="dailyTaskTitle">
   <div class="card daily-task-card" id="dailyTaskCard"
-       data-new-today="{{ today_new }}"
-       data-new-target="{{ settings.daily_new_target|default:30 }}"
-       data-review-today="{{ today_review }}"
-       data-review-target="{{ settings.daily_review_target|default:50 }}"
+       data-new-today="{{ daily_new_done }}"
+       data-new-target="{{ daily_new_target }}"
+       data-review-today="{{ daily_review_done }}"
+       data-review-target="{{ daily_review_target }}"
        data-learn-url="{% url 'words:learn_start' %}"
        data-review-url="{% url 'words:review_start' %}">
     <div class="daily-task-main">
@@ -55,9 +55,9 @@
       <span class="stat-icon stat-icon--red"><i class="ph ph-book-open"></i></span>
       <div class="card-header">今日新词</div>
     </div>
-    <div class="stat-value">{{ today_new }} <span class="unit">/ {{ settings.daily_new_target|default:30 }}</span></div>
+    <div class="stat-value">{{ daily_new_done }} <span class="unit">/ {{ daily_new_target }}</span></div>
     <div class="progress-bar" style="margin-top: 12px;">
-      <div class="progress-bar-fill progress-fill--red" style="width: {% if settings.daily_new_target > 0 %}{% widthratio today_new settings.daily_new_target 100 %}{% else %}0{% endif %}%;"></div>
+      <div class="progress-bar-fill progress-fill--red" style="width: {% if daily_new_target > 0 %}{% widthratio daily_new_done daily_new_target 100 %}{% else %}0{% endif %}%;"></div>
     </div>
     <div class="stat-label" style="margin-top: 8px;">目标完成度</div>
   </div>
@@ -67,9 +67,9 @@
       <span class="stat-icon stat-icon--blue"><i class="ph ph-arrows-clockwise"></i></span>
       <div class="card-header">今日复习</div>
     </div>
-    <div class="stat-value">{{ today_review }} <span class="unit">/ {{ settings.daily_review_target|default:50 }}</span></div>
+    <div class="stat-value">{{ daily_review_done }} <span class="unit">/ {{ daily_review_target }}</span></div>
     <div class="progress-bar" style="margin-top: 12px;">
-      <div class="progress-bar-fill progress-fill--blue" style="width: {% if settings.daily_review_target > 0 %}{% widthratio today_review settings.daily_review_target 100 %}{% else %}0{% endif %}%;"></div>
+      <div class="progress-bar-fill progress-fill--blue" style="width: {% if daily_review_target > 0 %}{% widthratio daily_review_done daily_review_target 100 %}{% else %}0{% endif %}%;"></div>
     </div>
     <div class="stat-label" style="margin-top: 8px;">目标完成度</div>
   </div>

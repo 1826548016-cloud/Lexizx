@@ -13,14 +13,16 @@ from .models import (
     GeneratedCet6Question,
     GeneratedPaper,
     GeneratedQuestion,
+    StudyPlan,
     StudyProgress,
     StudyRecord,
     TranslationPractice,
     TranslationSentence,
     Unit,
+    UserSettings,
     Word,
 )
-from .views import _today_practiced_word_ids, _validate_translation_grade_result
+from .views import _get_today_task, _today_practiced_word_ids, _validate_translation_grade_result
 
 
 class TranslationGradeValidationTests(SimpleTestCase):
@@ -323,3 +325,174 @@ class TodayPracticeTests(TestCase):
         self.assertEqual(progress.next_review, timezone.localdate() + timedelta(days=3))
         checkin.refresh_from_db()
         self.assertEqual(checkin.today_correct, 5)
+
+
+class TodayTaskUnifiedTests(TestCase):
+    """统一今日计划与复习计划：目标来源、单元范围、复习顺序与会话取词一致。"""
+
+    def setUp(self):
+        self.unit1 = Unit.objects.create(number=1, name='U1', category='required')
+        self.unit2 = Unit.objects.create(number=2, name='U2', category='required')
+        self.w1 = [
+            Word.objects.create(word=f'u1-{i}', category='required', unit=self.unit1,
+                                list_number=i, meanings='["x"]')
+            for i in range(3)
+        ]
+        self.w2 = [
+            Word.objects.create(word=f'u2-{i}', category='required', unit=self.unit2,
+                                list_number=i, meanings='["x"]')
+            for i in range(3)
+        ]
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+
+    def _plan(self, new=10, review=10, units=()):
+        return StudyPlan.objects.create(
+            name='P', daily_new_words=new, daily_review_count=review,
+            unit_range=json.dumps(list(units)), is_active=True,
+        )
+
+    def _progress(self, word, learned_date=None, error_count=0, next_review=None):
+        return StudyProgress.objects.create(
+            word=word, status='learning', learned_date=learned_date,
+            error_count=error_count, next_review=next_review,
+        )
+
+    def test_no_plan_falls_back_to_settings(self):
+        s = UserSettings.get_settings()
+        s.daily_new_target = 20
+        s.daily_review_target = 40
+        s.save()
+        task = _get_today_task(self.today)
+        self.assertEqual(task['new_target'], 20)
+        self.assertEqual(task['review_target'], 40)
+        self.assertEqual(task['unit_nums'], [])
+
+    def test_plan_is_single_source_of_targets_and_range(self):
+        self._plan(new=5, review=8, units=[1])
+        task = _get_today_task(self.today)
+        self.assertEqual(task['new_target'], 5)
+        self.assertEqual(task['review_target'], 8)
+        self.assertEqual(task['unit_nums'], [1])
+
+    def test_plan_limits_new_candidates_to_unit_range(self):
+        self._plan(new=10, review=10, units=[1])
+        task = _get_today_task(self.today)
+        ids = set(task['new_candidates'].values_list('id', flat=True))
+        self.assertEqual(ids, {w.id for w in self.w1})
+
+    def test_plan_limits_review_candidates_to_unit_range(self):
+        for w in self.w1 + self.w2:
+            self._progress(w, learned_date=self.yesterday)
+        self._plan(new=0, review=10, units=[1])
+        task = _get_today_task(self.today)
+        ids = {p.word_id for p in task['review_ordered']}
+        self.assertEqual(ids, {w.id for w in self.w1})
+
+    def test_new_remaining_respects_today_done(self):
+        self._progress(self.w1[0], learned_date=self.today)
+        self._plan(new=3, review=10, units=[1])
+        task = _get_today_task(self.today)
+        self.assertEqual(task['new_done'], 1)
+        self.assertEqual(task['new_remaining'], 2)
+
+    def test_target_completed_yields_zero_remaining(self):
+        for w in self.w1:
+            self._progress(w, learned_date=self.today)
+        self._plan(new=3, review=10, units=[1])
+        task = _get_today_task(self.today)
+        self.assertEqual(task['new_done'], 3)
+        self.assertEqual(task['new_remaining'], 0)
+
+    def test_plan_range_with_no_new_words(self):
+        for w in self.w1:
+            self._progress(w, learned_date=self.yesterday)
+        self._plan(new=3, review=10, units=[1])
+        task = _get_today_task(self.today)
+        self.assertEqual(list(task['new_candidates']), [])
+        self.assertEqual(task['new_remaining'], 3)
+
+    def test_review_priority_order(self):
+        p_wrong = self._progress(self.w1[0], learned_date=self.yesterday, error_count=1, next_review=self.today)
+        p_new = self._progress(self.w1[1], learned_date=self.yesterday, next_review=self.today + timedelta(days=1))
+        p_due = self._progress(self.w1[2], learned_date=self.yesterday - timedelta(days=2), next_review=self.today)
+        p_old = self._progress(self.w2[0], learned_date=self.yesterday - timedelta(days=5), next_review=self.today + timedelta(days=1))
+        self._plan(new=0, review=10, units=[1, 2])
+        ordered = _get_today_task(self.today)['review_ordered']
+        self.assertEqual([p.id for p in ordered], [p_wrong.id, p_new.id, p_due.id, p_old.id])
+
+    def test_review_fills_beyond_due(self):
+        for w in self.w1:
+            self._progress(w, learned_date=self.yesterday, next_review=self.today + timedelta(days=1))
+        self._progress(self.w2[0], learned_date=self.yesterday, next_review=self.today)
+        self._plan(new=0, review=3, units=[1, 2])
+        task = _get_today_task(self.today)
+        self.assertGreaterEqual(len(task['review_ordered']), 3)
+
+    def test_api_today_matches_plan_scope(self):
+        self._plan(new=10, review=10, units=[1])
+        res = self.client.get(reverse('words:api_today'))
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        new_ids = {w['id'] for w in data['new_words']}
+        self.assertEqual(new_ids, {w.id for w in self.w1})
+        self.assertEqual(data['new_count'], 3)
+        self.assertEqual(data['daily_new_target'], 10)
+        self.assertEqual(data['daily_review_target'], 10)
+
+    def test_learn_session_plan_limits_units_and_count(self):
+        self._plan(new=2, review=10, units=[1])
+        res = self.client.get(reverse('words:learn_session') + '?plan=1')
+        self.assertEqual(res.status_code, 200)
+        words_json = json.loads(res.context['words_json'])
+        ids = [w['id'] for w in words_json]
+        self.assertEqual(ids, [self.w1[0].id, self.w1[1].id])
+
+    def test_review_session_plan_limits_units(self):
+        self._progress(self.w1[0], learned_date=self.yesterday, next_review=self.today)
+        self._progress(self.w2[0], learned_date=self.yesterday, next_review=self.today)
+        self._plan(new=0, review=1, units=[1])
+        res = self.client.get(reverse('words:review_session') + '?plan=1&mode=random')
+        self.assertEqual(res.status_code, 200)
+        words_json = json.loads(res.context['words_json'])
+        ids = {w['id'] for w in words_json}
+        self.assertEqual(ids, {self.w1[0].id})
+
+
+class RestoreBackupTimestampTests(TestCase):
+    """恢复备份时保留背词记录的原始时间，避免历史词被误计为当日已背。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.word = Word.objects.create(
+            word='restore-ts', category='required', unit=self.unit,
+            list_number=1, meanings='["x"]',
+        )
+
+    def _post_restore(self, records):
+        return self.client.post(
+            reverse('words:api_restore'),
+            data=json.dumps({'study_records': records}),
+            content_type='application/json',
+        )
+
+    def test_restore_preserves_original_created_at(self):
+        past = timezone.now() - timedelta(days=2)
+        res = self._post_restore([
+            {'word': self.word.word, 'action': 'known', 'source': 'learn',
+             'mode': '', 'created_at': past.isoformat()},
+        ])
+        self.assertEqual(res.status_code, 200)
+
+        rec = StudyRecord.objects.get(word=self.word)
+        self.assertEqual(rec.created_at.date(), past.date())
+        self.assertNotIn(self.word.id, _today_practiced_word_ids(timezone.localdate()))
+
+    def test_restore_skips_record_without_created_at(self):
+        res = self._post_restore([
+            {'word': self.word.word, 'action': 'known', 'source': 'learn', 'mode': ''},
+        ])
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(StudyRecord.objects.filter(word=self.word).exists())
+        self.assertNotIn(self.word.id, _today_practiced_word_ids(timezone.localdate()))
+        self.assertIn('因缺少时间被跳过', res.json()['message'])
