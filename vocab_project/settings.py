@@ -97,4 +97,9 @@ STATICFILES_DIRS = [
 
 BACKUP_DIR = DATA_DIR / 'backups'
 
+# 数据恢复：前端把整份备份（含词库本体）作为 JSON 请求体提交，
+# 学习数据增长后会超过 Django 默认 2.5MB 上限，触发 RequestDataTooBig
+# 导致「恢复失败 / 备份无法导入」。本机单用户、仅监听 127.0.0.1，放宽到 200MB。
+DATA_UPLOAD_MAX_MEMORY_SIZE = 200 * 1024 * 1024
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

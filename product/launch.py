@@ -182,35 +182,15 @@ def main_gui():
     class AppApi:
         """暴露给前端 JS 的原生能力（window.pywebview.api）"""
 
-        def __init__(self):
-            self._wins = {}  # url -> 已打开的外链窗口（避免重复开窗）
-
         def open_external(self, url):
-            """外链在应用内新开窗口打开，不离开程序、不调系统浏览器"""
+            """外链直接用电脑系统默认浏览器打开，不再用打包窗口内新开窗。"""
             if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
                 return False
             host = (urllib.parse.urlparse(url).hostname or '').lower()
             if host in ('127.0.0.1', 'localhost', '::1'):
-                return False  # 应用内地址不拦截
-            old = self._wins.get(url)
-            if old is not None:
-                try:
-                    old.show()
-                    old.load_url(url)
-                    return True
-                except Exception:
-                    self._wins.pop(url, None)
+                return False  # 应用内地址不拦截，避免把本机页面丢给浏览器
             try:
-                w = webview.create_window(
-                    url[:70], url,
-                    width=1100, height=760, min_size=(640, 480),
-                )
-
-                def _cleanup(key=url):
-                    self._wins.pop(key, None)
-
-                w.events.closed += _cleanup
-                self._wins[url] = w
+                webbrowser.open(url)
                 return True
             except Exception as e:
                 print(f'open_external 失败: {e}')

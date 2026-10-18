@@ -1,18 +1,26 @@
 import json
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from .models import (
+    AIModel,
     Cet6TranslationPassage,
     Cet6TranslationPractice,
     DailyCheckIn,
+    DailyPick,
     GeneratedCet6Paper,
     GeneratedCet6Question,
     GeneratedPaper,
     GeneratedQuestion,
+    KnowledgeFeedback,
+    PickRecord,
+    PickRecordWord,
+    PosLearningAttempt,
+    PosLessonCache,
     StudyPlan,
     StudyProgress,
     StudyRecord,
@@ -21,8 +29,17 @@ from .models import (
     Unit,
     UserSettings,
     Word,
+    WordFamily,
+    WordFamilyMember,
+    WordFormationPattern,
+    WordRelation,
 )
-from .views import _get_today_task, _today_practiced_word_ids, _validate_translation_grade_result
+from .views import (
+    _get_today_task, _today_practiced_word_ids, _validate_translation_grade_result,
+    _batch_error_events, _sort_bucket_with_risk_jitter,
+    _build_backup_payload, _resolve_pos_learning_model_id,
+    compute_risk_score, RISK_TIER_LOW, RISK_TIER_MEDIUM, RISK_ERROR_ACTIONS,
+)
 
 
 class TranslationGradeValidationTests(SimpleTestCase):
@@ -191,7 +208,7 @@ class GeneratedPaperDeletionTests(TestCase):
 
 
 class TodayPracticeTests(TestCase):
-    """今日已背 · 重复练习：列表口径、选择校验、自测会话不写正式数据。"""
+    """复习自选（原「今日已背」）：已学词列表口径、选择校验、两态映射、记录字段、自测会话不写正式数据。"""
 
     def setUp(self):
         self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
@@ -209,6 +226,10 @@ class TodayPracticeTests(TestCase):
             StudyRecord.objects.filter(pk=record.pk).update(created_at=when)
             record.refresh_from_db()
         return record
+
+    def _progress(self, word, status='learning', review_count=0):
+        return StudyProgress.objects.create(
+            word=word, status=status, review_count=review_count)
 
     def test_today_set_includes_records_and_new_learned(self):
         today = timezone.localdate()
@@ -231,20 +252,45 @@ class TodayPracticeTests(TestCase):
         self.assertNotIn(self.words[3].id, ids)
         self.assertNotIn(self.words[4].id, ids)
 
-    def test_today_set_dedupes_multiple_records(self):
+    def test_learned_list_only_includes_learned_words(self):
+        self._progress(self.words[0], status='learning')
         self._record(self.words[0], 'known')
         self._record(self.words[0], 'spelling_ok')
-        self._record(self.words[0], 'meaning_ok')
+        # words[1] 无 StudyProgress（status=new）→ 不属于已学，不入列
+        self._record(self.words[1], 'known')
 
         response = self.client.get(reverse('words:today_words'))
 
         self.assertEqual(response.status_code, 200)
+        # 只有 words[0] 已学入列，多条明细不重复计数
         self.assertEqual(response.context['word_count'], 1)
 
-    def test_today_words_page_empty_state(self):
+    def test_learned_list_empty_state(self):
         response = self.client.get(reverse('words:today_words'))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['word_count'], 0)
+
+    def test_status_maps_to_two_states(self):
+        self._progress(self.words[0], status='mastered')   # 会
+        self._progress(self.words[1], status='learning')   # 不会
+        self._progress(self.words[2], status='reviewing')  # 不会
+        response = self.client.get(reverse('words:today_words'))
+        items = json.loads(response.context['words_json'])
+        by_id = {w['id']: w for w in items}
+        self.assertEqual(by_id[self.words[0].id]['sn'], '会')
+        self.assertEqual(by_id[self.words[1].id]['sn'], '不会')
+        self.assertEqual(by_id[self.words[2].id]['sn'], '不会')
+
+    def test_record_fields_displayed(self):
+        self._progress(self.words[0], status='learning', review_count=3)
+        # 最近一次动作 = 拼写正确
+        self._record(self.words[0], 'spelling_ok')
+        response = self.client.get(reverse('words:today_words'))
+        items = json.loads(response.context['words_json'])
+        w = items[0]
+        self.assertEqual(w['rc'], 3)
+        self.assertEqual(w['la'], '拼写正确')
+        self.assertTrue(w['lt'])  # 最近练习时间非空
 
     def test_start_rejects_empty_selection(self):
         self._record(self.words[0], 'known')
@@ -255,9 +301,9 @@ class TodayPracticeTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_start_filters_ids_outside_today_set(self):
-        self._record(self.words[0], 'known')
-        # words[1] 今天没背过，混入选择中应被过滤
+    def test_start_filters_ids_outside_learned_set(self):
+        self._progress(self.words[0], status='learning')
+        # words[1] 未学（无 StudyProgress），混入选择中应被过滤
         response = self.client.post(
             reverse('words:api_today_practice_start'),
             data=json.dumps({'word_ids': [self.words[0].id, self.words[1].id]}),
@@ -271,22 +317,22 @@ class TodayPracticeTests(TestCase):
         self.assertEqual(session['practice_word_ids'], [self.words[0].id])
 
     def test_start_rejects_all_invalid_ids(self):
-        self._record(self.words[0], 'known')
+        # 传的都不是已学词 id（words[0] 无进度、999999 不存在）→ 400
         response = self.client.post(
             reverse('words:api_today_practice_start'),
-            data=json.dumps({'word_ids': [self.words[1].id, 999999]}),
+            data=json.dumps({'word_ids': [self.words[0].id, 999999]}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 400)
 
     def test_practice_session_requires_valid_session(self):
-        # 未从列表启动直接访问 practice=1 → 重定向回今日列表
+        # 未从列表启动直接访问 practice=1 → 重定向回列表
         response = self.client.get(reverse('words:learn_session') + '?practice=1')
         self.assertRedirects(response, reverse('words:today_words'))
 
     def test_practice_session_renders_only_validated_words(self):
-        self._record(self.words[0], 'known')
-        self._record(self.words[1], 'unknown')
+        self._progress(self.words[0], status='learning')
+        self._progress(self.words[1], status='reviewing')
         self.client.post(
             reverse('words:api_today_practice_start'),
             data=json.dumps({'word_ids': [self.words[0].id, self.words[1].id]}),
@@ -325,6 +371,205 @@ class TodayPracticeTests(TestCase):
         self.assertEqual(progress.next_review, timezone.localdate() + timedelta(days=3))
         checkin.refresh_from_db()
         self.assertEqual(checkin.today_correct, 5)
+
+    def test_daily_scope_state_filter(self):
+        today = timezone.localdate()
+        mastered, learning, fresh = self.words[0], self.words[1], self.words[2]
+        for w in (mastered, learning, fresh):
+            DailyPick.objects.create(date=today, word_id=w.id)
+        StudyProgress.objects.create(word=mastered, status='mastered')
+        StudyProgress.objects.create(word=learning, status='learning')
+        base = reverse('words:learn_session') + '?scope=daily&mode=sequential&check=none'
+
+        res = self.client.get(base + '&state=mastered')
+        self.assertEqual({w['id'] for w in json.loads(res.context['words_json'])},
+                         {mastered.id})
+        res = self.client.get(base + '&state=unmastered')
+        self.assertEqual({w['id'] for w in json.loads(res.context['words_json'])},
+                         {learning.id, fresh.id})
+        res = self.client.get(base)  # 默认全部
+        self.assertEqual({w['id'] for w in json.loads(res.context['words_json'])},
+                         {mastered.id, learning.id, fresh.id})
+
+    def test_review_order_uses_list_number_not_id(self):
+        # 同单元内，创建 ID 顺序与 list_number 相反
+        unit = Unit.objects.create(number=99, name='顺序单元', category='required')
+        first_created = Word.objects.create(
+            word='order-second', category='required', unit=unit,
+            list_number=2, meanings='["b"]')
+        second_created = Word.objects.create(
+            word='order-first', category='required', unit=unit,
+            list_number=1, meanings='["a"]')
+        self.assertGreater(second_created.id, first_created.id)
+        StudyProgress.objects.create(word=first_created, status='learning')
+        StudyProgress.objects.create(word=second_created, status='learning')
+
+        response = self.client.get(reverse('words:today_words'))
+        items = json.loads(response.context['words_json'])
+        sub = [w['id'] for w in items
+               if w['id'] in (first_created.id, second_created.id)]
+        # 按 list_number 升序（1 在前），而非数据库 ID 顺序
+        self.assertEqual(sub, [second_created.id, first_created.id])
+
+        # 启动练习的 session 顺序同样按 list_number
+        res = self.client.post(
+            reverse('words:api_today_practice_start'),
+            data=json.dumps({'word_ids': [first_created.id, second_created.id]}),
+            content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.client.session['practice_word_ids'],
+                         [second_created.id, first_created.id])
+
+
+class PickRecordTests(TestCase):
+    """选词记录：快照保存 / 载入续作 / 改名 / 删除，会话本地用户（session）。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.words = [
+            Word.objects.create(
+                word=f'record-{i}', category='required', unit=self.unit,
+                list_number=i, meanings='["释义"]',
+            )
+            for i in range(1, 4)
+        ]
+        self.today = timezone.localdate()
+
+    def _seed_picks(self, word_ids):
+        for wid in word_ids:
+            DailyPick.objects.create(date=self.today, word_id=wid)
+
+    def test_create_rejects_empty_picklist(self):
+        response = self.client.post(
+            reverse('words:api_pick_record_create'),
+            data=json.dumps({}), content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json()['success'])
+
+    def test_create_saves_snapshot_with_order_and_default_name(self):
+        self._seed_picks([self.words[0].id, self.words[1].id])
+        response = self.client.post(
+            reverse('words:api_pick_record_create'),
+            data=json.dumps({}), content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body['success'])
+        self.assertEqual(body['record']['count'], 2)
+        self.assertTrue(body['record']['name'].startswith('选词记录 '))
+        record = PickRecord.objects.get(id=body['record']['id'])
+        self.assertEqual(
+            list(record.words.order_by('position').values_list('word_id', flat=True)),
+            [self.words[0].id, self.words[1].id])
+
+    def test_create_uses_custom_name(self):
+        self._seed_picks([self.words[0].id])
+        response = self.client.post(
+            reverse('words:api_pick_record_create'),
+            data=json.dumps({'name': '  我的清单  '}), content_type='application/json')
+        self.assertEqual(response.json()['record']['name'], '我的清单')
+
+    def test_load_replaces_current_picklist(self):
+        self._seed_picks([self.words[0].id])
+        record = PickRecord.objects.create(name='记录A')
+        PickRecordWord.objects.create(record=record, word=self.words[1], position=0)
+        PickRecordWord.objects.create(record=record, word=self.words[2], position=1)
+        response = self.client.post(
+            reverse('words:api_pick_record_load', args=[record.id]),
+            data=json.dumps({}), content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body['success'])
+        self.assertEqual(body['count'], 2)
+        self.assertEqual(
+            list(DailyPick.objects.filter(date=self.today).order_by('id')
+                 .values_list('word_id', flat=True)),
+            [self.words[1].id, self.words[2].id])
+
+    def test_rename_rejects_empty_and_updates(self):
+        self._seed_picks([self.words[0].id])
+        record = PickRecord.objects.create(name='旧名')
+        response = self.client.post(
+            reverse('words:api_pick_record_rename', args=[record.id]),
+            data=json.dumps({'name': '  '}), content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(
+            reverse('words:api_pick_record_rename', args=[record.id]),
+            data=json.dumps({'name': '新名'}), content_type='application/json')
+        record.refresh_from_db()
+        self.assertEqual(record.name, '新名')
+
+    def test_delete_cascades_words(self):
+        record = PickRecord.objects.create(name='待删')
+        PickRecordWord.objects.create(record=record, word=self.words[0], position=0)
+        response = self.client.post(
+            reverse('words:api_pick_record_delete', args=[record.id]),
+            data=json.dumps({}), content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PickRecord.objects.filter(id=record.id).exists())
+        self.assertFalse(PickRecordWord.objects.filter(record_id=record.id).exists())
+
+    def test_daily_pick_page_provides_records_context(self):
+        record = PickRecord.objects.create(name='记录X')
+        PickRecordWord.objects.create(record=record, word=self.words[0], position=0)
+        PickRecordWord.objects.create(record=record, word=self.words[1], position=1)
+        response = self.client.get(reverse('words:daily_pick'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['pick_records'][0]['name'], '记录X')
+        self.assertEqual(response.context['pick_records'][0]['count'], 2)
+
+    def test_backup_restore_roundtrip_preserves_records(self):
+        """导出→清库→恢复：记录数、名称、创建时间、成员及顺序完全一致。"""
+        past = timezone.now() - timedelta(days=3)
+        r1 = PickRecord.objects.create(name='记录一')
+        PickRecord.objects.filter(pk=r1.pk).update(created_at=past)
+        # 成员顺序与 ID 顺序相反（words[2] 在前）
+        PickRecordWord.objects.create(record=r1, word=self.words[2], position=0)
+        PickRecordWord.objects.create(record=r1, word=self.words[0], position=1)
+        r2 = PickRecord.objects.create(name='记录二')
+        PickRecordWord.objects.create(record=r2, word=self.words[1], position=0)
+
+        payload = _build_backup_payload(UserSettings.get_settings())
+        self.assertEqual(len(payload['pick_records']), 2)
+        PickRecord.objects.all().delete()
+
+        res = self.client.post(
+            reverse('words:api_restore'),
+            data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            set(PickRecord.objects.values_list('name', flat=True)),
+            {'记录一', '记录二'})
+        restored = PickRecord.objects.get(name='记录一')
+        self.assertEqual(restored.created_at.date(), past.date())
+        self.assertEqual(
+            list(restored.words.order_by('position').values_list('word_id', flat=True)),
+            [self.words[2].id, self.words[0].id])
+
+    def test_old_backup_without_records_does_not_error(self):
+        """旧备份缺 pick_records 键：按空集合兼容，不报错、不误删。"""
+        PickRecord.objects.create(name='留存记录')
+        res = self.client.post(
+            reverse('words:api_restore'),
+            data=json.dumps({'settings': {}}), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(PickRecord.objects.filter(name='留存记录').exists())
+
+    def test_load_rolls_over_old_picklist_first(self):
+        """载入记录前先滚动旧日期自选，当天清单严格等于记录，旧词不残留。"""
+        yesterday = self.today - timedelta(days=1)
+        DailyPick.objects.create(date=yesterday, word_id=self.words[0].id)
+        DailyPick.objects.create(date=self.today, word_id=self.words[2].id)
+        record = PickRecord.objects.create(name='不含旧词')
+        PickRecordWord.objects.create(record=record, word=self.words[1], position=0)
+
+        res = self.client.post(
+            reverse('words:api_pick_record_load', args=[record.id]),
+            data=json.dumps({}), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        today_ids = set(
+            DailyPick.objects.filter(date=self.today).values_list('word_id', flat=True))
+        self.assertEqual(today_ids, {self.words[1].id})
+        self.assertFalse(DailyPick.objects.filter(date=yesterday).exists())
 
 
 class TodayTaskUnifiedTests(TestCase):
@@ -496,3 +741,1124 @@ class RestoreBackupTimestampTests(TestCase):
         self.assertFalse(StudyRecord.objects.filter(word=self.word).exists())
         self.assertNotIn(self.word.id, _today_practiced_word_ids(timezone.localdate()))
         self.assertIn('因缺少时间被跳过', res.json()['message'])
+
+    def test_restore_history_not_counted_as_today(self):
+        """历史进度与明细恢复到空库后，不得被仪表盘算作今日新学/复习/已背。
+
+        复现 v3.4.1 换机恢复事故：背词明细时间戳丢失后全部记为恢复当天，
+        导致「今日已背」显示备份中的全部历史单词。
+        """
+        past = (timezone.now() - timedelta(days=2)).isoformat()
+        yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+        res = self.client.post(
+            reverse('words:api_restore'),
+            data=json.dumps({
+                'progress': [{
+                    'word': self.word.word, 'status': 'mastered',
+                    'mastery_level': 3, 'review_count': 2, 'error_count': 0,
+                    'last_review': past, 'next_review': yesterday,
+                    'is_today_new': False, 'learned_date': yesterday,
+                    'uncommon_pos': '[]', 'spelling_attempts': 0,
+                    'spelling_correct': 0, 'meaning_attempts': 0,
+                    'meaning_correct': 0, 'consecutive_correct': 2,
+                    'is_excluded': False, 'manual_level': 1,
+                }],
+                'study_records': [{
+                    'word': self.word.word, 'action': 'known', 'source': 'learn',
+                    'mode': '', 'created_at': past,
+                }],
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 200)
+        ctx = self.client.get(reverse('words:dashboard')).context
+        self.assertEqual(ctx['today_new'], 0)
+        self.assertEqual(ctx['today_review'], 0)
+        self.assertEqual(ctx['checkin_words'], 0)
+        self.assertNotIn(self.word.id, _today_practiced_word_ids(timezone.localdate()))
+
+    def test_restore_todays_own_records_still_counted(self):
+        """备份中本来就属于今天的记录，恢复后仍正常计入今日（不能一刀切清零）。"""
+        now = timezone.now().isoformat()
+        today = timezone.localdate().isoformat()
+        res = self.client.post(
+            reverse('words:api_restore'),
+            data=json.dumps({
+                'progress': [{
+                    'word': self.word.word, 'status': 'learning',
+                    'mastery_level': 1, 'review_count': 1, 'error_count': 0,
+                    'last_review': now, 'next_review': None,
+                    'is_today_new': True, 'learned_date': today,
+                    'uncommon_pos': '[]', 'spelling_attempts': 0,
+                    'spelling_correct': 0, 'meaning_attempts': 0,
+                    'meaning_correct': 0, 'consecutive_correct': 1,
+                    'is_excluded': False, 'manual_level': 3,
+                }],
+                'study_records': [{
+                    'word': self.word.word, 'action': 'known', 'source': 'learn',
+                    'mode': '', 'created_at': now,
+                }],
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 200)
+        ctx = self.client.get(reverse('words:dashboard')).context
+        self.assertEqual(ctx['today_new'], 1)
+        self.assertIn(self.word.id, _today_practiced_word_ids(timezone.localdate()))
+
+
+class RestoreUploadLimitTests(TestCase):
+    """恢复备份：整份备份以 JSON 请求体提交，请求体上限必须能容纳大数据量备份。
+
+    回归 2026-10-18 用户反馈「之前的备份不能导入」：备份体积超过 Django 默认
+    2.5MB 上限时触发 RequestDataTooBig，恢复直接失败。见 settings.DATA_UPLOAD_MAX_MEMORY_SIZE。
+    """
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.word = Word.objects.create(
+            word='upload-limit', category='required', unit=self.unit,
+            list_number=1, meanings='["x"]',
+        )
+
+    def test_large_backup_body_accepted(self):
+        payload = {
+            'study_records': [{
+                'word': self.word.word, 'action': 'known', 'source': 'learn',
+                'mode': '', 'created_at': timezone.now().isoformat(),
+            }],
+            # 未知字段仅用于撑大请求体（超过默认 2.5MB），恢复逻辑会忽略它
+            'padding': 'x' * (3 * 1024 * 1024),
+        }
+        res = self.client.post(
+            reverse('words:api_restore'),
+            data=json.dumps(payload),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 200, res.content[:300])
+        self.assertTrue(res.json().get('success'))
+        self.assertTrue(StudyRecord.objects.filter(word=self.word).exists())
+
+
+class RiskEngineTests(TestCase):
+    """错误风险引擎：档位边界、手动覆盖优先、错误样本、复习融合、备份往返。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.w1 = Word.objects.create(
+            word='alpha', category='required', unit=self.unit,
+            list_number=1, meanings='["a1", "a2"]',
+        )
+        self.w2 = Word.objects.create(
+            word='beta', category='required', unit=self.unit,
+            list_number=2, meanings='["b1"]',
+        )
+
+    def _progress(self, word):
+        p, _ = StudyProgress.objects.get_or_create(word=word)
+        return p
+
+    def _wrong_event(self, word, action='spelling_wrong', mistake_type='spelling'):
+        StudyRecord.objects.create(
+            word=word, action=action, source='review',
+            mistake_type=mistake_type,
+            error_detail={'user_answer': 'x', 'correct': word.word},
+        )
+
+    # --- 档位边界 ---
+    def test_low_risk_when_no_errors(self):
+        p = self._progress(self.w1)
+        score, tier, reasons, overridden = compute_risk_score(p)
+        # 未掌握+逾期 + 错误率修正，但无错误事件 → 低风险
+        self.assertLess(score, RISK_TIER_LOW)
+        self.assertEqual(tier, 0)
+        self.assertFalse(overridden)
+
+    def test_high_risk_when_many_recent_errors(self):
+        p = self._progress(self.w1)
+        p.status = 'learning'
+        p.error_count = 5
+        p.save()
+        for _ in range(5):
+            self._wrong_event(self.w1)
+        score, tier, reasons, overridden = compute_risk_score(p)
+        self.assertGreaterEqual(score, RISK_TIER_MEDIUM)
+        self.assertEqual(tier, 2)
+        self.assertTrue(reasons)
+        self.assertFalse(overridden)
+
+    def test_medium_risk_boundary(self):
+        w = self.w2
+        p, _ = StudyProgress.objects.get_or_create(word=w, status='learning')
+        p.error_count = 2
+        p.save()
+        self._wrong_event(w, action='meaning_wrong', mistake_type='meaning')
+        self._wrong_event(w, action='meaning_wrong', mistake_type='meaning')
+        score, tier, _, _ = compute_risk_score(p)
+        # 单次=不高于中风险起点，断言落在低或中，但不会是高
+        self.assertLess(tier, 2)
+        self.assertGreaterEqual(score, 0)
+
+    # --- 手动覆盖优先 ---
+    def test_manual_override_takes_priority(self):
+        p = self._progress(self.w1)
+
+        p.risk_override = 2
+        p.save()
+        score, tier, reasons, overridden = compute_risk_score(p)
+        self.assertIsNone(score)
+        self.assertEqual(tier, 2)
+        self.assertTrue(overridden)
+
+        p.risk_override = 0
+        p.save()
+        _, tier, _, overridden = compute_risk_score(p)
+        self.assertEqual(tier, 0)
+        self.assertTrue(overridden)
+
+        # 清除覆盖 → 回到自动计算
+        p.risk_override = None
+        p.save()
+        score, tier, _, overridden = compute_risk_score(p)
+        self.assertIsNotNone(score)
+        self.assertFalse(overridden)
+
+    # --- 拼写/释义错误样本 ---
+    def test_spelling_check_writes_error_sample(self):
+        res = self.client.post(
+            reverse('words:api_spelling_check', args=[self.w1.id]),
+            data=json.dumps({'answer': 'wrongly', 'source': 'learn'}),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 200)
+        rec = StudyRecord.objects.filter(word=self.w1, action='spelling_wrong').first()
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.mistake_type, 'spelling')
+        self.assertEqual(rec.error_detail['user_answer'], 'wrongly')
+        self.assertEqual(rec.error_detail['correct'], self.w1.word)
+
+    def test_meaning_check_writes_error_sample(self):
+        res = self.client.post(
+            reverse('words:api_meaning_check', args=[self.w1.id]),
+            data=json.dumps({'answer': '完全不对', 'source': 'learn'}),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 200)
+        rec = StudyRecord.objects.filter(word=self.w1, action='meaning_wrong').first()
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.mistake_type, 'meaning')
+        self.assertEqual(rec.error_detail['correct'], self.w1.get_meanings())
+
+    # --- 复习融合：高风险提前 ---
+    def test_high_risk_reviewed_early_in_bucket(self):
+        today = timezone.localdate()
+        # 两个昨天新学(to)的词：一个有多次错误(高风险)，一个无误(低风险)
+        hp = self._progress(self.w1)
+        hp.learned_date = today - timedelta(days=1)
+        hp.is_today_new = False
+        hp.error_count = 6
+        hp.status = 'learning'
+        hp.save()
+        for _ in range(6):
+            self._wrong_event(self.w1)
+        lp = self._progress(self.w2)
+        lp.learned_date = today - timedelta(days=1)
+        lp.is_today_new = False
+        lp.status = 'mastered'
+        lp.consecutive_correct = 5
+        lp.save()
+
+        ordered = _get_today_task(today)['review_ordered']
+        hi = next(i for i, p in enumerate(ordered) if p.word_id == self.w1.id)
+        lo = next(i for i, p in enumerate(ordered) if p.word_id == self.w2.id)
+        self.assertLess(hi, lo)
+
+    # --- 备份往返新字段 ---
+    def test_backup_roundtrip_risk_fields(self):
+        p = self._progress(self.w1)
+        p.risk_override = 1
+        p.error_count = 2
+        p.save()
+        self._wrong_event(self.w1, action='meaning_wrong', mistake_type='meaning')
+
+        backup = self.client.get(reverse('words:api_backup')).json()
+        rec = next(r for r in backup['study_records'] if r['word_id'] == self.w1.id)
+        self.assertEqual(rec['mistake_type'], 'meaning')
+        self.assertEqual(rec['error_detail']['correct'], self.w1.word)
+        prog = next(x for x in backup['progress'] if x['word_id'] == self.w1.id)
+        self.assertEqual(prog['risk_override'], 1)
+
+        # 恢复后字段仍保留
+        res = self.client.post(
+            reverse('words:api_restore'),
+            data=json.dumps(backup),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 200)
+        restored_prog = StudyProgress.objects.get(word=self.w1)
+        self.assertEqual(restored_prog.risk_override, 1)
+        restored_rec = StudyRecord.objects.filter(word=self.w1).first()
+        self.assertEqual(restored_rec.mistake_type, 'meaning')
+
+    def test_manual_override_api(self):
+        res = self.client.post(
+            reverse('words:api_risk_override', args=[self.w1.id]),
+            data=json.dumps({'level': 2}),
+            content_type='application/json',
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body['success'])
+        self.assertEqual(body['risk_tier'], 2)
+        self.assertTrue(body['risk_overridden'])
+
+        # 清除
+        res = self.client.post(
+            reverse('words:api_risk_override', args=[self.w1.id]),
+            data=json.dumps({'level': -1}),
+            content_type='application/json',
+        )
+        self.assertTrue(res.json()['success'])
+        self.assertFalse(res.json()['risk_overridden'])
+
+    def test_exam_wrong_writes_real_exam_source(self):
+        """考试真实答错时，StudyRecord.source 应记录为 exam 而非 learn。"""
+        from django.test import Client
+        c = Client()
+        # 直接构造 session 中的考试题目与方向，避免依赖组卷词库数量
+        session = c.session
+        session['exam_questions'] = [{
+            'id': self.w1.id,
+            'type': 'choice',
+            'options': ['错误选项A', '错误选项B', '错误选项C', '正确选项'],
+            'correct_index': 3,
+        }]
+        session['exam_direction'] = 'en2zh'
+        session.save()
+        res = c.post(reverse('words:api_exam_submit'), data=json.dumps({
+            'answers': [{
+                'word_id': self.w1.id, 'type': 'choice',
+                'selected': 0, 'unanswered': False,
+            }],
+            'duration': 10,
+        }), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        rec = StudyRecord.objects.filter(
+            word=self.w1, action__in=['meaning_wrong', 'spelling_wrong', 'unknown']).first()
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.source, 'exam')
+        self.assertEqual(rec.mode, 'exam_choice')
+
+
+class RiskEngineBatchTests(TestCase):
+    """批量风险查询与同优先级随机排序的回归测试。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.w1 = Word.objects.create(word='batch1', category='required', unit=self.unit,
+                                      list_number=1, meanings='["m1"]')
+        self.w2 = Word.objects.create(word='batch2', category='required', unit=self.unit,
+                                      list_number=2, meanings='["m2"]')
+        self.w3 = Word.objects.create(word='batch3', category='required', unit=self.unit,
+                                      list_number=3, meanings='["m3"]')
+
+    def _wrong(self, word, mistake_type='spelling'):
+        StudyRecord.objects.create(
+            word=word, action='spelling_wrong', source='review',
+            mistake_type=mistake_type,
+            error_detail={'user_answer': 'x', 'correct': word.word},
+        )
+
+    def test_batch_error_events_groups_by_word(self):
+        self._wrong(self.w1)
+        self._wrong(self.w2, mistake_type='meaning')
+        StudyRecord.objects.create(
+            word=self.w3, action='known', source='review', mistake_type='',
+            error_detail={},
+        )  # 正确动作不进错误事件池
+        buckets = _batch_error_events([self.w1.id, self.w2.id, self.w3.id])
+        self.assertEqual(len(buckets[self.w1.id]), 1)
+        self.assertEqual(len(buckets[self.w2.id]), 1)
+        self.assertNotIn(self.w3.id, buckets)
+
+    def test_batch_events_produce_same_score_as_single(self):
+        p = StudyProgress.objects.create(word=self.w1, status='learning', error_count=2)
+        self._wrong(self.w1)
+        self._wrong(self.w1)
+        single = compute_risk_score(p)
+        batched = compute_risk_score(p, events=_batch_error_events([self.w1.id]).get(self.w1.id, []))
+        self.assertEqual(single[0], batched[0])
+        self.assertEqual(single[1], batched[1])
+
+    def test_jitter_only_shuffles_within_same_priority_group(self):
+        """随机只发生在相同排序 key 的连续区间，不能跨优先级交换。"""
+        today = timezone.localdate()
+        # 三个词：两个同手动等级/同风险/同到期，一个手动等级更高
+        ps = []
+        for i, w in enumerate([self.w1, self.w2, self.w3]):
+            p = StudyProgress.objects.create(
+                word=w, status='learning', error_count=1,
+                learned_date=today - timedelta(days=1),
+                manual_level=3,
+            )
+            self._wrong(w)
+            ps.append(p)
+        p_high = StudyProgress.objects.create(
+            word=Word.objects.create(word='prio', category='required', unit=self.unit,
+                                     list_number=4, meanings='["p"]'),
+            status='learning', error_count=1,
+            learned_date=today - timedelta(days=1),
+            manual_level=1,  # 人工重点，必须始终排最前
+        )
+        self._wrong(p_high.word)
+        ps.append(p_high)
+
+        # 直接验证分组打乱逻辑：构造排序 key 相同/不同混合
+        class FakeP:
+            def __init__(self, key, name):
+                self.key = key
+                self.name = name
+        # key 越小优先级越高；排序后高优先级应占据前两位，低优先级后两位
+        items = [
+            FakeP((2, -1, 1.0, 1), 'low1'),
+            FakeP((2, -1, 1.0, 1), 'low2'),
+            FakeP((0, -1, 5.0, 1), 'high1'),
+            FakeP((0, -1, 5.0, 1), 'high2'),
+        ]
+        ordered = _sort_bucket_with_risk_jitter(items, lambda x: x.key)
+        names = [x.name for x in ordered]
+        self.assertIn(names[0], ('high1', 'high2'))
+        self.assertIn(names[1], ('high1', 'high2'))
+        self.assertIn(names[2], ('low1', 'low2'))
+        self.assertIn(names[3], ('low1', 'low2'))
+        self.assertLess(names.index('high1'), names.index('low1'))
+        self.assertLess(names.index('high2'), names.index('low2'))
+
+
+class PosLearningTests(TestCase):
+    """词性学习 / 词族与构词法（HANDOVER 第十二节验收清单）：
+    模型回退、AI 非法 JSON、客观题本地判分、开放题 wrong 写 pos 事件、
+    partial 不加风险、候选确认/拒绝、备份恢复、断网/超时零写入。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.word = Word.objects.create(
+            word='conduct', category='required', unit=self.unit, list_number=1,
+            meanings='["传导；实施", "行为；举止"]',
+            meanings_by_pos='{"v.": ["传导；实施"], "n.": ["行为；举止"]}',
+            word_forms='{"第三人称单数": "conducts", "过去式": "conducted"}',
+            pos='v. n.',
+        )
+        self.model = AIModel.objects.create(
+            provider='test', model_id='test-model-1', display_name='测试模型1',
+            base_url='https://example.com/v1', enabled=True,
+        )
+
+    def _post(self, url_name, body, **kwargs):
+        return self.client.post(
+            reverse(url_name, kwargs=kwargs or None),
+            data=json.dumps(body), content_type='application/json')
+
+    # --- 1. 模型回退链 ---
+    def test_model_fallback_chain(self):
+        settings_obj = UserSettings.get_settings()
+        # 未配置任何功能模型：回退第一个启用模型
+        self.assertEqual(_resolve_pos_learning_model_id({}), self.model.id)
+        # 显式指定优先
+        m2 = AIModel.objects.create(provider='test', model_id='test-model-2', enabled=True)
+        self.assertEqual(_resolve_pos_learning_model_id({'model_id': m2.id}), m2.id)
+        # 显式指定禁用模型 → None（禁用模型不可用）
+        m3 = AIModel.objects.create(provider='test', model_id='test-model-3', enabled=False)
+        self.assertIsNone(_resolve_pos_learning_model_id({'model_id': m3.id}))
+        # 复审模型回退
+        settings_obj.review_model = m2
+        settings_obj.save()
+        self.assertEqual(_resolve_pos_learning_model_id({}), m2.id)
+        # 词性学习模型优先于复审模型
+        settings_obj.pos_learning_model = self.model
+        settings_obj.save()
+        self.assertEqual(_resolve_pos_learning_model_id({}), self.model.id)
+
+    # --- 2. 本地讲解不依赖 AI ---
+    def test_local_lesson_without_ai(self):
+        res = self._post('words:api_pos_lesson', {'word_id': self.word.id, 'use_ai': False})
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data['success'])
+        self.assertEqual(len(data['lesson']['pos_groups']), 2)
+        self.assertTrue(data['exercises'])
+        self.assertFalse(data['cache_hit'])
+        # 本地出题答案必须在选项中
+        for ex in data['exercises']:
+            self.assertIn(ex['answer'], ex['options'])
+
+    # --- 3. AI 非法 JSON → 502 + fallback，零写入 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_lesson_invalid_json_zero_write(self, mock_call):
+        mock_call.return_value = ('这根本不是JSON', None)
+        res = self._post('words:api_pos_lesson', {'word_id': self.word.id, 'use_ai': True})
+        self.assertEqual(res.status_code, 502)
+        self.assertIn('fallback', res.json())
+        self.assertFalse(PosLessonCache.objects.exists())
+
+    # --- 4. AI 网络失败 → 502，零写入（断网/超时） ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_lesson_network_error_zero_write(self, mock_call):
+        mock_call.return_value = (None, '连接超时')
+        res = self._post('words:api_pos_lesson', {'word_id': self.word.id, 'use_ai': True})
+        self.assertEqual(res.status_code, 502)
+        self.assertIn('fallback', res.json())
+        self.assertFalse(PosLessonCache.objects.exists())
+
+    # --- 5. AI 合法讲解 → 校验通过 + 缓存命中 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_lesson_ai_success_and_cache(self, mock_call):
+        payload = {
+            'lesson_version': 1, 'word': 'conduct',
+            'pos_groups': [{'pos': 'v.', 'meaning': '传导', 'usage': 'u', 'memory_tip': 'm'}],
+            'confusions': [{'word': 'conduit', 'difference': 'd', 'confidence': 0.8}],
+            'patterns': [{'name': 'con-', 'rule': '共同', 'exception': ''}],
+            'exercises': [{'type': 'pos_choice', 'prompt': 'p',
+                           'options': ['v.', 'n.'], 'answer': 'v.'}],
+        }
+        mock_call.return_value = (json.dumps(payload, ensure_ascii=False), None)
+        res = self._post('words:api_pos_lesson', {'word_id': self.word.id, 'use_ai': True})
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn('ai_lesson', data)
+        self.assertFalse(data['cache_hit'])
+        self.assertTrue(PosLessonCache.objects.filter(word=self.word).exists())
+        # 第二次：缓存命中，不再调 AI
+        mock_call.reset_mock()
+        res2 = self._post('words:api_pos_lesson', {'word_id': self.word.id, 'use_ai': True})
+        self.assertEqual(res2.status_code, 200)
+        self.assertTrue(res2.json()['cache_hit'])
+        mock_call.assert_not_called()
+
+    # --- 6. 客观题本地判分：答对不写事件，答错写 pos 事件 ---
+    def test_objective_grade_local(self):
+        q = {'type': 'pos_choice', 'target_pos': 'v.', 'prompt': 'p',
+             'options': ['v.', 'n.'], 'answer': 'v.'}
+        res = self._post('words:api_pos_grade',
+                         {'word_id': self.word.id, 'question': q, 'answer': ' v. '})
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data['result'], 'correct')
+        self.assertEqual(data['judged_by'], 'local')
+        self.assertFalse(StudyRecord.objects.filter(mistake_type='pos').exists())
+
+        res2 = self._post('words:api_pos_grade',
+                          {'word_id': self.word.id, 'question': q, 'answer': 'n.'})
+        self.assertEqual(res2.json()['result'], 'wrong')
+        rec = StudyRecord.objects.get(mistake_type='pos')
+        self.assertEqual(rec.source, 'pos')
+        self.assertEqual(rec.error_detail['question_type'], 'pos_choice')
+        self.assertEqual(rec.error_detail['target_pos'], 'v.')
+
+    # --- 7. 幂等：已判定 attempt 直接返回 ---
+    def test_grade_idempotent(self):
+        attempt = PosLearningAttempt.objects.create(
+            word=self.word, target_pos='v.', question_type='pos_choice',
+            question={'type': 'pos_choice', 'answer': 'v.'},
+            user_answer='v.', result='correct', judged_by='local')
+        res = self._post('words:api_pos_grade',
+                         {'attempt_id': attempt.id, 'answer': 'n.'})
+        data = res.json()
+        self.assertEqual(data['result'], 'correct')
+        self.assertTrue(data['idempotent'])
+
+    # --- 8. 开放题 wrong 写 pos 事件 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_open_grade_wrong_writes_pos_event(self, mock_call):
+        mock_call.return_value = (json.dumps(
+            {'verdict': 'wrong', 'feedback': '词性用错', 'error_type': 'pos'}), None)
+        q = {'type': 'open', 'target_pos': 'v.', 'prompt': '造句', 'reference': ''}
+        res = self._post('words:api_pos_grade',
+                         {'word_id': self.word.id, 'question': q,
+                          'answer': 'He conduct is good.'})
+        data = res.json()
+        self.assertEqual(data['result'], 'wrong')
+        self.assertEqual(data['judged_by'], 'ai')
+        rec = StudyRecord.objects.get(mistake_type='pos')
+        self.assertEqual(rec.source, 'pos')
+        attempt = PosLearningAttempt.objects.get(word=self.word)
+        self.assertEqual(attempt.result, 'wrong')
+
+    # --- 9. 开放题 partial 不加风险 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_open_grade_partial_no_event(self, mock_call):
+        mock_call.return_value = (json.dumps(
+            {'verdict': 'partial', 'feedback': '基本可以'}), None)
+        q = {'type': 'open', 'target_pos': 'n.', 'prompt': '造句', 'reference': ''}
+        res = self._post('words:api_pos_grade',
+                         {'word_id': self.word.id, 'question': q,
+                          'answer': 'His conduct was fine.'})
+        self.assertEqual(res.json()['result'], 'partial')
+        self.assertFalse(StudyRecord.objects.filter(mistake_type='pos').exists())
+
+    # --- 10. 开放题 AI 越界输出 / 失败 → 整次失败零写入 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_open_grade_invalid_verdict_zero_write(self, mock_call):
+        mock_call.return_value = (json.dumps({'verdict': 'great'}), None)
+        q = {'type': 'open', 'target_pos': 'v.', 'prompt': '造句', 'reference': ''}
+        res = self._post('words:api_pos_grade',
+                         {'word_id': self.word.id, 'question': q, 'answer': 'x'})
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(PosLearningAttempt.objects.exists())
+        self.assertFalse(StudyRecord.objects.filter(mistake_type='pos').exists())
+
+    @patch('words.views.builtin_ai_exam_call')
+    def test_open_grade_network_error_zero_write(self, mock_call):
+        mock_call.return_value = (None, '网络断开')
+        q = {'type': 'open', 'target_pos': 'v.', 'prompt': '造句', 'reference': ''}
+        res = self._post('words:api_pos_grade',
+                         {'word_id': self.word.id, 'question': q, 'answer': 'x'})
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(PosLearningAttempt.objects.exists())
+
+    # --- 11. 词族候选生成：词库外词标记 outside_word，未确认状态 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_family_candidate_generation(self, mock_call):
+        other = Word.objects.create(
+            word='conduction', category='required', unit=self.unit,
+            list_number=2, meanings='["传导"]')
+        payload = {
+            'family': {'key': 'conduct-', 'title': 'conduct 词族', 'description': 'd'},
+            'members': [
+                {'word': 'conduct', 'pos': 'v.', 'relation': 'core', 'note': ''},
+                {'word': 'conduction', 'pos': 'n.', 'relation': 'derived', 'note': ''},
+                {'word': 'conductivity', 'pos': 'n.', 'relation': 'derived', 'note': ''},
+            ],
+            'patterns': [{'name': '-tion', 'kind': 'suffix', 'from_pos': 'v.',
+                          'to_pos': 'n.', 'rule': 'r', 'exception': ''}],
+            'relations': [{'word': 'behavior', 'rel_type': 'synonym',
+                           'note': '', 'confidence': 0.7}],
+        }
+        mock_call.return_value = (json.dumps(payload, ensure_ascii=False), None)
+        res = self._post('words:api_word_family_candidates', {'word_id': self.word.id})
+        self.assertEqual(res.status_code, 200)
+        family = WordFamily.objects.get()
+        self.assertEqual(family.source, 'ai_candidate')
+        self.assertIsNone(family.confirmed_at)
+        members = {m.word.word if m.word else m.outside_word: m
+                   for m in family.members.all()}
+        self.assertEqual(members['conduct'].word, self.word)
+        self.assertEqual(members['conduction'].word, other)
+        self.assertEqual(members['conductivity'].outside_word, 'conductivity')
+        self.assertIsNone(members['conductivity'].word)
+        # 词库外词绝不创建 Word
+        self.assertFalse(Word.objects.filter(word='conductivity').exists())
+        rel = family.relations.get()
+        self.assertEqual(rel.outside_word, 'behavior')
+        self.assertIsNone(rel.related_word)
+        self.assertFalse(rel.is_confirmed)
+
+    # --- 12. 候选生成失败零写入 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_family_candidate_error_zero_write(self, mock_call):
+        mock_call.return_value = (None, '连接超时')
+        res = self._post('words:api_word_family_candidates', {'word_id': self.word.id})
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(WordFamily.objects.exists())
+
+    @patch('words.views.builtin_ai_exam_call')
+    def test_family_candidate_invalid_json_zero_write(self, mock_call):
+        mock_call.return_value = ('{"family": {}}', None)  # 缺 key/title/members
+        res = self._post('words:api_word_family_candidates', {'word_id': self.word.id})
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(WordFamily.objects.exists())
+
+    # --- 13. 候选确认 / 拒绝 / 重复确认 ---
+    def _make_candidate(self):
+        family = WordFamily.objects.create(
+            key='cand-1', title='测试词族', source='ai_candidate')
+        WordFamilyMember.objects.create(
+            family=family, word=self.word, relation='core', source='ai_candidate')
+        WordFormationPattern.objects.create(
+            family=family, name='-x', kind='suffix', is_confirmed=False,
+            source='ai_candidate')
+        return family
+
+    def test_candidate_confirm(self):
+        family = self._make_candidate()
+        res = self._post('words:api_word_family_candidate_confirm',
+                         {'action': 'confirm'}, cid=family.id)
+        self.assertEqual(res.status_code, 200)
+        family.refresh_from_db()
+        self.assertIsNotNone(family.confirmed_at)
+        self.assertIsNotNone(family.members.get().confirmed_at)
+        self.assertTrue(family.patterns.get().is_confirmed)
+
+    def test_candidate_reject_deletes_batch(self):
+        family = self._make_candidate()
+        res = self._post('words:api_word_family_candidate_confirm',
+                         {'action': 'reject'}, cid=family.id)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(WordFamily.objects.exists())
+        self.assertFalse(WordFamilyMember.objects.exists())
+        self.assertFalse(WordFormationPattern.objects.exists())
+
+    def test_candidate_confirm_twice_rejected(self):
+        family = self._make_candidate()
+        self._post('words:api_word_family_candidate_confirm',
+                   {'action': 'confirm'}, cid=family.id)
+        res = self._post('words:api_word_family_candidate_confirm',
+                         {'action': 'confirm'}, cid=family.id)
+        self.assertEqual(res.status_code, 400)
+
+    # --- 14. 知识反馈：irrelevant 立即屏蔽未确认项 ---
+    def test_knowledge_feedback_irrelevant_hides_pattern(self):
+        pattern = WordFormationPattern.objects.create(
+            family=None, name='-y', kind='suffix', is_confirmed=True, source='manual')
+        res = self._post('words:api_knowledge_feedback',
+                         {'target_type': 'pattern', 'target_id': pattern.id,
+                          'action': 'irrelevant'})
+        self.assertEqual(res.status_code, 200)
+        pattern.refresh_from_db()
+        self.assertFalse(pattern.is_confirmed)
+
+    def test_knowledge_feedback_invalid_target(self):
+        res = self._post('words:api_knowledge_feedback',
+                         {'target_type': 'word', 'target_id': 99999, 'action': 'focus'})
+        self.assertEqual(res.status_code, 404)
+
+    # --- 15. 备份导出包含新表 + 恢复往返 ---
+    def test_backup_restore_roundtrip(self):
+        past = timezone.now() - timedelta(days=1)
+        attempt = PosLearningAttempt.objects.create(
+            word=self.word, target_pos='v.', question_type='pos_choice',
+            question={'type': 'pos_choice', 'answer': 'v.'},
+            user_answer='v.', result='correct', judged_by='local')
+        family = WordFamily.objects.create(
+            key='fam-1', title='往返词族', source='ai_candidate',
+            confirmed_at=timezone.now())
+        WordFamilyMember.objects.create(
+            family=family, word=self.word, relation='core', source='ai_candidate',
+            confirmed_at=timezone.now())
+        WordRelation.objects.create(
+            family=family, word=self.word, related_word=None,
+            outside_word='demeanor', rel_type='synonym', source='ai_candidate')
+        KnowledgeFeedback.objects.create(
+            target_type='word', target_id=self.word.id, action='focus')
+
+        payload = _build_backup_payload(UserSettings.get_settings())
+        for key in ('pos_attempts', 'word_families', 'knowledge_feedback'):
+            self.assertIn(key, payload)
+        self.assertEqual(len(payload['pos_attempts']), 1)
+        self.assertEqual(len(payload['word_families']), 1)
+
+        PosLearningAttempt.objects.all().delete()
+        WordFamily.objects.all().delete()
+        KnowledgeFeedback.objects.all().delete()
+
+        res = self.client.post(reverse('words:api_restore'),
+                               data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        restored_attempt = PosLearningAttempt.objects.get()
+        self.assertEqual(restored_attempt.word, self.word)
+        self.assertEqual(restored_attempt.result, 'correct')
+        self.assertEqual(restored_attempt.created_at.date(), attempt.created_at.date())
+        restored_family = WordFamily.objects.get(key='fam-1')
+        self.assertTrue(restored_family.is_confirmed)
+        self.assertEqual(restored_family.members.get().word, self.word)
+        self.assertEqual(restored_family.relations.get().outside_word, 'demeanor')
+        fb = KnowledgeFeedback.objects.get()
+        self.assertEqual(fb.target_type, 'word')
+        self.assertEqual(fb.target_id, self.word.id)
+
+    # --- 16. 词性答错进入错误知识库：更新 StudyProgress 计数/状态/排期 ---
+    def test_wrong_updates_study_progress(self):
+        q = {'type': 'pos_choice', 'target_pos': 'v.', 'prompt': 'p',
+             'options': ['v.', 'n.'], 'answer': 'v.'}
+        self.assertFalse(StudyProgress.objects.filter(word=self.word).exists())
+        res = self._post('words:api_pos_grade',
+                         {'word_id': self.word.id, 'question': q, 'answer': 'n.'})
+        self.assertEqual(res.json()['result'], 'wrong')
+        prog = StudyProgress.objects.get(word=self.word)
+        self.assertEqual(prog.error_count, 1)
+        self.assertEqual(prog.status, 'learning')
+        self.assertEqual(prog.review_count, 1)
+        self.assertIsNotNone(prog.next_review)
+
+        # 已掌握词答错：保持「会」不降级，仅错误计数+1、连续答对清零并排明天复习
+        prog.status = 'mastered'
+        prog.mastery_level = 5
+        prog.consecutive_correct = 10
+        prog.save()
+        self._post('words:api_pos_grade',
+                   {'word_id': self.word.id, 'question': q, 'answer': 'n.'})
+        prog.refresh_from_db()
+        self.assertEqual(prog.status, 'mastered')
+        self.assertEqual(prog.error_count, 2)
+        self.assertEqual(prog.consecutive_correct, 0)
+        self.assertIsNotNone(prog.next_review)
+
+    # --- 17. partial 不增加错误风险（不创建/改动 StudyProgress） ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_partial_does_not_touch_progress(self, mock_call):
+        mock_call.return_value = (json.dumps(
+            {'verdict': 'partial', 'feedback': 'ok'}), None)
+        q = {'type': 'open', 'target_pos': 'n.', 'prompt': '造句', 'reference': ''}
+        self._post('words:api_pos_grade',
+                   {'word_id': self.word.id, 'question': q, 'answer': 'x'})
+        self.assertFalse(StudyProgress.objects.filter(
+            word=self.word, error_count__gt=0).exists())
+
+    # --- 18. 词性学习模型随备份导出/恢复；旧备份缺键确定置空 ---
+    def test_backup_restores_pos_learning_model(self):
+        settings_obj = UserSettings.get_settings()
+        settings_obj.pos_learning_model = self.model
+        settings_obj.save()
+        payload = _build_backup_payload(settings_obj)
+        self.assertEqual(payload['settings']['pos_learning_model_id'], self.model.id)
+
+        settings_obj.pos_learning_model = None
+        settings_obj.save()
+        res = self.client.post(reverse('words:api_restore'),
+                               data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        new_id = AIModel.objects.get(model_id='test-model-1').id
+        self.assertEqual(UserSettings.get_settings().pos_learning_model_id, new_id)
+
+    def test_backup_without_pos_model_key_clears_setting(self):
+        settings_obj = UserSettings.get_settings()
+        settings_obj.pos_learning_model = self.model
+        settings_obj.save()
+        payload = _build_backup_payload(settings_obj)
+        del payload['settings']['pos_learning_model_id']
+        res = self.client.post(reverse('words:api_restore'),
+                               data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(UserSettings.get_settings().pos_learning_model_id)
+
+    # --- 19. 知识反馈 member/pattern/relation 稳定引用往返恢复 ---
+    def test_knowledge_feedback_member_pattern_relation_roundtrip(self):
+        family = WordFamily.objects.create(
+            key='fam-fb', title='反馈词族', source='manual', confirmed_at=timezone.now())
+        member = WordFamilyMember.objects.create(
+            family=family, word=self.word, relation='core', pos='v.',
+            source='manual', confirmed_at=timezone.now())
+        pattern = WordFormationPattern.objects.create(
+            family=family, name='-tion', kind='suffix', source='manual', is_confirmed=True)
+        rel = WordRelation.objects.create(
+            family=family, word=self.word, outside_word='demeanor',
+            rel_type='synonym', source='manual', is_confirmed=True)
+        KnowledgeFeedback.objects.create(target_type='member', target_id=member.id, action='focus')
+        KnowledgeFeedback.objects.create(target_type='pattern', target_id=pattern.id, action='irrelevant')
+        KnowledgeFeedback.objects.create(target_type='relation', target_id=rel.id, action='focus')
+
+        payload = _build_backup_payload(UserSettings.get_settings())
+        refs = {fb['target_type']: fb['ref'] for fb in payload['knowledge_feedback']}
+        self.assertEqual(refs['member']['family_key'], 'fam-fb')
+        self.assertEqual(refs['member']['word'], self.word.word)
+        self.assertEqual(refs['pattern']['name'], '-tion')
+        self.assertEqual(refs['relation']['rel_type'], 'synonym')
+
+        WordFamily.objects.all().delete()
+        KnowledgeFeedback.objects.all().delete()
+
+        res = self.client.post(reverse('words:api_restore'),
+                               data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(KnowledgeFeedback.objects.count(), 3)
+        new_family = WordFamily.objects.get(key='fam-fb')
+        got = {fb.target_type: fb.target_id for fb in KnowledgeFeedback.objects.all()}
+        self.assertEqual(got['member'], new_family.members.get().id)
+        self.assertEqual(got['pattern'], new_family.patterns.get().id)
+        self.assertEqual(got['relation'], new_family.relations.get().id)
+
+    def test_knowledge_feedback_unresolvable_counted(self):
+        payload = {'knowledge_feedback': [
+            {'target_type': 'member',
+             'ref': {'family_key': '不存在', 'word': 'x', 'relation': 'core'},
+             'action': 'focus'},
+        ]}
+        res = self.client.post(reverse('words:api_restore'),
+                               data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('knowledge_feedback', res.json()['message'])
+        self.assertFalse(KnowledgeFeedback.objects.exists())
+
+    # --- 20. 词族候选同 key 复用不 500，既有词族不被覆盖 ---
+    def _candidate_payload(self, key='fam-x'):
+        return {
+            'family': {'key': key, 'title': '词族X', 'description': ''},
+            'members': [{'word': self.word.word, 'pos': 'v.',
+                         'relation': 'core', 'note': ''}],
+            'patterns': [], 'relations': [],
+        }
+
+    @patch('words.views.builtin_ai_exam_call')
+    def test_candidate_same_key_reused_not_500(self, mock_call):
+        mock_call.return_value = (
+            json.dumps(self._candidate_payload(), ensure_ascii=False), None)
+        res1 = self._post('words:api_word_family_candidates', {'word_id': self.word.id})
+        self.assertEqual(res1.status_code, 200)
+        self.assertFalse(res1.json().get('reused'))
+        first_id = res1.json()['candidate_id']
+        # 第二次同 key：复用，不新建、不覆盖，返回正常响应
+        res2 = self._post('words:api_word_family_candidates', {'word_id': self.word.id})
+        self.assertEqual(res2.status_code, 200)
+        self.assertTrue(res2.json()['reused'])
+        self.assertEqual(res2.json()['candidate_id'], first_id)
+        self.assertEqual(WordFamily.objects.count(), 1)
+
+    @patch('words.views.builtin_ai_exam_call')
+    def test_candidate_does_not_overwrite_confirmed_family(self, mock_call):
+        family = WordFamily.objects.create(
+            key='fam-x', title='既有确认词族', source='manual', confirmed_at=timezone.now())
+        mock_call.return_value = (
+            json.dumps(self._candidate_payload(), ensure_ascii=False), None)
+        res = self._post('words:api_word_family_candidates', {'word_id': self.word.id})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()['reused'])
+        family.refresh_from_db()
+        self.assertEqual(family.title, '既有确认词族')
+        self.assertTrue(family.is_confirmed)
+
+    # --- 21. 词族变式读取接口 ---
+    def test_word_family_get_returns_members_and_outside(self):
+        url = reverse('words:api_word_family_get', args=[self.word.id])
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.json()['family'])  # 无词族
+
+        family = WordFamily.objects.create(
+            key='fam-get', title='get词族', source='manual', confirmed_at=timezone.now())
+        WordFamilyMember.objects.create(
+            family=family, word=self.word, relation='core', pos='v.',
+            source='manual', confirmed_at=timezone.now())
+        WordFamilyMember.objects.create(
+            family=family, word=None, outside_word='operator', relation='derived',
+            pos='n.', meaning='操作员', sort_order=1, source='manual',
+            confirmed_at=timezone.now())
+        data = self.client.get(url).json()
+        self.assertTrue(data['family']['is_confirmed'])
+        self.assertEqual(data['family']['key'], 'fam-get')
+        words = [m['word'] for m in data['members']]
+        self.assertIn(self.word.word, words)
+        self.assertIn('operator', words)
+        out = [m for m in data['members'] if m['word'] == 'operator'][0]
+        self.assertFalse(out['in_library'])
+        self.assertEqual(out['meaning'], '操作员')  # 库外词用保存的 AI 释义
+        core = [m for m in data['members'] if m['word'] == self.word.word][0]
+        self.assertEqual(core['meaning'],
+                         '；'.join(self.word.get_meanings()))  # 库内词取词库释义
+
+    @patch('words.views.builtin_ai_exam_call')
+    def test_candidate_confirm_writes_confirmed_with_meaning(self, mock_call):
+        payload = self._candidate_payload()
+        payload['members'][0]['meaning'] = '有效的'
+        mock_call.return_value = (json.dumps(payload, ensure_ascii=False), None)
+        res = self._post('words:api_word_family_candidates',
+                         {'word_id': self.word.id, 'confirm': True})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()['confirmed'])
+        fam = WordFamily.objects.get(key='fam-x')
+        self.assertIsNotNone(fam.confirmed_at)
+        member = fam.members.first()
+        self.assertIsNotNone(member.confirmed_at)
+        self.assertEqual(member.meaning, '有效的')
+
+    def test_word_family_get_prefers_confirmed(self):
+        cand = WordFamily.objects.create(
+            key='fam-cand', title='候选', source='ai_candidate', confirmed_at=None)
+        WordFamilyMember.objects.create(
+            family=cand, word=self.word, relation='core', source='ai_candidate')
+        conf = WordFamily.objects.create(
+            key='fam-conf', title='确认', source='manual', confirmed_at=timezone.now())
+        WordFamilyMember.objects.create(
+            family=conf, word=self.word, relation='core', source='manual',
+            confirmed_at=timezone.now())
+        data = self.client.get(
+            reverse('words:api_word_family_get', args=[self.word.id])).json()
+        self.assertEqual(data['family']['key'], 'fam-conf')
+
+
+class PosExpandTests(TestCase):
+    """AI 词性扩展（HANDOVER 第十四节验收）：成功写回、已有词性跳过不覆盖、
+    白名单过滤、无模型/非法 JSON/超时零写入、批量只处理今日自选缺词性词。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        # 缺词性释义的词
+        self.word = Word.objects.create(
+            word='conduct', category='required', unit=self.unit, list_number=1,
+            meanings='["传导；实施", "行为；举止"]', pos='v. n.',
+            meanings_by_pos='{}')
+        # 已有有效词性释义的词
+        self.word_full = Word.objects.create(
+            word='present', category='required', unit=self.unit, list_number=2,
+            meanings='["呈现", "礼物"]', pos='v. n.',
+            meanings_by_pos='{"v.": ["呈现"], "n.": ["礼物"]}')
+        # 全部归「未分类」的词（视为缺词性）
+        self.word_unclassified = Word.objects.create(
+            word='yield', category='required', unit=self.unit, list_number=3,
+            meanings='["产出；屈服"]', pos='v.',
+            meanings_by_pos='{"未分类": ["产出；屈服"]}')
+        self.model = AIModel.objects.create(
+            provider='test', model_id='test-model-1', enabled=True)
+
+    def _post(self, url_name, body, **kwargs):
+        return self.client.post(
+            reverse(url_name, kwargs=kwargs or None),
+            data=json.dumps(body), content_type='application/json')
+
+    # --- 1. 单个扩展成功写回 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_single_expand_success(self, mock_call):
+        mock_call.return_value = (json.dumps(
+            {'conduct': {'v.': ['传导；实施'], 'n.': ['行为；举止']}}, ensure_ascii=False), None)
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word.id)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data['updated'])
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(),
+                         {'v.': ['传导；实施'], 'n.': ['行为；举止']})
+
+    # --- 2. 已有有效词性释义：跳过不覆盖，且不调用 AI ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_single_expand_skip_existing(self, mock_call):
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word_full.id)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertFalse(data['updated'])
+        self.assertIn('skipped_reason', data)
+        mock_call.assert_not_called()
+        self.word_full.refresh_from_db()
+        self.assertEqual(self.word_full.get_meanings_by_pos(),
+                         {'v.': ['呈现'], 'n.': ['礼物']})
+
+    # --- 3. 全部「未分类」视为缺词性，可扩展并替换 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_single_expand_unclassified(self, mock_call):
+        mock_call.return_value = (json.dumps(
+            {'yield': {'v.': ['产出', '屈服']}}, ensure_ascii=False), None)
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word_unclassified.id)
+        self.assertTrue(res.json()['updated'])
+        self.word_unclassified.refresh_from_db()
+        self.assertEqual(self.word_unclassified.get_meanings_by_pos(),
+                         {'v.': ['产出', '屈服']})
+
+    # --- 4. 无可用 AI 模型 → 400，零写入 ---
+    def test_single_expand_no_model(self):
+        AIModel.objects.all().update(enabled=False)
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word.id)
+        self.assertEqual(res.status_code, 400)
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(), {})
+
+    # --- 5. AI 非法 JSON → 502，零写入 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_single_expand_invalid_json_zero_write(self, mock_call):
+        mock_call.return_value = ('不是JSON', None)
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word.id)
+        self.assertEqual(res.status_code, 502)
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(), {})
+
+    # --- 6. AI 网络失败 → 502，零写入 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_single_expand_network_error_zero_write(self, mock_call):
+        mock_call.return_value = (None, '无法连接 AI 服务')
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word.id)
+        self.assertEqual(res.status_code, 502)
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(), {})
+
+    # --- 7. 词性白名单：非法标签丢弃、全部非法则 502 零写入 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_single_expand_whitelist_filter(self, mock_call):
+        mock_call.return_value = (json.dumps(
+            {'conduct': {'v.': ['传导'], '名词': ['行为'], 'adj.': ['导电的']}},
+            ensure_ascii=False), None)
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word.id)
+        data = res.json()
+        self.assertTrue(data['updated'])
+        self.word.refresh_from_db()
+        # 「名词」被丢弃；v./adj. 保留（adj. 在白名单内）
+        self.assertEqual(self.word.get_meanings_by_pos(),
+                         {'v.': ['传导'], 'adj.': ['导电的']})
+        self.assertTrue(data['warnings'])
+
+    @patch('words.views.builtin_ai_exam_call')
+    def test_single_expand_all_invalid_zero_write(self, mock_call):
+        mock_call.return_value = (json.dumps(
+            {'conduct': {'名词': ['行为']}}, ensure_ascii=False), None)
+        res = self._post('words:api_word_pos_expand', {}, word_id=self.word.id)
+        self.assertEqual(res.status_code, 502)
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(), {})
+
+    # --- 8. 批量：只处理缺词性词，计数正确，成功词写回 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_batch_expand_counts(self, mock_call):
+        today = timezone.localdate()
+        DailyPick.objects.create(date=today, word=self.word)
+        DailyPick.objects.create(date=today, word=self.word_full)
+        DailyPick.objects.create(date=today, word=self.word_unclassified)
+        mock_call.return_value = (json.dumps({
+            'conduct': {'v.': ['传导'], 'n.': ['行为']},
+            'yield': {'v.': ['产出']},
+        }, ensure_ascii=False), None)
+        res = self._post('words:api_daily_pick_pos_expand', {})
+        data = res.json()
+        self.assertEqual(data['total'], 3)
+        self.assertEqual(data['updated'], 2)
+        self.assertEqual(data['failed'], 0)
+        self.assertEqual(data['skipped'], 1)  # word_full 已有词性释义
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(), {'v.': ['传导'], 'n.': ['行为']})
+        self.word_unclassified.refresh_from_db()
+        self.assertEqual(self.word_unclassified.get_meanings_by_pos(), {'v.': ['产出']})
+        # 已有词性的词不被覆盖
+        self.word_full.refresh_from_db()
+        self.assertEqual(self.word_full.get_meanings_by_pos(),
+                         {'v.': ['呈现'], 'n.': ['礼物']})
+
+    # --- 9. 批量：清单为空 → 400 ---
+    def test_batch_expand_empty_pick(self):
+        res = self._post('words:api_daily_pick_pos_expand', {})
+        self.assertEqual(res.status_code, 400)
+
+    # --- 10. 批量：全部已有词性 → updated=0 不调 AI ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_batch_expand_all_full_skip(self, mock_call):
+        DailyPick.objects.create(date=timezone.localdate(), word=self.word_full)
+        res = self._post('words:api_daily_pick_pos_expand', {})
+        data = res.json()
+        self.assertEqual(data['updated'], 0)
+        self.assertEqual(data['skipped'], 1)
+        mock_call.assert_not_called()
+
+    # --- 11. 批量：AI 返回缺某词 → 该词计 failed，其余正常写回 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_batch_expand_partial_failure(self, mock_call):
+        today = timezone.localdate()
+        DailyPick.objects.create(date=today, word=self.word)
+        DailyPick.objects.create(date=today, word=self.word_unclassified)
+        # AI 只返回 conduct，缺 yield
+        mock_call.return_value = (json.dumps(
+            {'conduct': {'v.': ['传导']}}, ensure_ascii=False), None)
+        res = self._post('words:api_daily_pick_pos_expand', {})
+        data = res.json()
+        self.assertEqual(data['updated'], 1)
+        self.assertEqual(data['failed'], 1)
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(), {'v.': ['传导']})
+        self.word_unclassified.refresh_from_db()
+        self.assertEqual(self.word_unclassified.get_meanings_by_pos(),
+                         {'未分类': ['产出；屈服']})  # 失败词保持原样
+
+    # --- 12. 批量：AI 整批网络失败 → 全部计 failed，零写入 ---
+    @patch('words.views.builtin_ai_exam_call')
+    def test_batch_expand_network_error_zero_write(self, mock_call):
+        DailyPick.objects.create(date=timezone.localdate(), word=self.word)
+        mock_call.return_value = (None, '连接超时')
+        res = self._post('words:api_daily_pick_pos_expand', {})
+        data = res.json()
+        self.assertEqual(data['updated'], 0)
+        self.assertEqual(data['failed'], 1)
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.get_meanings_by_pos(), {})

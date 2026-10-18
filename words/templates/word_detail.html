@@ -5,6 +5,20 @@
 
 {% block page_title %}{{ word.word }}{% endblock %}
 
+{% block extra_head %}
+<style>
+  .family-body { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .family-chip { display: inline-flex; align-items: baseline; gap: 4px; font-size: var(--fs-sm); color: var(--c-text); background: var(--c-surface-2); border: 1px solid var(--c-border); border-radius: 999px; padding: 3px 10px; }
+  .family-chip.core { border-color: var(--c-blue); color: var(--c-blue); font-weight: 700; }
+  .family-chip.outside { opacity: .7; border-style: dashed; }
+  .family-chip em { font-style: normal; font-size: var(--fs-xs); color: var(--c-text-3); }
+  .family-chip small { font-size: var(--fs-xs); color: var(--c-text-3); }
+  .family-mean { color: var(--c-text-2); font-weight: 500; }
+  .family-badge { font-size: var(--fs-xs); font-weight: 600; color: var(--c-blue); background: var(--c-blue-bg); border-radius: 999px; padding: 1px 8px; }
+  .family-note { font-size: var(--fs-xs); color: var(--c-text-3); margin-top: 6px; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="card word-card">
   <div class="flex justify-center gap-4 mb-4">
@@ -105,6 +119,16 @@
 {% endif %}
 {% endwith %}
 
+<!-- 词族变式（同根派生词，如 operate → operation / operator / operational） -->
+<div class="card mt-6">
+  <div class="card-header">词族变式</div>
+  <div id="familyBody" class="family-body"><span class="text-secondary text-sm">加载中…</span></div>
+  <div class="family-note hidden" id="familyNote"></div>
+  <button type="button" class="btn btn-secondary btn-sm mt-4 hidden" id="familyGenBtn" onclick="generateFamily()">
+    <i class="ph ph-sparkle"></i> AI 生成变式
+  </button>
+</div>
+
 
 <div class="card mt-6">
   <div class="card-header">笔记</div>
@@ -156,8 +180,9 @@
   </div>
 </div>
 
-<div class="mt-6">
+<div class="mt-6 flex gap-2">
   <a href="{% url 'words:word_list' %}" class="btn btn-secondary">返回词库</a>
+  <a href="{% url 'words:pos_learning' word_id=word.id %}" class="btn btn-secondary"><i class="ph ph-brackets-round"></i> 词性学习</a>
 </div>
 {% endblock %}
 
@@ -260,5 +285,93 @@ async function toggleMastery() {
     showToast('操作失败', 'error');
   }
 }
+
+// ===== 词族变式（同根派生词，如 operate → operation / operator / operational）=====
+var FAMILY_REL_LABEL = { core: '核心', derived: '派生', inflection: '屈折变化', compound: '复合' };
+var WORD_ID = {{ word.id }};
+
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function familyChips(members) {
+  return (members || []).map(function (m) {
+    var cls = 'family-chip' + (m.is_core ? ' core' : '') + (m.in_library === false ? ' outside' : '');
+    var label = m.relation_label || FAMILY_REL_LABEL[m.relation] || '';
+    return '<span class="' + cls + '">' + escHtml(m.word) +
+      (m.pos ? '<em>' + escHtml(m.pos) + '</em>' : '') +
+      (m.meaning ? '<span class="family-mean">' + escHtml(m.meaning) + '</span>' : '') +
+      ((label && !m.is_core) ? '<small>' + escHtml(label) + '</small>' : '') + '</span>';
+  }).join('');
+}
+
+function renderFamily(data) {
+  var body = document.getElementById('familyBody');
+  var note = document.getElementById('familyNote');
+  var genBtn = document.getElementById('familyGenBtn');
+  if (!body) return;
+  if (!data || !data.family) {
+    body.innerHTML = '<span class="text-secondary text-sm">还没有该词的词族变式，点下方按钮 AI 生成</span>';
+    if (note) note.classList.add('hidden');
+    if (genBtn) { genBtn.classList.remove('hidden'); genBtn.disabled = false; }
+    return;
+  }
+  if (genBtn) genBtn.classList.add('hidden');
+  var badge = data.family.is_confirmed ? '' : '<span class="family-badge">AI 生成</span>';
+  var chips = familyChips(data.members);
+  body.innerHTML = badge + (chips || '<span class="text-secondary text-sm">暂无变式</span>');
+  if (note) {
+    var lines = (data.patterns || []).map(function (p) {
+      return escHtml(p.name || '') + (p.rule ? '：' + escHtml(p.rule) : '');
+    }).filter(Boolean);
+    if (lines.length) { note.classList.remove('hidden'); note.textContent = lines.join('　·　'); }
+    else note.classList.add('hidden');
+  }
+}
+
+function loadFamily() {
+  return fetch('/api/words/' + WORD_ID + '/word-family/')
+    .then(function (r) { return r.json(); })
+    .then(renderFamily)
+    .catch(function () { renderFamily(null); });
+}
+
+async function generateFamily() {
+  var genBtn = document.getElementById('familyGenBtn');
+  if (genBtn) genBtn.disabled = true;
+  try {
+    var r = await fetch('/api/word-families/candidates/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+      body: JSON.stringify({ word_id: WORD_ID, confirm: true })
+    });
+    var data = await r.json();
+    if (data && data.candidate) {
+      renderFamily({
+        family: { key: data.candidate.family.key, title: data.candidate.family.title,
+                  is_confirmed: !!data.confirmed },
+        members: (data.candidate.members || []).map(function (m) {
+          return { word: m.word, pos: m.pos, meaning: m.meaning || '', relation: m.relation,
+                   relation_label: FAMILY_REL_LABEL[m.relation] || '',
+                   is_core: m.relation === 'core', in_library: true };
+        }),
+        patterns: (data.candidate.patterns || []).map(function (p) { return { name: p.name, rule: p.rule }; })
+      });
+      showToast('已生成词族变式', 'success');
+    } else if (data && data.reused) {
+      await loadFamily();
+      showToast('已存在该词族，已展示', 'info');
+    } else {
+      showToast((data && data.error) || '生成失败，请检查 AI 配置', 'error');
+      if (genBtn) genBtn.disabled = false;
+    }
+  } catch (err) {
+    showToast('生成失败，请重试', 'error');
+    if (genBtn) genBtn.disabled = false;
+  }
+}
+
+loadFamily();
 </script>
 {% endblock %}

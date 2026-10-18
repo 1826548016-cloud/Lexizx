@@ -290,3 +290,74 @@ def weekly_report_prompt(summary):
         '6. 直接输出评语正文，不要标题、不要列表符号、不要任何多余格式\n\n'
         '本周学习数据：\n' + summary
     )
+
+
+# ============ 词性学习 / 词族与构词法（HANDOVER 第十二节） ============
+
+POS_LESSON_PROMPT_VERSION = '1'
+
+
+def pos_lesson_prompt(word, meanings_by_pos, focus_pos='', uncommon_pos=None, example_en=''):
+    """词性讲解生成提示词：只发最小必要内容（词、已有按词性释义、陌生词性、例句）。"""
+    groups = '；'.join(f'{p}: {"、".join(ms)}' for p, ms in (meanings_by_pos or {}).items() if ms) or '（无按词性释义）'
+    uncommon = '、'.join(uncommon_pos or []) or '（无）'
+    focus_line = f'用户本次重点学习词性：{focus_pos}\n' if focus_pos else ''
+    return (
+        '你是考研英语词汇老师。请针对下面的单词生成「词性学习讲解」，严格输出 JSON。\n\n'
+        f'单词：{word}\n'
+        f'已有按词性释义：{groups}\n'
+        f'用户标记的陌生词性：{uncommon}\n'
+        f'{focus_line}'
+        f'英文例句：{example_en or "（无）"}\n\n'
+        '要求：\n'
+        '1. 严格输出如下结构的 JSON，不要输出任何额外文字、不要 Markdown 代码块：\n'
+        '{"lesson_version": 1, "word": "<必须与给定单词完全一致>", '
+        '"pos_groups": [{"pos": "n.", "meaning": "释义", "usage": "该词性的语义侧重与句法位置，50字内", "memory_tip": "记忆提示，30字内"}], '
+        '"confusions": [{"word": "易混词", "difference": "与本词的最小语义差别，50字内", "confidence": 0.0}], '
+        '"patterns": [{"name": "-ic", "rule": "构词规律，40字内", "exception": "例外，可空"}], '
+        '"exercises": [{"type": "pos_choice", "prompt": "题干", "options": ["n.", "v.", "adj."], "answer": "adj."}]}\n'
+        '2. pos_groups 必须覆盖已有按词性释义中出现的全部词性，不得新造词性标签。\n'
+        '3. 用户陌生词性对应的 pos_groups 要重点讲解。\n'
+        '4. confusions 最多 3 个，patterns 最多 3 个，exercises 最多 3 道。\n'
+        '5. 客观题至少 2 个不重复选项，answer 必须出现在 options 中。\n'
+        '6. 禁止编造生僻专有名词、虚构数据；不确定的易混词不要写。\n'
+    )
+
+
+def pos_open_grade_prompt(word, target_pos, question_prompt, reference, user_answer):
+    """词性开放题判定提示词：只允许输出 correct/partial/wrong。"""
+    return (
+        '你是考研英语词性学习的判分老师。请判定学生对开放题的作答，严格输出 JSON。\n\n'
+        f'单词：{word}（目标词性：{target_pos or "不限"}）\n'
+        f'题目：{question_prompt}\n'
+        f'参考答案：{reference}\n'
+        f'学生答案：{user_answer}\n\n'
+        '要求：\n'
+        '1. 严格输出 JSON：{"verdict": "correct|partial|wrong", "feedback": "50字内短评，指出关键对错", "error_type": "pos|spelling|meaning|collocation|other"}\n'
+        '2. verdict 只能是 correct、partial、wrong 三者之一：完全达意=correct，部分达意或有小瑕=partial，未达意或词性误用=wrong。\n'
+        '3. error_type 仅在 verdict 为 wrong 时给出，且只能是上述五种之一；其他情况填空字符串。\n'
+        '4. 不要输出任何额外文字、不要 Markdown 代码块。\n'
+    )
+
+
+def word_family_candidate_prompt(word, pos, word_forms, meanings, candidate_words):
+    """词族/构词法/易混候选生成提示词。candidate_words 为词库中可能相关的词。"""
+    forms = '；'.join(f'{k}: {"、".join(v)}' for k, v in (word_forms or {}).items() if v) or '（无词形变化数据）'
+    cands = '、'.join(candidate_words[:40]) or '（无）'
+    return (
+        '你是英语构词法老师。请为下面的核心词生成「词族、构词法、易混关系」候选，严格输出 JSON。\n\n'
+        f'核心词：{word}（{pos or "词性未知"}）\n'
+        f'已有释义：{"、".join(meanings or []) or "（无）"}\n'
+        f'已有词形变化：{forms}\n'
+        f'词库中可能相关的词：{cands}\n\n'
+        '要求：\n'
+        '1. 严格输出如下结构的 JSON，不要任何额外文字、不要 Markdown 代码块：\n'
+        '{"family": {"key": "词族标识如econom-", "title": "词族中文名", "description": "80字内说明"}, '
+        '"members": [{"word": "成员词", "pos": "词性", "meaning": "简短中文释义20字内", "relation": "core|derived|inflection|compound", "note": "构词说明30字内"}], '
+        '"patterns": [{"name": "-ic", "kind": "prefix|suffix|root", "from_pos": "", "to_pos": "adj.", "rule": "40字内", "exception": ""}], '
+        '"relations": [{"word": "相关词", "rel_type": "confusing|collocation|synonym|antonym|derived", "note": "40字内", "confidence": 0.0}]}\n'
+        '2. members 必须包含核心词本身（relation=core）；每个成员都要给简短的汉语释义 meaning；成员最多 8 个，patterns 最多 4 个，relations 最多 4 个。\n'
+        '3. 优先使用「词库中可能相关的词」里的词；词库外但确有教学价值的词也可以给，系统将标记为「词库外示例」。\n'
+        '4. 不确定的关系不要写；confidence 取 0~1，反映你对该关系正确性的把握。\n'
+        '5. 禁止编造虚构词形或不存在的关系。\n'
+    )

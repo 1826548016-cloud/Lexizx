@@ -1,16 +1,16 @@
 {% extends 'base.html' %}
 {% load static %}
 
-{% block title %}薄弱词 - 考研单词背诵系统{% endblock %}
-{% block page_title %}薄弱词{% endblock %}
+{% block title %}错误知识库 - 考研单词背诵系统{% endblock %}
+{% block page_title %}错误知识库{% endblock %}
 
 {% block content %}
 {% csrf_token %}
 
 <div class="flex justify-between items-center" style="margin-bottom: 24px; flex-wrap: wrap; gap: 16px;">
   <h2 style="margin: 0; font-size: var(--fs-xl); display: flex; align-items: center; gap: 8px;">
-    <i class="ph ph-warning-circle" style="color: var(--c-red);"></i> 薄弱词
-    <span class="text-sm text-secondary" style="font-weight: 400;">从全部薄弱词中精选最需巩固的 {{ selected_count }} 个</span>
+    <i class="ph ph-warning-circle" style="color: var(--c-red);"></i> 错误知识库
+    <span class="text-sm text-secondary" style="font-weight: 400;">按错误风险从高到低，精选最需巩固的 {{ selected_count }} 个</span>
   </h2>
   <a href="{% url 'words:learn_start' %}" class="btn btn-primary btn-sm">
     <i class="ph ph-target"></i> 去背单词
@@ -29,14 +29,19 @@
     <div class="stat-label">学习中 / 复习中</div>
   </div>
   <div class="card stat-card">
-    <div class="card-header" style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;"><i class="ph ph-x-circle ph-sm"></i> 累计错误</div>
-    <div class="stat-value" style="color: var(--c-red);">{{ stats.total_errors }}</div>
-    <div class="stat-label">全部薄弱词的错误次数</div>
+    <div class="card-header" style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;"><i class="ph ph-x-circle ph-sm"></i> 高风险</div>
+    <div class="stat-value" style="color: var(--c-red);">{{ stats.high }}</div>
+    <div class="stat-label">红色警示，优先巩固</div>
   </div>
   <div class="card stat-card">
-    <div class="card-header" style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;"><i class="ph ph-arrows-clockwise ph-sm"></i> 已复习</div>
-    <div class="stat-value">{{ stats.reviewed }}</div>
-    <div class="stat-label">至少复习过 1 次</div>
+    <div class="card-header" style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;"><i class="ph ph-circle-half ph-sm"></i> 中风险</div>
+    <div class="stat-value" style="color: var(--c-amber);">{{ stats.medium }}</div>
+    <div class="stat-label">黄色关注</div>
+  </div>
+  <div class="card stat-card">
+    <div class="card-header" style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;"><i class="ph ph-arrows-clockwise ph-sm"></i> 累计错误</div>
+    <div class="stat-value">{{ stats.total_errors }}</div>
+    <div class="stat-label">全部薄弱词的错误次数</div>
   </div>
 </div>
 
@@ -44,8 +49,9 @@
 <div class="card">
   <div class="card-header">精选薄弱词（{{ selected_count }} 个）</div>
   <div class="text-sm text-secondary" style="margin: 2px 0 12px;">
-    从全部 {{ pool_count }} 个薄弱词中，按「错误次数、是否掌握、掌握等级、近期表现」综合评分，
-    选出最需要巩固的 {{ selected_count }} 个（薄弱指数从高到低）。
+    依据「真实错误事件的时间衰减 + 错误率 + 掌握状态」自动评估风险分并分档
+    <span style="color: var(--c-red);">🔴 高</span> / <span style="color: var(--c-amber);">🟡 中</span> / <span style="color: var(--c-green);">⚪ 低</span>；手动定档优先于自动判断。
+    存储个人错误样本，解释规则的评分仅供本地参考，不代表官方结论。
   </div>
   <div style="overflow-x: auto;">
     <table class="data-table">
@@ -58,22 +64,23 @@
           <th>释义</th>
           <th>掌握状态</th>
           <th>错误次数</th>
-          <th>复习次数</th>
-          <th>掌握等级</th>
-          <th>薄弱指数</th>
+          <th>风险档</th>
+          <th>风险分</th>
+          <th>推荐原因</th>
+          <th>手动定档</th>
           <th>操作</th>
         </tr>
       </thead>
       <tbody>
         {% for it in items %}
-        <tr>
+        <tr data-word-id="{{ it.id }}">
           <td>{{ forloop.counter }}</td>
           <td>
             <a href="{% url 'words:word_detail' it.id %}" style="text-decoration: none; font-weight: 600;">{{ it.word }}</a>
           </td>
           <td class="text-secondary">{{ it.phonetic_us|default:"-" }}</td>
           <td class="text-secondary">{{ it.pos|default:"-" }}</td>
-          <td class="text-secondary" style="max-width: 280px;">{{ it.meanings|join:"；"|truncatechars:50 }}</td>
+          <td class="text-secondary" style="max-width: 260px;">{{ it.meanings|join:"；"|truncatechars:50 }}</td>
           <td>
             {% if it.status == 'mastered' %}
             <span class="badge" style="background: var(--c-green-bg); color: var(--c-green);">已掌握</span>
@@ -84,9 +91,32 @@
             {% endif %}
           </td>
           <td><span style="color: var(--c-red); font-weight: 600;">{{ it.error_count }}</span></td>
-          <td>{{ it.review_count }}</td>
-          <td>L{{ it.mastery_level }}</td>
-          <td><span style="color: var(--c-red); font-weight: 600;">{{ it.score }}</span></td>
+          <td>
+            {% if it.risk_tier == 2 %}
+            <span class="badge" style="background: var(--c-red-bg, #fde8e8); color: var(--c-red);">🔴 高</span>
+            {% elif it.risk_tier == 1 %}
+            <span class="badge" style="background: var(--c-amber-bg); color: var(--c-amber);">🟡 中</span>
+            {% else %}
+            <span class="badge" style="background: var(--c-green-bg); color: var(--c-green);">⚪ 低</span>
+            {% endif %}
+            {% if it.risk_overridden %}
+            <span class="badge" style="background: var(--c-blue-bg); color: var(--c-blue);">手动</span>
+            {% endif %}
+          </td>
+          <td>
+            <span style="font-weight: 600;">{{ it.score|default:"–" }}</span>
+          </td>
+          <td class="text-secondary" style="max-width: 220px; font-size: var(--fs-sm);">
+            {{ it.risk_reasons|join:" · "|default:"—" }}
+          </td>
+          <td>
+            <div class="flex" style="gap: 4px; align-items: center;">
+              <button class="btn btn-xs btn-outline risk-set" data-level="0" title="设为低风险">低</button>
+              <button class="btn btn-xs btn-outline risk-set" data-level="1" title="设为中风险">中</button>
+              <button class="btn btn-xs btn-outline risk-set" data-level="2" title="设为高风险">高</button>
+              <button class="btn btn-xs btn-link risk-clear" title="清除覆盖恢复自动">✕</button>
+            </div>
+          </td>
           <td>
             <a href="{% url 'words:word_detail' it.id %}" class="btn btn-secondary btn-sm">详情</a>
           </td>
@@ -104,4 +134,43 @@
 </div>
 {% endif %}
 
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const csrftoken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+    function csrfSafe(method) {
+        return /^(GET|HEAD|OPTIONS|TRACE)$/.test(method);
+    }
+    function setRisk(wordId, level, label) {
+        fetch('/api/risk-override/' + wordId + '/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrftoken,
+            },
+            body: JSON.stringify({ level: level })
+        }).then(r => r.json()).then(d => {
+            if (!d.success) { alert(d.error || '设置失败'); return; }
+            const tr = document.querySelector('tr[data-word-id="' + wordId + '"]');
+            if (tr && label) tr.classList.add('row-highlight');
+            location.reload();
+        }).catch(() => alert('网络错误'));
+    }
+    document.querySelectorAll('.risk-set').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const tr = btn.closest('tr');
+            const wordId = tr.dataset.wordId;
+            setRisk(wordId, btn.dataset.level);
+        });
+    });
+    document.querySelectorAll('.risk-clear').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const tr = btn.closest('tr');
+            setRisk(tr.dataset.wordId, -1);
+        });
+    });
+})();
+</script>
 {% endblock %}

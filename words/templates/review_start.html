@@ -29,14 +29,14 @@
   <div class="card" style="margin-bottom: 20px;">
     <div class="card-header">快速开始</div>
     <div class="quick-start-grid">
-      <a href="{% url 'words:review_session' %}?plan=1&mode=random&batch={{ batch_size }}" class="quick-card">
+      <a href="{% url 'words:review_session' %}?plan=1&mode=random" class="quick-card">
         <div class="quick-icon"><i class="ph ph-calendar-check"></i></div>
         <div class="quick-title">今日复习</div>
         <div class="quick-desc">{% if plan %}{{ plan.name }}范围内{% else %}全范围{% endif %}复习 {{ daily_review_target|default:50 }} 个，今日到期优先、不足自动补足</div>
       </a>
 
       {% if new_yesterday > 0 %}
-      <a href="{% url 'words:review_session' %}?scope=yesterday&mode=normal&batch={{ batch_size }}&count={{ new_yesterday }}" class="quick-card">
+      <a href="{% url 'words:review_session' %}?scope=yesterday&mode=normal&count={{ new_yesterday }}" class="quick-card">
         <div class="quick-icon"><i class="ph ph-sun-horizon"></i></div>
         <div class="quick-title">昨日新学</div>
         <div class="quick-desc">昨天新学 {{ new_yesterday }} 个词，今天专项巩固（今天新学 {{ new_today }} 个，明天可复习）</div>
@@ -48,23 +48,23 @@
         <div class="quick-desc">昨天没有新学单词（今天新学 {{ new_today }} 个，明天出现在这里）</div>
       </div>
       {% endif %}
-      <a href="{% url 'words:review_session' %}?scope=unmastered&mode=random&batch={{ batch_size }}&count=20" class="quick-card">
+      <a href="{% url 'words:review_session' %}?scope=unmastered&mode=random&count=20" class="quick-card">
         <div class="quick-icon"><i class="ph ph-target"></i></div>
         <div class="quick-title">复习未掌握</div>
         <div class="quick-desc">只复习还没背会的单词，随机 20 个</div>
       </a>
-      <a href="{% url 'words:review_session' %}?scope=all&mode=random&batch={{ batch_size }}&count=20" class="quick-card">
+      <a href="{% url 'words:review_session' %}?scope=all&mode=random&count=20" class="quick-card">
         <div class="quick-icon"><i class="ph ph-shuffle"></i></div>
         <div class="quick-title">随机抽查</div>
         <div class="quick-desc">任意已学词中随机抽查 20 个</div>
       </a>
-      <a href="{% url 'words:review_session' %}?scope=mastered&mode=random&batch={{ batch_size }}&count=20" class="quick-card">
+      <a href="{% url 'words:review_session' %}?scope=mastered&mode=random&count=20" class="quick-card">
         <div class="quick-icon"><i class="ph ph-star"></i></div>
         <div class="quick-title">巩固已掌握</div>
         <div class="quick-desc">复习已掌握的单词，防止遗忘</div>
       </a>
       {% for preset in presets %}
-      <div class="quick-card preset-card" data-url="{% url 'words:review_session' %}?scope={{ preset.params.scope|default:'all' }}&mode={{ preset.params.mode|default:'random' }}&batch={{ preset.params.batch|default:batch_size }}&count={{ preset.params.count|default:daily_review_target|default:50 }}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
+      <div class="quick-card preset-card" data-url="{% url 'words:review_session' %}?scope={{ preset.params.scope|default:'all' }}&mode={{ preset.params.mode|default:'random' }}&count={{ preset.params.count|default:daily_review_target|default:50 }}{% for u in preset.params.units|default_if_none:'' %}&units={{ u }}{% endfor %}" data-params="{{ preset.params_json }}" onclick="startPreset(this)">
         <div class="quick-icon"><i class="ph ph-lightning"></i></div>
         <div class="quick-title">{{ preset.name }}</div>
         <div class="quick-desc">{{ preset.params.scope|default:'全部' }} · {{ preset.params.count|default:daily_review_target|default:50 }} 个</div>
@@ -77,7 +77,7 @@
       <button type="button" class="quick-card" onclick="toggleCustomReview()">
         <div class="quick-icon"><i class="ph ph-sliders-horizontal"></i></div>
         <div class="quick-title">自定义</div>
-        <div class="quick-desc">自己选范围、数量、每批数和单元</div>
+        <div class="quick-desc">自己选范围、数量和单元</div>
       </button>
     </div>
   </div>
@@ -119,17 +119,7 @@
           已复习过的词不会重复出现，直至一轮复习完。
         </p>
       </div>
-      <div class="choice-group">
-        <span class="choice-group-title">每批数量</span>
-        {% for n in batch_options %}
-        <label class="choice-option">
-          <input type="radio" name="batch" value="{{ n }}" {% if n == batch_size %}checked{% endif %}>
-          <span>{{ n }} 个</span>
-        </label>
-        {% endfor %}
-        <p class="text-secondary text-sm" style="margin: 0;">每批复习完后小结一次，点「继续下一批」再复习</p>
       </div>
-    </div>
 
     <div class="unit-picker" style="margin-top: 14px;">
       <button type="button" class="btn btn-secondary btn-lg" style="width: 100%; justify-content: space-between;" onclick="openUnitModal()">
@@ -285,7 +275,7 @@ function applyParamsToForm(params) {
     var sr = document.querySelector('input[name="scope"][value="' + params.scope + '"]');
     if (sr) sr.checked = true;
   }
-  ['batch', 'count'].forEach(function (k) {
+  ['count'].forEach(function (k) {
     if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
       var el = document.querySelector('input[name="' + k + '"]');
       if (el) el.value = params[k];

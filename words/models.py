@@ -147,6 +147,14 @@ class StudyProgress(models.Model):
     manual_level = models.IntegerField(
         choices=[(1, '熟练'), (2, '次于熟练'), (3, '生词')], default=3, db_index=True,
         verbose_name='手动等级', help_text='1=熟练 2=次于熟练 3=生词；与自动「会/不会」双轨并存，由用户手动划分')
+    RISK_CHOICES = [
+        (0, '低风险'),
+        (1, '中风险'),
+        (2, '高风险'),
+    ]
+    risk_override = models.IntegerField(
+        choices=RISK_CHOICES, null=True, blank=True, db_index=True,
+        verbose_name='手动风险覆盖', help_text='手动覆盖风险档位：0=低 1=中 2=高；为空时采用自动风险计算')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:
@@ -288,6 +296,38 @@ class DailyPick(models.Model):
         return f'{self.date} - {self.word.word}'
 
 
+class PickRecord(models.Model):
+    """选词记录：把一次今日自选清单保存为可回看、可重新载入续作的记录。"""
+    name = models.CharField(max_length=100, verbose_name='记录名')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '选词记录'
+        verbose_name_plural = '选词记录'
+
+    def __str__(self):
+        return self.name
+
+
+class PickRecordWord(models.Model):
+    """选词记录内的单词，按 position 保持勾选顺序。"""
+    record = models.ForeignKey(PickRecord, on_delete=models.CASCADE,
+        related_name='words', verbose_name='记录')
+    word = models.ForeignKey(Word, on_delete=models.CASCADE,
+        related_name='pick_record_words', verbose_name='单词')
+    position = models.PositiveIntegerField(default=0, verbose_name='顺序')
+
+    class Meta:
+        unique_together = [('record', 'word')]
+        ordering = ['position', 'id']
+        verbose_name = '选词记录单词'
+        verbose_name_plural = '选词记录单词'
+
+    def __str__(self):
+        return f'{self.record_id} - {self.word.word}'
+
+
 class StudySession(models.Model):
     MODE_CHOICES = [
         ('sequential', '顺序背诵'),
@@ -334,6 +374,16 @@ class StudyRecord(models.Model):
         ('learn', '背诵'),
         ('review', '复习'),
         ('favorite', '收藏复习'),
+        ('exam', '考试'),
+        ('pos', '词性练习'),
+    ]
+    MISTAKE_CHOICES = [
+        ('spelling', '拼写'),
+        ('meaning', '释义'),
+        ('meaning_confusion', '义项混淆'),
+        ('pos', '词性'),
+        ('collocation', '搭配'),
+        ('other', '其他'),
     ]
 
     word = models.ForeignKey(Word, on_delete=models.CASCADE,
@@ -344,6 +394,13 @@ class StudyRecord(models.Model):
         default='learn', verbose_name='来源', db_index=True)
     mode = models.CharField(max_length=30, blank=True, default='',
         verbose_name='模式')  # sequential/random/gates/spelling/meaning 等
+    mistake_type = models.CharField(
+        max_length=30, choices=MISTAKE_CHOICES, blank=True, default='',
+        db_index=True, verbose_name='错误类型',
+        help_text='错在哪儿：拼写/释义/义项混淆/词性/搭配/其他；答对或不会时可为空')
+    error_detail = models.JSONField(
+        default=dict, blank=True, verbose_name='错误详情',
+        help_text='沉淀真实错误样本：{"user_answer": 你的答案, "correct": 标准答案}')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='时间', db_index=True)
 
     class Meta:
@@ -404,6 +461,9 @@ class UserSettings(models.Model):
         on_delete=models.SET_NULL, related_name='+', verbose_name='考研写作工坊模型')
     cet6_translation_model = models.ForeignKey('AIModel', null=True, blank=True,
         on_delete=models.SET_NULL, related_name='+', verbose_name='六级汉译英模型')
+    pos_learning_model = models.ForeignKey('AIModel', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+', verbose_name='词性学习模型',
+        help_text='未设置时回退复审模型，再回退第一个已启用模型')
 
     # 密钥保险箱：salt 与校验串落库，密码本身与派生密钥不落库
     vault_salt = models.CharField(max_length=64, blank=True, default='', verbose_name='保险箱密码 salt')
@@ -948,6 +1008,229 @@ class GeneratedCet6Question(models.Model):
         return f'{self.paper.title} 第{self.order}段'
 
 
+class PosLearningAttempt(models.Model):
+    """词性学习作答记录：词性错误的可审计来源。
+    判错后由服务端额外写一条 StudyRecord(mistake_type='pos')。"""
+    QUESTION_TYPES = [
+        ('pos_choice', '词性识别'),
+        ('pos_match', '词性释义匹配'),
+        ('form_convert', '词形转换'),
+        ('open', '开放题'),
+    ]
+    RESULT_CHOICES = [
+        ('correct', '正确'),
+        ('partial', '部分正确'),
+        ('wrong', '错误'),
+    ]
+    JUDGED_BY_CHOICES = [('local', '本地判定'), ('ai', 'AI判定')]
+
+    word = models.ForeignKey(Word, on_delete=models.CASCADE,
+        related_name='pos_attempts', verbose_name='单词')
+    target_pos = models.CharField(max_length=20, blank=True, default='',
+        verbose_name='目标词性')
+    question_type = models.CharField(max_length=20, choices=QUESTION_TYPES,
+        verbose_name='题型')
+    question = models.JSONField(default=dict, verbose_name='题目',
+        help_text='{prompt, options?, answer, reference?}')
+    user_answer = models.TextField(blank=True, default='', verbose_name='用户答案')
+    result = models.CharField(max_length=10, choices=RESULT_CHOICES,
+        blank=True, default='', verbose_name='判定结果')
+    judged_by = models.CharField(max_length=10, choices=JUDGED_BY_CHOICES,
+        blank=True, default='', verbose_name='判定来源')
+    feedback = models.TextField(blank=True, default='', verbose_name='点评')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作答时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '词性学习作答'
+        verbose_name_plural = '词性学习作答'
+
+    def __str__(self):
+        return f'{self.word.word} - {self.get_question_type_display()}'
+
+
+class PosLessonCache(models.Model):
+    """AI 词性讲解缓存：同一词 + 同一提示词版本直接读取，避免重复收费与判定漂移。
+    （本表为方案「内容版本 + 本地缓存」要求的落地载体。）"""
+    word = models.OneToOneField(Word, on_delete=models.CASCADE,
+        related_name='pos_lesson_cache', verbose_name='单词')
+    content = models.JSONField(default=dict, verbose_name='讲解内容')
+    model_id = models.CharField(max_length=120, blank=True, default='', verbose_name='生成模型')
+    prompt_version = models.CharField(max_length=20, default='1', verbose_name='提示词版本')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        verbose_name = '词性讲解缓存'
+        verbose_name_plural = '词性讲解缓存'
+
+    def __str__(self):
+        return f'{self.word.word} - 词性讲解缓存'
+
+
+class WordFamily(models.Model):
+    """词族：一组可教学的同根词。AI 生成的一律 source='ai_candidate'，
+    经人工确认（confirmed_at 非空）后才可用于正式推荐。"""
+    SOURCE_CHOICES = [('manual', '人工录入'), ('ai_candidate', 'AI候选')]
+
+    key = models.CharField(max_length=60, unique=True, verbose_name='词族标识',
+        help_text='如 econom-；用于稳定键映射')
+    title = models.CharField(max_length=120, verbose_name='词族名称')
+    description = models.TextField(blank=True, default='', verbose_name='中文说明')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES,
+        default='manual', verbose_name='来源', db_index=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True,
+        verbose_name='人工确认时间', db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        ordering = ['key']
+        verbose_name = '词族'
+        verbose_name_plural = '词族'
+
+    def __str__(self):
+        return self.title
+
+    @property
+    def is_confirmed(self):
+        return self.confirmed_at is not None
+
+
+class WordFamilyMember(models.Model):
+    """词族成员：一个词可加入多个词族；词库外示例 word 为空、用 outside_word 文本。"""
+    RELATION_CHOICES = [
+        ('core', '核心词'),
+        ('derived', '派生词'),
+        ('inflection', '屈折变化'),
+        ('compound', '复合词'),
+    ]
+    SOURCE_CHOICES = [('manual', '人工录入'), ('ai_candidate', 'AI候选')]
+
+    family = models.ForeignKey(WordFamily, on_delete=models.CASCADE,
+        related_name='members', verbose_name='所属词族')
+    word = models.ForeignKey(Word, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='family_memberships', verbose_name='词库单词')
+    outside_word = models.CharField(max_length=100, blank=True, default='',
+        verbose_name='词库外示例', help_text='词库中不存在时仅作展示文本')
+    pos = models.CharField(max_length=20, blank=True, default='', verbose_name='词性')
+    meaning = models.CharField(max_length=200, blank=True, default='',
+        verbose_name='释义', help_text='简短中文释义；库内词展示时优先取词库释义')
+    relation = models.CharField(max_length=20, choices=RELATION_CHOICES,
+        default='derived', verbose_name='关系')
+    note = models.CharField(max_length=200, blank=True, default='', verbose_name='构词说明')
+    sort_order = models.IntegerField(default=0, verbose_name='排序')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES,
+        default='manual', verbose_name='来源')
+    confirmed_at = models.DateTimeField(null=True, blank=True, verbose_name='人工确认时间')
+
+    class Meta:
+        ordering = ['family', 'sort_order']
+        verbose_name = '词族成员'
+        verbose_name_plural = '词族成员'
+
+    def __str__(self):
+        return f'{self.family.key}: {self.word or self.outside_word}'
+
+
+class WordFormationPattern(models.Model):
+    """构词法规则：前缀/后缀/词根与词性转换规律。AI 候选需人工确认。"""
+    KIND_CHOICES = [('prefix', '前缀'), ('suffix', '后缀'), ('root', '词根')]
+    SOURCE_CHOICES = [('manual', '人工录入'), ('ai_candidate', 'AI候选')]
+
+    family = models.ForeignKey(WordFamily, on_delete=models.CASCADE,
+        null=True, blank=True, related_name='patterns',
+        verbose_name='候选批次', help_text='AI 候选时关联所属词族，便于整批确认/拒绝')
+    name = models.CharField(max_length=40, verbose_name='构词元素',
+        help_text='如 -tion / -ment / un-')
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES,
+        default='suffix', verbose_name='类型')
+    from_pos = models.CharField(max_length=20, blank=True, default='', verbose_name='输入词性')
+    to_pos = models.CharField(max_length=20, blank=True, default='', verbose_name='输出词性')
+    rule = models.TextField(blank=True, default='', verbose_name='规则说明')
+    exception = models.TextField(blank=True, default='', verbose_name='例外说明')
+    confidence = models.FloatField(default=1.0, verbose_name='置信度')
+    is_confirmed = models.BooleanField(default=True, verbose_name='已人工确认')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES,
+        default='manual', verbose_name='来源')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        verbose_name = '构词法规则'
+        verbose_name_plural = '构词法规则'
+
+    def __str__(self):
+        return self.name
+
+
+class WordRelation(models.Model):
+    """词与词之间的关系：易混/搭配/近义/反义/派生。AI 候选需人工确认。"""
+    REL_CHOICES = [
+        ('confusing', '易混词'),
+        ('collocation', '搭配'),
+        ('synonym', '近义'),
+        ('antonym', '反义'),
+        ('derived', '派生'),
+    ]
+    SOURCE_CHOICES = [('manual', '人工录入'), ('ai_candidate', 'AI候选')]
+
+    family = models.ForeignKey(WordFamily, on_delete=models.CASCADE,
+        null=True, blank=True, related_name='relations',
+        verbose_name='候选批次', help_text='AI 候选时关联所属词族，便于整批确认/拒绝')
+    word = models.ForeignKey(Word, on_delete=models.CASCADE,
+        related_name='relations_from', verbose_name='起点词')
+    related_word = models.ForeignKey(Word, on_delete=models.CASCADE,
+        null=True, blank=True, related_name='relations_to', verbose_name='终点词')
+    outside_word = models.CharField(max_length=100, blank=True, default='',
+        verbose_name='词库外终点词')
+    rel_type = models.CharField(max_length=20, choices=REL_CHOICES,
+        default='confusing', verbose_name='关系类型')
+    note = models.CharField(max_length=200, blank=True, default='', verbose_name='说明')
+    confidence = models.FloatField(default=1.0, verbose_name='置信度')
+    is_confirmed = models.BooleanField(default=True, verbose_name='已人工确认')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES,
+        default='manual', verbose_name='来源')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        verbose_name = '词关系'
+        verbose_name_plural = '词关系'
+
+    def __str__(self):
+        return f'{self.word} ↔ {self.related_word or self.outside_word} ({self.rel_type})'
+
+
+class KnowledgeFeedback(models.Model):
+    """用户对知识推荐的反馈：重点/已掌握/不相关/暂停。反馈优先于自动关联。"""
+    TARGET_CHOICES = [
+        ('word', '单词'),
+        ('family', '词族'),
+        ('member', '词族成员'),
+        ('pattern', '构词法'),
+        ('relation', '词关系'),
+    ]
+    ACTION_CHOICES = [
+        ('focus', '重点'),
+        ('mastered', '已掌握'),
+        ('irrelevant', '不相关'),
+        ('paused', '暂停推荐'),
+    ]
+
+    target_type = models.CharField(max_length=20, choices=TARGET_CHOICES,
+        verbose_name='对象类型', db_index=True)
+    target_id = models.IntegerField(verbose_name='对象ID')
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES,
+        verbose_name='反馈', db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='反馈时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '知识反馈'
+        verbose_name_plural = '知识反馈'
+
+    def __str__(self):
+        return f'{self.target_type}#{self.target_id} - {self.action}'
+
+
 class AICallLog(models.Model):
     """AI 调用日志：记录每次调用详情，便于追溯与排查"""
     ACTION_CHOICES = [
@@ -964,6 +1247,10 @@ class AICallLog(models.Model):
         ('trans_paper_generate', '长难句AI组卷'),
         ('cet6_grade_passage', '六级段落批改'),
         ('cet6_paper_generate', '六级AI组卷'),
+        ('pos_lesson', '词性讲解'),
+        ('pos_grade', '词性开放题判定'),
+        ('word_family_candidate', '词族候选生成'),
+        ('pos_expand', '词性扩展'),
     ]
     user = models.ForeignKey('auth.User', null=True, blank=True,
         on_delete=models.SET_NULL, verbose_name='用户')

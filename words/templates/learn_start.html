@@ -61,15 +61,10 @@
     </div>
   </div>
 
-  <!-- 常用入口：继续上次（resumeCard）+ 收藏词汇 + 自选范围 -->
+  <!-- 常用入口：继续上次（resumeCard）+ 收藏词汇 + 复习自选 -->
   <div class="card" style="margin-bottom: 20px;">
     <div class="card-header">常用入口</div>
     <div class="quick-start-grid quick-grid-2">
-      <a href="{% url 'words:daily_pick' %}" class="quick-card">
-        <div class="quick-icon"><i class="ph ph-calendar-check"></i></div>
-        <div class="quick-title">自选范围</div>
-        <div class="quick-desc">{% if daily_pick_count %}已选 <strong>{{ daily_pick_count }}</strong> 个词，点此增减或开始背诵{% else %}自己勾选今天要背的词，没背完明天自动顺延{% endif %}</div>
-      </a>
       <a href="{% url 'words:learn_session' %}?scope=favorites&mode=sequential&batch=10&check=none" class="quick-card">
         <div class="quick-icon"><i class="ph ph-star"></i></div>
         <div class="quick-title">收藏词汇</div>
@@ -77,8 +72,8 @@
       </a>
       <a href="{% url 'words:today_words' %}" class="quick-card">
         <div class="quick-icon"><i class="ph ph-arrows-clockwise"></i></div>
-        <div class="quick-title">今日已背</div>
-        <div class="quick-desc">{% if today_practiced_count %}今日已背 <strong>{{ today_practiced_count }}</strong> 词 · 查看/再练（自测不改进度）{% else %}今天还没有背词记录，背过后可在这里再练一轮{% endif %}</div>
+        <div class="quick-title">复习自选</div>
+        <div class="quick-desc">{% if review_pick_count %}全部已学 <strong>{{ review_pick_count }}</strong> 词 · 查看记录/状态再练{% else %}还没有已学词，背过后可在这里筛选再练{% endif %}</div>
       </a>
     </div>
   </div>
@@ -87,7 +82,7 @@
   <div id="learnConfigPanel" class="card custom-setup" style="margin-bottom: 20px;">
     <button type="button" class="config-toggle" id="configToggle" aria-expanded="false" aria-controls="learnConfigBody" onclick="toggleConfig()">
       <span class="config-toggle-title"><i class="ph ph-sliders"></i> 调整学习方式</span>
-      <span class="config-toggle-hint">范围 · 顺序 · 批量 · 数量 · 检测方式 · 预设 · 单元</span>
+      <span class="config-toggle-hint">范围 · 顺序 · 数量 · 检测方式 · 预设 · 单元</span>
       <i class="ph ph-caret-down config-toggle-arrow" aria-hidden="true"></i>
     </button>
 
@@ -144,21 +139,13 @@
       </label>
     </div>
     <div class="choice-group">
-      <span class="choice-group-title">每批数量</span>
-      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <input type="number" name="batch" value="{{ batch_size }}" min="1" max="1000" step="1" class="form-input" style="width: 110px;"
-               onchange="var v=parseInt(this.value,10); if(!v||v<1){this.value=10;} syncCountHint();">
-        <span class="text-secondary text-sm">个 / 批（自由设置，背完一批后可选择继续下一批或退出）</span>
-      </div>
-    </div>
-    <div class="choice-group">
       <span class="choice-group-title">背诵数量</span>
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
         <input type="number" name="count" id="countInput" value="" min="1" max="5000" step="1" class="form-input" style="width: 110px;" placeholder="不限"
                onchange="var v=parseInt(this.value,10); if(this.value!==''&&(!v||v<1)){this.value='';} syncCountHint();">
         <span class="text-secondary text-sm">个（留空 = 背诵范围内全部单词）</span>
       </div>
-      <p class="text-secondary text-sm" style="margin: 8px 0 0;" id="countHint">范围内全部单词，按每批 <strong id="hintBatch">{{ batch_size }}</strong> 个分批背诵</p>
+      <p class="text-secondary text-sm" style="margin: 8px 0 0;" id="countHint">范围内全部单词</p>
     </div>
     <div class="choice-group" style="grid-column: 1 / -1;">
       <span class="choice-group-title">检测方式</span>
@@ -294,20 +281,16 @@ function showToast(message, type) {
   }, 2500);
 }
 
-// —— 背诵数量提示：按「背诵数量 ÷ 每批数量」实时计算批数 ——
+// —— 背诵数量提示：实时显示将背诵的单词数 ——
 function syncCountHint() {
-  var batchInput = document.querySelector('input[name="batch"]');
   var countInput = document.getElementById('countInput');
-  var batch = parseInt((batchInput && batchInput.value) || '', 10) || 10;
   var count = parseInt((countInput && countInput.value) || '', 10);
-  var hintBatch = document.getElementById('hintBatch');
-  if (hintBatch) hintBatch.textContent = batch;
   var hint = document.getElementById('countHint');
   if (!hint) return;
   if (count >= 1) {
-    hint.innerHTML = '共 <strong>' + count + '</strong> 个，按每批 <strong>' + batch + '</strong> 个分 <strong>' + Math.max(1, Math.ceil(count / batch)) + '</strong> 批背诵';
+    hint.innerHTML = '共 <strong>' + count + '</strong> 个单词';
   } else {
-    hint.innerHTML = '范围内全部单词，按每批 <strong>' + batch + '</strong> 个分批背诵';
+    hint.innerHTML = '范围内全部单词';
   }
 }
 window.syncCountHint = syncCountHint;
@@ -386,7 +369,7 @@ function applyParamsToForm(params) {
     if (cr) cr.checked = true;
     if (typeof window.syncGatesConfig === 'function') window.syncGatesConfig();
   }
-  ['batch', 'count', 'repeats', 'interleave'].forEach(function (k) {
+  ['count', 'repeats', 'interleave'].forEach(function (k) {
     if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
       var el = document.querySelector('input[name="' + k + '"]');
       if (el) el.value = params[k];
@@ -484,7 +467,6 @@ function resumeLearn() {
   var url = '{% url "words:learn_session" %}?resume=1'
     + '&mode=' + encodeURIComponent(resumeData.mode || 'sequential')
     + '&check=' + encodeURIComponent(resumeData.checkMode || 'none')
-    + '&batch=' + encodeURIComponent(resumeData.batchSize || 10)
     + '&count=' + resumeData.words.length;
   if (resumeData.checkMode === 'gates') {
     url += '&repeats=' + (resumeData.gateRepeats || 3) + '&interleave=' + (resumeData.gateInterleave || 1);

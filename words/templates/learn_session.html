@@ -21,6 +21,19 @@
   
   
             
+  /* ===== 词族变式（同根派生词，如 operate → operation/operator） ===== */
+  .family-panel { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: var(--c-surface-2); }
+  .family-head { font-size: var(--fs-sm); font-weight: 700; color: var(--c-text-2); display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .family-badge { font-size: var(--fs-xs); font-weight: 600; color: var(--c-blue); background: var(--c-blue-bg); border-radius: 999px; padding: 1px 8px; }
+  .family-body { display: flex; flex-wrap: wrap; gap: 6px; }
+  .family-chip { display: inline-flex; align-items: baseline; gap: 4px; font-size: var(--fs-sm); color: var(--c-text); background: var(--c-surface); border: 1px solid var(--c-border); border-radius: 999px; padding: 3px 10px; }
+  .family-chip.core { border-color: var(--c-blue); color: var(--c-blue); font-weight: 700; }
+  .family-chip.outside { opacity: .7; border-style: dashed; }
+  .family-chip em { font-style: normal; font-size: var(--fs-xs); color: var(--c-text-3); }
+  .family-chip small { font-size: var(--fs-xs); color: var(--c-text-3); }
+  .family-mean { color: var(--c-text-2); font-weight: 500; }
+  .family-note { font-size: var(--fs-xs); color: var(--c-text-3); margin-top: 6px; }
+
   @media (max-width: 640px) {
     .study-card { min-height: 480px; padding: 20px 18px 24px; }
     .study-tools .btn span.text-sm { display: none; }
@@ -39,7 +52,7 @@
     <div class="session-header-grid">
       <div class="session-header-side">
         {% if practice_only %}
-        <a href="{% url 'words:today_words' %}" class="session-exit"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>返回今日列表</span></a>
+        <a href="{% url 'words:today_words' %}" class="session-exit"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>返回复习自选</span></a>
         {% else %}
         <a href="{% url 'words:learn_start' %}" class="session-exit"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>退出并保存</span></a>
         {% endif %}
@@ -66,6 +79,7 @@
       <button id="favBtn" class="study-tool-btn" aria-pressed="false" title="收藏单词（加入收藏词汇）"><i class="ph ph-star"></i><span>收藏</span></button>
       <button id="noteBtn" class="study-tool-btn" aria-pressed="false" title="记笔记 / 查看笔记"><i class="ph ph-note-pencil"></i><span>笔记</span></button>
       <button id="quickMemoryBtn" class="study-tool-btn" aria-pressed="false" title="AI 速记 / 查看速记"><i class="ph ph-lightning"></i><span>速记</span></button>
+      <button id="posExpandBtn" class="study-tool-btn" title="AI 扩展词性（为缺少按词性释义的词一键补全）"><i class="ph ph-brackets-round"></i><span>词性</span></button>
     </div>
   </div>
 
@@ -75,6 +89,16 @@
     <div id="wordPos" class="word-pos">—</div>
     <div id="wordMeaning" class="word-meaning hidden">—</div>
     <div id="wordExample" class="word-example hidden">—</div>
+
+    <!-- 词族变式（同根派生词，如 operate → operation/operator/operational） -->
+    <div id="familyPanel" class="family-panel hidden">
+      <div class="family-head">
+        <i class="ph ph-tree-structure"></i> 词族变式
+        <span id="familyBadge" class="family-badge hidden"></span>
+      </div>
+      <div id="familyBody" class="family-body"></div>
+      <div class="family-note hidden" id="familyNote"></div>
+    </div>
 
     <div id="checkPanel" class="check-panel hidden">
       <div class="check-hint" id="checkHint"></div>
@@ -112,29 +136,6 @@
   {% include '_assistant_panel.html' %}
 </div>
 
-<div id="batchCard" class="card word-card completion-card hidden">
-  <div class="completion-stamp" style="background: var(--c-purple);">本批完成</div>
-  <div class="card-header"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> 第 <span id="batchNum">1</span> / <span id="batchTotal">1</span> 批完成</div>
-  <p class="text-secondary" id="batchMsg"></p>
-  <div class="summary-grid">
-    <div class="summary-card">
-      <div id="batchMasteredCount" class="summary-value text-accent">0</div>
-      <div class="summary-label">本批会</div>
-    </div>
-    <div class="summary-card">
-      <div id="batchUnknownCount" class="summary-value" style="color: var(--c-red);">0</div>
-      <div class="summary-label">本批不会</div>
-    </div>
-  </div>
-  <div class="flex gap-2" style="justify-content: center; margin-top: 6px; flex-wrap: wrap;">
-    <button id="nextBatchBtn" class="btn btn-primary btn-lg"><i class="ph ph-arrow-right"></i> 继续下一批</button>
-    {% if practice_only %}
-    <a href="{% url 'words:today_words' %}" class="btn btn-secondary btn-lg"><i class="ph ph-sign-out"></i> 返回今日列表</a>
-    {% else %}
-    <a href="{% url 'words:learn_start' %}" class="btn btn-secondary btn-lg"><i class="ph ph-sign-out"></i> 退出并保存</a>
-    {% endif %}
-  </div>
-</div>
 <div id="completionCard" class="card word-card completion-card hidden">
   <div class="completion-stamp">完成</div>
   <div class="card-header"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> {% if practice_only %}自测完成{% else %}背诵完成{% endif %}</div>
@@ -153,7 +154,7 @@
   <p class="text-secondary text-sm" style="margin-top: 4px;">本次自测结果仅用于当场参考，未改变掌握状态、复习排期与打卡统计。</p>
   <div class="flex gap-2" style="justify-content: center; margin-top: 10px; flex-wrap: wrap;">
     <button id="practiceRetryWrongBtn" class="btn btn-primary btn-lg"><i class="ph ph-arrows-counter-clockwise"></i> 再练错词（<span id="practiceWrongCount">0</span>）</button>
-    <a href="{% url 'words:today_words' %}" class="btn btn-secondary btn-lg"><i class="ph ph-list-checks"></i> 返回今日列表</a>
+    <a href="{% url 'words:today_words' %}" class="btn btn-secondary btn-lg"><i class="ph ph-list-checks"></i> 返回复习自选</a>
   </div>
   {% else %}
   <a href="{% url 'words:dashboard' %}" class="btn btn-primary btn-lg"><i class="ph ph-house"></i> 返回仪表盘</a>
@@ -172,7 +173,7 @@
   var wordCount = wordsData.length;
   var mode = '{{ mode|escapejs }}';
   var checkMode = '{{ check|escapejs }}';
-  // 重复练习（今日已背 · 临时自测）：所有「会/不会」操作只更新页面内临时状态，
+  // 重复练习（复习自选 · 临时自测）：所有「会/不会」操作只更新页面内临时状态，
   // 不调用任何写库 API，不写 sessionStorage/localStorage 断点，不上报学习时长。
   var practiceOnly = {{ practice_only|yesno:'true,false' }};
   var practiceWrongIds = []; // 本轮自测标记「不会」的词（用于「再练错词」）
@@ -213,16 +214,6 @@
     }
   } catch (e) {}
 
-  // 分批背诵：每批 batchSize 个，背完一批小结后点「继续下一批」
-  var batchSize = parseInt('{{ batch_size }}', 10) || 10;
-  var totalBatches = Math.max(1, Math.ceil(wordCount / batchSize));
-  var batchPaused = false; // 批完成暂停中，忽略操作键
-  var batchStartCounts = { mastered: counts.mastered, unknown: counts.unknown };
-  if (!practiceOnly) try {
-    var savedBatchStart = JSON.parse(sessionStorage.getItem('vocab-learn-batch-start') || 'null');
-    if (savedBatchStart) batchStartCounts = savedBatchStart;
-  } catch (e) {}
-
   // —— 跨会话断点续背：?resume=1 时用 localStorage 快照覆盖本次会话（词列表/配置/进度）；自测模式禁用 ——
   var RESUME_KEY = 'vocab-learn-resume';
   var resumeSnap = null;
@@ -234,7 +225,6 @@
     wordCount = wordsData.length;
     if (resumeSnap.mode) mode = resumeSnap.mode;
     if (resumeSnap.checkMode) checkMode = resumeSnap.checkMode;
-    if (resumeSnap.batchSize) batchSize = parseInt(resumeSnap.batchSize, 10) || batchSize;
     if (resumeSnap.gateRepeats) gateRepeatTotal = parseInt(resumeSnap.gateRepeats, 10) || gateRepeatTotal;
     if (resumeSnap.gateInterleave !== undefined) gateInterleaveTotal = parseInt(resumeSnap.gateInterleave, 10) || 0;
     var snapIdx = parseInt(resumeSnap.index, 10);
@@ -244,13 +234,10 @@
       counts.unknown = resumeSnap.counts.unknown || 0;
     }
     (resumeSnap.gateDoneIds || []).forEach(function (id) { gateDoneIds[id] = true; });
-    batchStartCounts = { mastered: counts.mastered, unknown: counts.unknown };
-    totalBatches = Math.max(1, Math.ceil(wordCount / batchSize));
     // 同步回 sessionStorage，保证续背后页内刷新不丢
     sessionStorage.setItem('vocab-learn-idx', String(currentIndex));
     sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
     persistResume();
-    sessionStorage.setItem('vocab-learn-batch-start', JSON.stringify(batchStartCounts));
     sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
         persistResume();
   }
@@ -296,13 +283,6 @@
     masteredCount: document.getElementById('masteredCount'),
     unknownCount: document.getElementById('unknownCount'),
     completionMsg: document.getElementById('completionMsg'),
-    batchCard: document.getElementById('batchCard'),
-    batchNum: document.getElementById('batchNum'),
-    batchTotal: document.getElementById('batchTotal'),
-    batchMsg: document.getElementById('batchMsg'),
-    batchMasteredCount: document.getElementById('batchMasteredCount'),
-    batchUnknownCount: document.getElementById('batchUnknownCount'),
-    nextBatchBtn: document.getElementById('nextBatchBtn'),
   };
 
   function saveProgress() {
@@ -321,7 +301,6 @@
         ts: Date.now(),
         mode: mode,
         checkMode: checkMode,
-        batchSize: batchSize,
         gateRepeats: gateRepeatTotal,
         gateInterleave: gateInterleaveTotal,
         words: wordsData,
@@ -385,6 +364,125 @@
     }
     return meanings ? String(meanings) : '';
   }
+
+  // —— AI 扩展词性：仅对缺按词性释义（或全部「未分类」）的词可用，成功即刷新释义区 ——
+  function wordNeedsPosExpand(w) {
+    var byPos = (w && w.meanings_by_pos) || {};
+    var keys = Object.keys(byPos).filter(function (k) { return byPos[k] && byPos[k].length; });
+    if (!keys.length) return true;
+    return keys.every(function (k) { return k === '未分类'; });
+  }
+
+  function refreshPosExpandBtn() {
+    var btn = document.getElementById('posExpandBtn');
+    if (!btn) return;
+    var need = currentWord && wordNeedsPosExpand(currentWord);
+    // 始终可点击：缺词性的词调用 AI 补全；已有词性时给出明确提示，避免「点了没反应」
+    btn.disabled = false;
+    btn.title = need
+      ? 'AI 扩展词性（为缺少按词性释义的词一键补全）'
+      : '该词已有按词性释义（点击可查看说明）';
+  }
+
+  // —— 词族变式（同根派生词，如 operate → operation / operator / operational）——
+  var FAMILY_REL_LABEL = { core: '核心', derived: '派生', inflection: '屈折变化', compound: '复合' };
+
+  function renderFamilyPanel(data) {
+    var panel = document.getElementById('familyPanel');
+    var body = document.getElementById('familyBody');
+    var badge = document.getElementById('familyBadge');
+    var note = document.getElementById('familyNote');
+    if (!panel || !body) return;
+    if (!data || !data.family) { panel.classList.add('hidden'); return; }
+    panel.classList.remove('hidden');
+    if (badge) {
+      if (data.family.is_confirmed) { badge.classList.add('hidden'); badge.textContent = ''; }
+      else { badge.classList.remove('hidden'); badge.textContent = 'AI 生成'; }
+    }
+    var chips = (data.members || []).map(function (m) {
+      var cls = 'family-chip' + (m.is_core ? ' core' : '') + (m.in_library === false ? ' outside' : '');
+      var label = m.relation_label || FAMILY_REL_LABEL[m.relation] || '';
+      return '<span class="' + cls + '">' + escapeHtml(m.word) +
+        (m.pos ? '<em>' + escapeHtml(m.pos) + '</em>' : '') +
+        (m.meaning ? '<span class="family-mean">' + escapeHtml(m.meaning) + '</span>' : '') +
+        ((label && !m.is_core) ? '<small>' + escapeHtml(label) + '</small>' : '') +
+        '</span>';
+    }).join('');
+    body.innerHTML = chips || '<span class="text-secondary text-sm">暂无变式</span>';
+    if (note) {
+      var lines = (data.patterns || []).map(function (p) {
+        return escapeHtml(p.name || '') + (p.rule ? '：' + escapeHtml(p.rule) : '');
+      }).filter(Boolean);
+      if (lines.length) { note.classList.remove('hidden'); note.textContent = lines.join('　·　'); }
+      else { note.classList.add('hidden'); note.textContent = ''; }
+    }
+  }
+
+  function familyFromCandidate(cand, confirmed) {
+    return {
+      family: { key: cand.family.key, title: cand.family.title,
+                is_confirmed: !!confirmed, source: 'ai_candidate' },
+      members: (cand.members || []).map(function (m) {
+        return { word: m.word, pos: m.pos, meaning: m.meaning || '',
+                 relation: m.relation,
+                 relation_label: FAMILY_REL_LABEL[m.relation] || '',
+                 is_core: m.relation === 'core', in_library: true };
+      }),
+      patterns: (cand.patterns || []).map(function (p) { return { name: p.name, rule: p.rule }; }),
+    };
+  }
+
+  function loadFamilyVariants(generate) {
+    if (!currentWord) return;
+    var wid = currentWord.id;
+    VOCAB_API.get('/api/words/' + wid + '/word-family/').then(function (res) {
+      if (!currentWord || currentWord.id !== wid) return; // 已切词，丢弃过期结果
+      if (res && res.family) { renderFamilyPanel(res); return; }
+      if (!generate) { renderFamilyPanel(null); return; }
+      // 无现有词族：调用 AI 生成并直接确认入库（confirm=1，绝不覆盖已有）
+      VOCAB_API.post('/api/word-families/candidates/', { word_id: wid, confirm: true }).then(function (r) {
+        if (!currentWord || currentWord.id !== wid) return;
+        if (r && r.candidate) { renderFamilyPanel(familyFromCandidate(r.candidate, r.confirmed)); return; }
+        if (r && r.reused) {
+          VOCAB_API.get('/api/words/' + wid + '/word-family/').then(renderFamilyPanel);
+          return;
+        }
+        if (typeof showToast === 'function') showToast((r && r.error) || '变式生成失败', 'error');
+      }).catch(function () {
+        if (typeof showToast === 'function') showToast('变式生成失败，请检查 AI 配置后重试', 'error');
+      });
+    }).catch(function () { /* 读取失败静默 */ });
+  }
+
+  (function bindPosExpand() {
+    var btn = document.getElementById('posExpandBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      if (!currentWord) return;
+      // 1) 保留原「按词性补释义」：缺词性才调用 AI（已有则提示，遵守「已有有效分组一律不覆盖」）
+      if (wordNeedsPosExpand(currentWord)) {
+        btn.disabled = true;
+        VOCAB_API.post('/api/words/' + currentWord.id + '/pos-expand/', {})
+          .then(function (res) {
+            if (res && res.success && res.updated) {
+              currentWord.meanings_by_pos = res.meanings_by_pos;
+              if (!els.wordMeaning.classList.contains('hidden')) {
+                els.wordMeaning.innerHTML = buildMeaningsHtml(currentWord);
+              }
+              if (typeof showToast === 'function') showToast('已补全词性释义', 'success');
+            } else if (res && res.success) {
+              if (typeof showToast === 'function') showToast(res.skipped_reason || '无需补全', 'info');
+            } else if (typeof showToast === 'function') {
+              showToast((res && res.error) || '补全失败，请重试', 'error');
+            }
+          })
+          .catch(function () { if (typeof showToast === 'function') showToast('补全失败，请检查网络与 AI 配置后重试', 'error'); })
+          .finally(function () { refreshPosExpandBtn(); });
+      }
+      // 2) 词族变式（同根派生词）：已有则展示，没有则调 AI 生成候选
+      loadFamilyVariants(true);
+    });
+  })();
 
   // —— 例句展示与增删改查（仅背诵页可见可编辑）——
   function renderExample() {
@@ -479,9 +577,8 @@
       return;
     }
 
-    // 恢复单词卡片显示（拖拽/手动切换时可能正停留在批完成或完成卡片）
+    // 恢复单词卡片显示（拖拽/手动切换时可能正停留在完成卡片）
     els.wordCard.classList.remove('hidden');
-    els.batchCard.classList.add('hidden');
     els.completionCard.classList.add('hidden');
 
     // 切换单词时收起笔记/速记展开区
@@ -489,6 +586,8 @@
 
     currentWord = wordsData[currentIndex];
     if (window.WordFavorite) WordFavorite.update(currentWord);
+    refreshPosExpandBtn();
+    loadFamilyVariants(false); // 随词自动展示已存在的词族变式（不生成、不调用 AI）
     revealDone = false;
     checked = false;
     gateStage = 0;
@@ -974,27 +1073,8 @@
       showCompletion();
       return;
     }
-    var nextIndex = currentIndex + 1;
-    // 到达批边界：先展示本批小结，等用户点「继续下一批」
-    if (Math.floor(nextIndex / batchSize) > Math.floor(currentIndex / batchSize)) {
-      showBatchCompletion();
-      return;
-    }
     currentIndex++;
     renderWord();
-  }
-
-  function showBatchCompletion() {
-    var batchIdx = Math.floor(currentIndex / batchSize) + 1; // 刚完成的批（从 1 开始）
-    var wordsInBatch = Math.min(batchSize, wordCount - (batchIdx - 1) * batchSize);
-    batchPaused = true;
-    els.wordCard.classList.add('hidden');
-    els.batchCard.classList.remove('hidden');
-    els.batchNum.textContent = batchIdx;
-    els.batchTotal.textContent = totalBatches;
-    els.batchMasteredCount.textContent = (counts.mastered || 0) - (batchStartCounts.mastered || 0);
-    els.batchUnknownCount.textContent = (counts.unknown || 0) - (batchStartCounts.unknown || 0);
-    els.batchMsg.textContent = '本批 ' + wordsInBatch + ' 个单词已背完，可稍作休息再继续。';
   }
 
   function goPrev() {
@@ -1009,7 +1089,6 @@
 
   function showCompletion() {
     if (window.VocabStudyTimer) VocabStudyTimer.stop();
-    batchPaused = false;
     els.wordCard.classList.add('hidden');
     els.completionCard.classList.remove('hidden');
     els.masteredCount.textContent = counts.mastered;
@@ -1030,7 +1109,6 @@
     els.completionMsg.textContent = msg;
     sessionStorage.removeItem('vocab-learn-idx');
     sessionStorage.removeItem('vocab-learn-counts');
-    sessionStorage.removeItem('vocab-learn-batch-start');
     sessionStorage.removeItem('vocab-learn-gate-pass');
     sessionStorage.removeItem('vocab-learn-gate-ids');
     try { localStorage.removeItem('vocab-learn-resume'); } catch (e) {} // 背完清除断点
@@ -1046,9 +1124,7 @@
     wordCount = wordsData.length;
     currentIndex = 0;
     counts = { mastered: 0, unknown: 0 };
-    batchStartCounts = { mastered: 0, unknown: 0 };
     practiceWrongIds = [];
-    totalBatches = Math.max(1, Math.ceil(wordCount / batchSize));
     var sliderEl = document.getElementById('progressSlider');
     if (sliderEl) sliderEl.max = Math.max(0, wordCount - 1);
     els.completionCard.classList.add('hidden');
@@ -1057,17 +1133,6 @@
   }
   var practiceRetryBtn = document.getElementById('practiceRetryWrongBtn');
   if (practiceRetryBtn) practiceRetryBtn.addEventListener('click', practiceRetryWrong);
-
-  // 继续下一批
-  if (els.nextBatchBtn) els.nextBatchBtn.addEventListener('click', function () {
-    batchPaused = false;
-    batchStartCounts = { mastered: counts.mastered || 0, unknown: counts.unknown || 0 };
-    if (!practiceOnly) sessionStorage.setItem('vocab-learn-batch-start', JSON.stringify(batchStartCounts));
-    els.batchCard.classList.add('hidden');
-    els.wordCard.classList.remove('hidden');
-    currentIndex++;
-    renderWord();
-  });
 
   // Button bindings
   els.revealBtn.addEventListener('click', reveal);
@@ -1166,18 +1231,26 @@
       return;
     }
     if (els.wordCard.classList.contains('hidden')) return; // 展示小结/完成卡片时忽略操作键
+    // 上一词/下一词方向键：焦点在默写输入框内（拼写/释义模式）也生效，保证 ← → 始终能翻词
+    if (e.code === 'ArrowLeft') { e.preventDefault(); goPrev(); return; }
+    if (e.code === 'ArrowRight') {
+      if (checkMode === 'gates') {
+        // 高效模式：仅当本词或下一词已默写通过时才允许前进
+        var nw = wordsData[currentIndex + 1];
+        if (passedThisAppearance || gateDoneIds[currentWord.id] || (nw && gateDoneIds[nw.id])) {
+          e.preventDefault(); goNext();
+        }
+      } else {
+        e.preventDefault(); goNext();
+      }
+      return;
+    }
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-    // 高效模式：空格开始默写/会或不会快捷键；上一词自由切换，下一词仅在已背诵的词之间可用
+    // 高效模式：空格开始默写（会/不会由系统自动判定，数字键不参与）
     if (checkMode === 'gates') {
       if (e.code === 'Space' && gateStage === 0) {
         e.preventDefault();
         startGateSpelling(); // 预看阶段：空格直接进入拼写默写并聚焦输入框
-      }
-      else if (e.code === 'ArrowLeft') { e.preventDefault(); goPrev(); }
-      else if (e.code === 'ArrowRight') {
-        e.preventDefault();
-        var nw = wordsData[currentIndex + 1];
-        if (passedThisAppearance || gateDoneIds[currentWord.id] || (nw && gateDoneIds[nw.id])) goNext();
       }
       return;
     }
@@ -1186,8 +1259,6 @@
       case 'Digit1': case 'Numpad1': e.preventDefault(); mark('mastered'); break;
       case 'Digit2': case 'Numpad2': e.preventDefault(); mark('unknown'); break;
       case 'Digit3': case 'Numpad3': e.preventDefault(); skipWord(); break;
-      case 'ArrowLeft': e.preventDefault(); goPrev(); break;
-      case 'ArrowRight': e.preventDefault(); goNext(); break;
     }
   });
 

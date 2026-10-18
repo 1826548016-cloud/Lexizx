@@ -1,0 +1,379 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}词性学习 - {{ word.word }}{% endblock %}
+{% block page_title %}词性学习{% endblock %}
+
+{% block content %}
+{% csrf_token %}
+<div class="card word-card">
+  <div class="flex justify-center gap-4 mb-4">
+    <button class="btn btn-secondary btn-sm" onclick="window.VOCAB_SPEAK('{{ word.word|escapejs }}', 'en-US')" title="美式发音">
+      <i class="ph ph-speaker-high"></i> US
+    </button>
+    <button class="btn btn-secondary btn-sm" onclick="window.VOCAB_SPEAK('{{ word.word|escapejs }}', 'en-GB')" title="英式发音">
+      <i class="ph ph-speaker-high"></i> UK
+    </button>
+  </div>
+  <div class="word-text">{{ word.word }}</div>
+  {% if word.phonetic_us or word.phonetic_uk %}
+  <div class="word-phonetic">
+    {% if word.phonetic_us %}<span>美 {{ word.phonetic_us }}</span>{% endif %}
+    {% if word.phonetic_uk %}<span>英 {{ word.phonetic_uk }}</span>{% endif %}
+  </div>
+  {% endif %}
+  {% if word.pos %}<div class="word-pos">{{ word.pos }}</div>{% endif %}
+</div>
+
+<div class="card mt-6">
+  <div class="card-header"><i class="ph ph-book-open" style="color: var(--c-blue);"></i> 本地讲解</div>
+  <div id="localLesson" class="text-secondary">加载中…</div>
+</div>
+
+<div class="card mt-6">
+  <div class="card-header"><i class="ph ph-list-checks" style="color: var(--c-blue);"></i> 词性客观题</div>
+  <div class="form-help" style="margin-bottom: 10px;">本地出题、本地判分，答错会记入错误知识库</div>
+  <div id="exerciseBox" class="text-secondary">加载中…</div>
+</div>
+
+<div class="card mt-6">
+  <div class="card-header"><i class="ph ph-magic-wand" style="color: var(--c-purple, #8b5cf6);"></i> AI 讲解</div>
+  {% if has_ai_model %}
+  <button id="aiLessonBtn" class="btn btn-primary" onclick="loadAiLesson()">
+    <i class="ph ph-sparkle"></i> 生成 AI 讲解
+  </button>
+  <span id="aiLessonHint" class="form-help" style="margin-left: 8px;"></span>
+  {% else %}
+  <div class="text-secondary">未配置可用 AI 模型，AI 讲解不可用；上方本地讲解与客观题不受影响。</div>
+  {% endif %}
+  <div id="aiLessonBox" style="display:none; margin-top: 12px;"></div>
+</div>
+
+<div class="card mt-6">
+  <div class="card-header"><i class="ph ph-pencil-line" style="color: var(--c-green);"></i> 开放题（AI 判定）</div>
+  {% if has_ai_model %}
+  <div class="form-group">
+    <label class="form-label" for="openPosSelect">选择目标词性</label>
+    <select id="openPosSelect" class="form-input"></select>
+  </div>
+  <div class="form-group">
+    <label class="form-label" for="openAnswer">用「{{ word.word }}」的该词性造一个英文句子</label>
+    <textarea id="openAnswer" class="form-input" rows="2" placeholder="写一个包含该词且词性使用正确的英文句子…"></textarea>
+  </div>
+  <button id="openSubmitBtn" class="btn btn-primary" onclick="submitOpen()">提交判定</button>
+  <div id="openResult" style="margin-top: 10px;"></div>
+  {% else %}
+  <div class="text-secondary">开放题需要配置可用 AI 模型。</div>
+  {% endif %}
+</div>
+
+<div class="card mt-6">
+  <div class="card-header"><i class="ph ph-graph" style="color: var(--c-blue);"></i> 词族与构词法</div>
+  {% if has_ai_model %}
+  <div class="form-help" style="margin-bottom: 10px;">AI 生成的词族候选需人工确认后才正式生效</div>
+  <button id="familyBtn" class="btn btn-secondary" onclick="genFamily()">
+    <i class="ph ph-users-three"></i> AI 生成词族候选
+  </button>
+  {% endif %}
+  <a class="btn btn-secondary" href="{% url 'words:word_family_candidates' %}">
+    <i class="ph ph-queue"></i> 待确认队列
+  </a>
+  <div id="familyMsg" style="margin-top: 10px;"></div>
+</div>
+
+{% if recent_attempts %}
+<div class="card mt-6">
+  <div class="card-header">最近作答</div>
+  <ul class="text-secondary">
+    {% for a in recent_attempts %}
+    <li>
+      {{ a.created_at|date:"m-d H:i" }} · {{ a.get_question_type_display }}
+      {% if a.target_pos %}（{{ a.target_pos }}）{% endif %} ·
+      {% if a.result == 'correct' %}<span style="color: var(--c-green);">正确</span>
+      {% elif a.result == 'partial' %}<span style="color: var(--c-amber, #d97706);">部分正确</span>
+      {% elif a.result == 'wrong' %}<span style="color: var(--c-red);">错误</span>
+      {% else %}未判定{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="mt-6">
+  <a href="{% url 'words:word_detail' word_id=word.id %}" class="btn btn-secondary">返回单词详情</a>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const WORD_ID = {{ word.id }};
+const WORD_TEXT = '{{ word.word|escapejs }}';
+const LESSON_URL = '{% url "words:api_pos_lesson" %}';
+const GRADE_URL = '{% url "words:api_pos_grade" %}';
+const FAMILY_URL = '{% url "words:api_word_family_candidates" %}';
+const CSRF = '{{ csrf_token }}';
+
+let localExercises = [];
+let localPosLabels = [];
+
+function showToast(message, type) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-' + type;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
+}
+
+async function postJson(url, body) {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await resp.json().catch(() => ({}));
+  return { ok: resp.ok, status: resp.status, data };
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+
+function renderLocalLesson(lesson) {
+  const box = document.getElementById('localLesson');
+  box.textContent = '';
+  box.classList.remove('text-secondary');
+  localPosLabels = [];
+
+  (lesson.pos_groups || []).forEach(g => {
+    localPosLabels.push(g.pos);
+    const row = el('div', '', null);
+    row.style.marginBottom = '8px';
+    const badge = el('span', 'meaning-pos', g.pos);
+    row.appendChild(badge);
+    row.appendChild(document.createTextNode(' ' + (g.meaning || '')));
+    if (g.is_uncommon) {
+      const tag = el('span', 'badge', '陌生词性');
+      tag.style.cssText = 'margin-left:8px; background: var(--c-amber, #d97706); color:#fff;';
+      row.appendChild(tag);
+    }
+    box.appendChild(row);
+  });
+  if (!(lesson.pos_groups || []).length) {
+    box.appendChild(el('div', 'text-secondary', '该词暂无按词性划分的释义。'));
+  }
+
+  const forms = lesson.word_forms || {};
+  const keys = Object.keys(forms);
+  if (keys.length) {
+    const hr = el('div', '', '词形变化');
+    hr.style.cssText = 'margin: 12px 0 6px; font-weight: 600;';
+    box.appendChild(hr);
+    const grid = el('div', 'card-grid');
+    keys.forEach(k => {
+      const cell = el('div', 'card');
+      const v = Array.isArray(forms[k]) ? forms[k].join(' / ') : forms[k];
+      cell.appendChild(el('div', 'text-secondary text-sm', k));
+      cell.appendChild(el('div', '', v));
+      grid.appendChild(cell);
+    });
+    box.appendChild(grid);
+  }
+
+  if (lesson.example_en) {
+    const ex = el('div', 'text-secondary', '例句：' + lesson.example_en);
+    ex.style.marginTop = '10px';
+    box.appendChild(ex);
+  }
+
+  const sel = document.getElementById('openPosSelect');
+  if (sel) {
+    sel.innerHTML = '';
+    localPosLabels.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p; opt.textContent = p;
+      sel.appendChild(opt);
+    });
+  }
+}
+
+function renderExercises(exercises, box) {
+  exercises.forEach((q, idx) => {
+    const wrap = el('div', 'card');
+    wrap.style.cssText = 'margin-bottom: 10px; padding: 12px;';
+    wrap.appendChild(el('div', 'form-help', q.type === 'pos_choice' ? '释义 → 词性' : q.type === 'pos_match' ? '词性 → 释义' : '词形转换'));
+    const prompt = el('div', '', q.prompt);
+    prompt.style.margin = '4px 0 10px';
+    wrap.appendChild(prompt);
+    const opts = el('div', 'flex gap-2');
+    opts.style.flexWrap = 'wrap';
+    q.options.forEach(opt => {
+      const btn = el('button', 'btn btn-secondary btn-sm', opt);
+      btn.onclick = () => answerExercise(q, opt, wrap);
+      opts.appendChild(btn);
+    });
+    wrap.appendChild(opts);
+    const result = el('div', 'ex-result');
+    result.style.marginTop = '8px';
+    wrap.appendChild(result);
+    box.appendChild(wrap);
+  });
+}
+
+async function answerExercise(question, answer, wrap) {
+  if (wrap.dataset.done) return;
+  wrap.dataset.done = '1';
+  wrap.querySelectorAll('button').forEach(b => b.disabled = true);
+  const resultBox = wrap.querySelector('.ex-result');
+  resultBox.textContent = '判定中…';
+  const { ok, data } = await postJson(GRADE_URL, {
+    word_id: WORD_ID, question, answer,
+  });
+  if (!ok) {
+    resultBox.textContent = data.error || '判定失败';
+    delete wrap.dataset.done;
+    wrap.querySelectorAll('button').forEach(b => b.disabled = false);
+    return;
+  }
+  if (data.result === 'correct') {
+    resultBox.style.color = 'var(--c-green)';
+    resultBox.textContent = '✓ 正确';
+  } else {
+    resultBox.style.color = 'var(--c-red)';
+    resultBox.textContent = '✗ 错误，正确答案：' + (question.answer || '');
+  }
+}
+
+async function loadLocal() {
+  const { ok, data } = await postJson(LESSON_URL, { word_id: WORD_ID, use_ai: false });
+  if (!ok) {
+    document.getElementById('localLesson').textContent = data.error || '加载失败';
+    document.getElementById('exerciseBox').textContent = '';
+    return;
+  }
+  renderLocalLesson(data.lesson || {});
+  localExercises = data.exercises || [];
+  const exBox = document.getElementById('exerciseBox');
+  exBox.textContent = '';
+  exBox.classList.remove('text-secondary');
+  if (!localExercises.length) {
+    exBox.appendChild(el('div', 'text-secondary', '该词暂无可出的客观题（释义或词形数据不足）。'));
+  } else {
+    renderExercises(localExercises, exBox);
+  }
+}
+
+async function loadAiLesson() {
+  const btn = document.getElementById('aiLessonBtn');
+  const hint = document.getElementById('aiLessonHint');
+  const box = document.getElementById('aiLessonBox');
+  btn.disabled = true;
+  hint.textContent = '生成中，请稍候…';
+  const { ok, data } = await postJson(LESSON_URL, { word_id: WORD_ID, use_ai: true });
+  btn.disabled = false;
+  if (!ok) {
+    hint.textContent = '';
+    if (data.fallback) {
+      showToast(data.error || 'AI 生成失败，已回退本地内容', 'error');
+    } else {
+      showToast(data.error || 'AI 生成失败', 'error');
+    }
+    return;
+  }
+  hint.textContent = data.cache_hit ? '（缓存命中，版本 ' + (data.content_version || '') + '）' : '';
+  (data.warnings || []).forEach(w => showToast(w, 'error'));
+  const ai = data.ai_lesson;
+  if (!ai) return;
+  box.style.display = '';
+  box.textContent = '';
+
+  (ai.pos_groups || []).forEach(g => {
+    const row = el('div', '');
+    row.style.marginBottom = '10px';
+    const head = el('div', '');
+    const badge = el('span', 'meaning-pos', g.pos);
+    head.appendChild(badge);
+    head.appendChild(document.createTextNode(' ' + (g.meaning || '')));
+    head.style.fontWeight = '600';
+    row.appendChild(head);
+    if (g.usage) row.appendChild(el('div', 'text-secondary', '用法：' + g.usage));
+    if (g.memory_tip) row.appendChild(el('div', 'text-secondary', '记忆：' + g.memory_tip));
+    box.appendChild(row);
+  });
+
+  (ai.confusions || []).forEach(c => {
+    const row = el('div', 'text-secondary');
+    row.style.marginTop = '8px';
+    row.textContent = '易混词「' + c.word + '」：' + (c.difference || '');
+    box.appendChild(row);
+  });
+
+  (ai.patterns || []).forEach(p => {
+    const row = el('div', 'text-secondary');
+    row.style.marginTop = '8px';
+    row.textContent = '构词「' + p.name + '」：' + (p.rule || '') + (p.exception ? '（例外：' + p.exception + '）' : '');
+    box.appendChild(row);
+  });
+
+  if ((ai.exercises || []).length) {
+    const more = el('div', '');
+    more.style.marginTop = '12px';
+    more.appendChild(el('div', 'form-help', 'AI 附加客观题'));
+    renderExercises(ai.exercises, more);
+    box.appendChild(more);
+  }
+}
+
+async function submitOpen() {
+  const sel = document.getElementById('openPosSelect');
+  const answer = document.getElementById('openAnswer').value;
+  const resultBox = document.getElementById('openResult');
+  const btn = document.getElementById('openSubmitBtn');
+  if (!answer.trim()) { showToast('请先写句子', 'error'); return; }
+  const targetPos = sel.value || '';
+  btn.disabled = true;
+  resultBox.textContent = 'AI 判定中…';
+  const question = {
+    type: 'open', target_pos: targetPos,
+    prompt: '用「' + WORD_TEXT + '」的 ' + targetPos + ' 词性造句',
+    reference: '',
+  };
+  const { ok, data } = await postJson(GRADE_URL, { word_id: WORD_ID, question, answer });
+  btn.disabled = false;
+  if (!ok) {
+    resultBox.textContent = data.error || '判定失败';
+    return;
+  }
+  const label = data.result === 'correct' ? '✓ 正确' : data.result === 'partial' ? '△ 部分正确' : '✗ 错误';
+  resultBox.style.color = data.result === 'correct' ? 'var(--c-green)' : data.result === 'partial' ? 'var(--c-amber, #d97706)' : 'var(--c-red)';
+  resultBox.textContent = label + (data.feedback ? '：' + data.feedback : '');
+}
+
+async function genFamily() {
+  const btn = document.getElementById('familyBtn');
+  const msg = document.getElementById('familyMsg');
+  btn.disabled = true;
+  msg.textContent = 'AI 生成中，请稍候…';
+  msg.className = 'text-secondary';
+  const { ok, data } = await postJson(FAMILY_URL, { word_id: WORD_ID });
+  btn.disabled = false;
+  if (!ok) {
+    msg.textContent = data.error || '生成失败';
+    msg.style.color = 'var(--c-red)';
+    return;
+  }
+  msg.style.color = 'var(--c-green)';
+  msg.textContent = '候选已生成并进入待确认队列，确认后正式生效。';
+  (data.warnings || []).forEach(w => showToast(w, 'error'));
+}
+
+loadLocal();
+</script>
+{% endblock %}

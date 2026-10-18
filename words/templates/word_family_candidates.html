@@ -1,0 +1,184 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}词族候选确认 - 考研单词背诵系统{% endblock %}
+{% block page_title %}词族候选确认{% endblock %}
+
+{% block content %}
+{% csrf_token %}
+<div class="card">
+  <div class="card-header"><i class="ph ph-queue" style="color: var(--c-blue);"></i> 待确认词族候选</div>
+  <div class="form-help">
+    AI 生成的词族 / 构词法 / 易混关系在人工确认前不会用于正式推荐；「拒绝」将整批删除，不留库。
+  </div>
+</div>
+
+{% if families %}
+{% for f in families %}
+<div class="card mt-6" id="family-{{ f.id }}">
+  <div class="card-header">
+    <i class="ph ph-users-three" style="color: var(--c-purple, #8b5cf6);"></i>
+    <span id="family-title-{{ f.id }}">{{ f.title }}</span>
+    <span class="badge" style="margin-left: 8px;">{{ f.key }}</span>
+    <span class="badge" style="margin-left: 4px; background: var(--c-amber, #d97706); color: #fff;">AI 候选 · 待确认</span>
+  </div>
+
+  {% if f.description %}
+  <div class="text-secondary" id="family-desc-{{ f.id }}" style="margin-bottom: 10px;">{{ f.description }}</div>
+  {% else %}
+  <div class="text-secondary" id="family-desc-{{ f.id }}" style="margin-bottom: 10px; display:none;"></div>
+  {% endif %}
+
+  <div style="margin-bottom: 12px;">
+    <div style="font-weight: 600; margin-bottom: 6px;">成员</div>
+    <ul class="text-secondary">
+      {% for m in f.members.all %}
+      <li>
+        {% if m.word %}
+        <a href="{% url 'words:word_detail' word_id=m.word.id %}">{{ m.word.word }}</a>
+        {% else %}
+        <span>{{ m.outside_word }}</span>
+        <span class="badge" style="background: var(--c-amber, #d97706); color: #fff;">词库外示例</span>
+        {% endif %}
+        {% if m.pos %}（{{ m.pos }}）{% endif %}
+        · {{ m.get_relation_display }}{% if m.note %} — {{ m.note }}{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  {% with patterns=f.patterns.all %}
+  {% if patterns %}
+  <div style="margin-bottom: 12px;">
+    <div style="font-weight: 600; margin-bottom: 6px;">构词规律</div>
+    <ul class="text-secondary">
+      {% for p in patterns %}
+      <li>
+        {{ p.name }}（{{ p.get_kind_display }}）{% if p.from_pos or p.to_pos %} {{ p.from_pos }} → {{ p.to_pos }}{% endif %}
+        ：{{ p.rule }}{% if p.exception %}（例外：{{ p.exception }}）{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% endwith %}
+
+  {% with relations=f.relations.all %}
+  {% if relations %}
+  <div style="margin-bottom: 12px;">
+    <div style="font-weight: 600; margin-bottom: 6px;">关联关系</div>
+    <ul class="text-secondary">
+      {% for r in relations %}
+      <li>
+        {{ r.word.word }} ↔
+        {% if r.related_word %}
+        <a href="{% url 'words:word_detail' word_id=r.related_word.id %}">{{ r.related_word.word }}</a>
+        {% else %}
+        <span>{{ r.outside_word }}</span>
+        <span class="badge" style="background: var(--c-amber, #d97706); color: #fff;">词库外示例</span>
+        {% endif %}
+        · {{ r.get_rel_type_display }}{% if r.note %} — {{ r.note }}{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% endwith %}
+
+  <div class="flex gap-2" style="flex-wrap: wrap;">
+    <button class="btn btn-primary btn-sm" onclick="confirmCandidate({{ f.id }})">
+      <i class="ph ph-check"></i> 确认生效
+    </button>
+    <button class="btn btn-secondary btn-sm" onclick="editCandidate({{ f.id }})">
+      <i class="ph ph-pencil-simple"></i> 编辑后确认
+    </button>
+    <button class="btn btn-secondary btn-sm" style="color: var(--c-red);" onclick="rejectCandidate({{ f.id }})">
+      <i class="ph ph-trash"></i> 拒绝
+    </button>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card mt-6">
+  <div class="text-secondary">暂无待确认的词族候选。可在单词的「词性学习」页点击「AI 生成词族候选」。</div>
+</div>
+{% endif %}
+
+<div class="mt-6">
+  <a href="{% url 'words:dashboard' %}" class="btn btn-secondary">返回首页</a>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const CSRF = '{{ csrf_token }}';
+
+function showToast(message, type) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-' + type;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
+}
+
+async function postAction(cid, body) {
+  const resp = await fetch('/api/word-families/candidates/' + cid + '/confirm/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json().catch(() => ({}));
+  return { ok: resp.ok, data };
+}
+
+async function confirmCandidate(cid) {
+  const { ok, data } = await postAction(cid, { action: 'confirm' });
+  if (ok && data.success) {
+    showToast('已确认生效', 'success');
+    removeCard(cid);
+  } else {
+    showToast(data.error || '操作失败', 'error');
+  }
+}
+
+async function editCandidate(cid) {
+  const titleEl = document.getElementById('family-title-' + cid);
+  const descEl = document.getElementById('family-desc-' + cid);
+  const newTitle = prompt('词族名称：', titleEl.textContent.trim());
+  if (newTitle === null) return;
+  const newDesc = prompt('中文说明：', descEl.textContent.trim());
+  if (newDesc === null) return;
+  const { ok, data } = await postAction(cid, {
+    action: 'edit',
+    payload: { title: newTitle, description: newDesc },
+  });
+  if (ok && data.success) {
+    showToast('已保存修改并确认生效', 'success');
+    removeCard(cid);
+  } else {
+    showToast(data.error || '操作失败', 'error');
+  }
+}
+
+async function rejectCandidate(cid) {
+  if (!confirm('确定拒绝并删除该候选批次？此操作不可恢复。')) return;
+  const { ok, data } = await postAction(cid, { action: 'reject' });
+  if (ok && data.success) {
+    showToast('已拒绝并删除', 'success');
+    removeCard(cid);
+  } else {
+    showToast(data.error || '操作失败', 'error');
+  }
+}
+
+function removeCard(cid) {
+  const card = document.getElementById('family-' + cid);
+  if (card) card.remove();
+}
+</script>
+{% endblock %}

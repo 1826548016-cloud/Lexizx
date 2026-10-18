@@ -90,6 +90,9 @@
           <a href="{% url 'words:learn_start' %}" data-nav="learn">
             <i class="ph ph-target"></i> <span>背诵</span>
           </a>
+          <a href="{% url 'words:daily_pick' %}" data-nav="daily">
+            <i class="ph ph-calendar-check"></i> <span>今日自选</span>
+          </a>
           <a href="{% url 'words:review_start' %}" data-nav="review">
             <i class="ph ph-arrows-clockwise"></i> <span>复习</span>
           </a>
@@ -173,6 +176,7 @@
       <button type="button" class="mobile-more-close" onclick="closeMobileMore()" aria-label="关闭"><i class="ph ph-x"></i></button>
     </div>
     <div class="mobile-more-grid">
+      <a href="{% url 'words:daily_pick' %}" data-mnav="daily"><i class="ph ph-calendar-check"></i><span>今日自选</span></a>
       <a href="{% url 'words:review_start' %}" data-mnav="review"><i class="ph ph-arrows-clockwise"></i><span>复习</span></a>
       <a href="{% url 'words:weak_words' %}" data-mnav="weak"><i class="ph ph-warning-circle"></i><span>薄弱词</span></a>
       <a href="{% url 'words:favorites_list' %}" data-mnav="favorites"><i class="ph ph-star"></i><span>收藏词汇</span></a>

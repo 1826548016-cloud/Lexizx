@@ -28,15 +28,19 @@ from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
 from .models import (Unit, Word, StudyProgress, StudyPlan,
-                     DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog, TranslationSentence, TranslationPractice, TranslationFavorite, GeneratedPaper, GeneratedQuestion,
+                     DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, PickRecord, PickRecordWord, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog, TranslationSentence, TranslationPractice, TranslationFavorite, GeneratedPaper, GeneratedQuestion,
                      Cet6TranslationPassage, Cet6TranslationPractice,
-                     GeneratedCet6Paper, GeneratedCet6Question)
+                     GeneratedCet6Paper, GeneratedCet6Question,
+                     PosLearningAttempt, PosLessonCache, WordFamily, WordFamilyMember,
+                     WordFormationPattern, WordRelation, KnowledgeFeedback)
 from .ai_prompts import (
     quick_memory_prompt, ASSISTANT_SYSTEM_PROMPT, assistant_word_context,
     pos_grouping_prompt, examples_prompt, phonetics_prompt,
     RECOGNIZE_JSON_SCHEMA, RECOGNIZE_COMMON_RULES,
     recognize_image_prompt, recognize_text_prompt, recognize_file_prompt,
     ai_review_prompt, weekly_report_prompt,
+    pos_lesson_prompt, pos_open_grade_prompt, word_family_candidate_prompt,
+    POS_LESSON_PROMPT_VERSION,
 )
 from .ai_exam_prompts import (
     build_vocabulary_profile, essay_generation_prompt, essay_grading_prompt,
@@ -273,6 +277,11 @@ def _today_practiced_word_ids(today=None):
     return set(record_ids) | set(learned_ids)
 
 
+def _learned_word_ids():
+    """全部已学词 ID 集合（status != new），用于「复习自选」页与临时练习校验。"""
+    return set(StudyProgress.objects.exclude(status='new').values_list('word_id', flat=True))
+
+
 def learn_start(request):
     units = Unit.objects.all()
     today = timezone.localdate()
@@ -290,18 +299,29 @@ def learn_start(request):
         'units': units, 'plan_today': plan_today, 'batch_size': settings_obj.batch_size,
         'batch_options': [10, 20, 30, 50], 'presets': presets,
         'daily_pick_count': daily_pick_count,
-        'today_practiced_count': len(_today_practiced_word_ids(today)),
+        'review_pick_count': len(_learned_word_ids()),
     })
 
 
 def today_words(request):
-    """今日已背列表页：查看今天背过/复习过的词，勾选后进入重复练习。"""
-    today = timezone.localdate()
-    ids = _today_practiced_word_ids(today)
+    """复习自选列表页：展示全部已学词（含背诵记录与状态），按会/不会筛选，勾选后进入临时练习。"""
+    ids = _learned_word_ids()
     progress_map = {
         p.word_id: p for p in StudyProgress.objects.filter(word_id__in=ids)
     }
-    status_names = dict(StudyProgress.STATUS_CHOICES)
+    # 每个词最近一条练习记录：一次查询 + python 分组取首条，避免 N+1
+    latest_map = {}
+    for r in (StudyRecord.objects.filter(word_id__in=ids)
+              .order_by('word_id', '-created_at')
+              .only('word_id', 'action', 'created_at')):
+        if r.word_id not in latest_map:
+            latest_map[r.word_id] = r
+    ACTION_NAMES = {
+        'known': '会', 'unknown': '不会',
+        'spelling_ok': '拼写正确', 'spelling_wrong': '拼写错误',
+        'meaning_ok': '释义正确', 'meaning_wrong': '释义错误',
+        'skip': '永不忘记',
+    }
     word_items = []
     for w in Word.objects.filter(id__in=ids).select_related('unit').only(
             'id', 'word', 'phonetic_us', 'meanings', 'unit__number', 'list_number'):
@@ -309,23 +329,29 @@ def today_words(request):
         meaning = w.meanings_display()
         if len(meaning) > 40:
             meaning = meaning[:40] + '…'
+        r = latest_map.get(w.id)
+        status = p.status if p else 'new'
         word_items.append({
             'id': w.id,
             'w': w.word,
             'ph': w.phonetic_us,
             'm': meaning,
             'u': w.unit.number if w.unit else 0,
-            's': p.status if p else 'new',
-            'sn': status_names.get(p.status, '未学') if p else '未学',
+            'ln': w.list_number or 0,
+            's': status,
+            'sn': '会' if status == 'mastered' else '不会',
+            'rc': p.review_count if p else 0,
+            'lt': r.created_at.strftime('%Y-%m-%d') if r else '',
+            'la': ACTION_NAMES.get(r.action, '') if r else '',
         })
-    # 按单元号 + 单元内序号排序，与词书顺序一致
-    word_items.sort(key=lambda x: (x['u'], x['id']))
+    # 按单元号 + 单元内序号排序，与词书顺序一致（不依赖数据库主键，必要时以词文本兜底）
+    word_items.sort(key=lambda x: (x['u'], x['ln'], x['w']))
     settings_obj = UserSettings.get_settings()
     return render(request, 'today_words.html', {
         'words_json': json.dumps(word_items, ensure_ascii=False),
         'word_count': len(word_items),
         'batch_size': settings_obj.batch_size,
-        'today': today,
+        'today': timezone.localdate(),
     })
 
 
@@ -347,11 +373,11 @@ def api_today_practice_start(request):
         selected = {int(x) for x in raw_ids}
     except (TypeError, ValueError):
         return JsonResponse({'success': False, 'error': '单词 ID 格式错误'}, status=400)
-    valid_ids = _today_practiced_word_ids() & selected
+    valid_ids = _learned_word_ids() & selected
     if not valid_ids:
         return JsonResponse({
             'success': False,
-            'error': '所选单词不在今日已背列表中，请刷新后重选',
+            'error': '所选单词不在复习自选列表中，请刷新后重选',
         }, status=400)
     # 保留用户勾选顺序（列表页按词书顺序勾选），去重后落 session
     ordered = [w.id for w in Word.objects.filter(id__in=valid_ids)
@@ -370,6 +396,10 @@ def learn_session(request):
     check = request.GET.get('check', 'none')
     unit_ids = [u for u in request.GET.getlist('units') if str(u).strip().isdigit()]
     scope = request.GET.get('scope', 'unknown')
+    # 状态选择（今日自选开始背诵时用）：'' 全部 / 'mastered' 会 / 'unmastered' 不会
+    state = request.GET.get('state', '')
+    if state not in ('mastered', 'unmastered'):
+        state = ''
 
     # 「按今日计划背新词」：有激活计划时限定计划单元范围与新学剩余量；
     # 无计划时范围=全部单元、数量沿用默认（与既有行为一致）。
@@ -389,7 +419,7 @@ def learn_session(request):
             session_ids = [int(x) for x in raw]
         except (TypeError, ValueError):
             session_ids = []
-        valid = _today_practiced_word_ids() & set(session_ids)
+        valid = _learned_word_ids() & set(session_ids)
         if not valid:
             return redirect('words:today_words')
         # 保持勾选时的词书顺序
@@ -439,6 +469,11 @@ def learn_session(request):
             .order_by('id').values_list('word_id', flat=True)
         )
         query = query.filter(id__in=daily_pick_ids)
+        # 状态筛选：今日自选开始背诵时可选「全部 / 会 / 不会」（与复习自选两态一致）
+        if state == 'mastered':
+            query = query.filter(progress__status='mastered')
+        elif state == 'unmastered':
+            query = query.exclude(progress__status='mastered')
     elif scope == 'favorites':
         # 收藏词汇：以收藏表为准，忽略单元参数；顺序与收藏列表一致（最新收藏在前）
         fav_ids = list(
@@ -561,13 +596,102 @@ def daily_pick_page(request):
             'x': bool(p and p.is_excluded),
         })
     settings_obj = UserSettings.get_settings()
+    pick_records = [{
+        'id': r.id,
+        'name': r.name,
+        'count': len(r.words.all()),
+        'created_at': timezone.localtime(r.created_at).strftime('%Y-%m-%d %H:%M'),
+    } for r in PickRecord.objects.prefetch_related('words')]
     return render(request, 'daily_pick.html', {
         'units': units,
         'picked_ids_json': json.dumps(picked_ids, ensure_ascii=False),
         'words_json': json.dumps(word_items, ensure_ascii=False),
         'picked_count': len(picked_ids),
         'batch_size': settings_obj.batch_size,
+        'pick_records': pick_records,
+        'pick_records_json': json.dumps(pick_records, ensure_ascii=False),
     })
+
+
+@require_http_methods(["POST"])
+def api_pick_record_create(request):
+    """把当前今日自选清单快照保存为一条选词记录（保留勾选顺序）。"""
+    try:
+        data = json.loads(request.body or '{}')
+    except (ValueError, TypeError):
+        data = {}
+    today = timezone.localdate()
+    rollover_daily_picks(today)
+    picked_ids = list(
+        DailyPick.objects.filter(date=today).order_by('id').values_list('word_id', flat=True)
+    )
+    if not picked_ids:
+        return JsonResponse({'success': False, 'error': '清单为空，先勾选要背的词'}, status=400)
+    name = (data.get('name') or '').strip()
+    if not name:
+        name = '选词记录 ' + timezone.localtime().strftime('%Y-%m-%d %H:%M')
+    name = name[:100]
+    record = PickRecord.objects.create(name=name)
+    PickRecordWord.objects.bulk_create([
+        PickRecordWord(record=record, word_id=wid, position=i)
+        for i, wid in enumerate(picked_ids)
+    ])
+    return JsonResponse({
+        'success': True,
+        'record': {
+            'id': record.id,
+            'name': record.name,
+            'count': len(picked_ids),
+            'created_at': timezone.localtime(record.created_at).strftime('%Y-%m-%d %H:%M'),
+        },
+    })
+
+
+@require_http_methods(["POST"])
+def api_pick_record_load(request, record_id):
+    """载入选词记录到今日清单（替换当前清单，保留记录顺序）。"""
+    record = get_object_or_404(PickRecord, id=record_id)
+    try:
+        data = json.loads(request.body or '{}')
+    except (ValueError, TypeError):
+        data = {}
+    today = timezone.localdate()
+    # 先滚动旧日期未完成的自选，再清空当天并按快照写入，确保当天清单严格等于该记录
+    rollover_daily_picks(today)
+    ordered_ids = list(
+        PickRecordWord.objects.filter(record=record).order_by('position', 'id')
+        .values_list('word_id', flat=True)
+    )
+    DailyPick.objects.filter(date=today).delete()
+    DailyPick.objects.bulk_create([
+        DailyPick(date=today, word_id=wid) for wid in ordered_ids
+    ], ignore_conflicts=True)
+    return JsonResponse({'success': True, 'count': len(ordered_ids),
+                         'picked_ids': ordered_ids})
+
+
+@require_http_methods(["POST"])
+def api_pick_record_rename(request, record_id):
+    """重命名选词记录。"""
+    record = get_object_or_404(PickRecord, id=record_id)
+    try:
+        data = json.loads(request.body or '{}')
+    except (ValueError, TypeError):
+        data = {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return JsonResponse({'success': False, 'error': '名称不能为空'}, status=400)
+    record.name = name[:100]
+    record.save(update_fields=['name'])
+    return JsonResponse({'success': True, 'name': record.name})
+
+
+@require_http_methods(["POST"])
+def api_pick_record_delete(request, record_id):
+    """删除选词记录。"""
+    record = get_object_or_404(PickRecord, id=record_id)
+    record.delete()
+    return JsonResponse({'success': True})
 
 
 @require_http_methods(["POST"])
@@ -901,49 +1025,56 @@ def favorites_list(request):
 
 
 def weak_words(request):
-    """薄弱词：从全部薄弱词中精选最需要巩固的 50 个。
-    选词机制（薄弱指数综合评分）：
-      - 错误次数 ×3（核心信号）
-      - 未掌握 +2（学习中 / 复习中）
-      - 掌握等级越低加分越多（(5-等级)×0.4）
-      - 反复复习仍出错加分（复习次数 ×0.2，封顶 20 次）
-      - 近期仍在复习的优先（7 天内 +1.5，30 天内 +0.8）
-    按指数从高到低取前 50 个；顶部统计仍展示全部薄弱词总览。
+    """薄弱词（错误知识库）：从全部薄弱词中精选最需要巩固的 50 个。
+    使用统一风险引擎 compute_risk_score 计算风险档位：
+      - 真实错误事件时间衰减 + 错误率修正 + 未掌握/逾期修正 - 连续答对修正
+      - 手动风险覆盖(risk_override)永远优先于自动计算
+    筛选必须纳入所有 risk_override 非空的词（即使已掌握）。
     """
-    progress_qs = (
+    today = timezone.localdate()
+    progress_qs = list(
         StudyProgress.objects
-        .filter(Q(error_count__gt=0) | Q(status__in=['learning', 'reviewing']))
+        .filter(Q(error_count__gt=0) | Q(status__in=['learning', 'reviewing'])
+                | Q(risk_override__isnull=False))
         .select_related('word__unit')
+        .prefetch_related('word__favorite')
     )
-    now = timezone.now()
 
+    now = timezone.now()
+    # 批量预取真实错误事件，避免逐词查询（列表大时是明显 N+1）
+    events_map = _batch_error_events([p.word_id for p in progress_qs])
     pool = []
     total_errors = 0
     reviewed = 0
+    high_cnt = 0
+    med_cnt = 0
     for p in progress_qs:
         total_errors += p.error_count
         if p.review_count > 0:
             reviewed += 1
-        score = p.error_count * 3.0
-        if p.status != 'mastered':
-            score += 2.0
-        score += max(0, 5 - p.mastery_level) * 0.4
-        score += min(p.review_count, 20) * 0.2
-        if p.last_review:
-            days_since = (now - p.last_review).days
-            if days_since <= 7:
-                score += 1.5
-            elif days_since <= 30:
-                score += 0.8
-        pool.append((score, p))
+        rs = _progress_risk_summary(p, today, events=events_map.get(p.word_id, []))
+        if rs['risk_tier'] == 2:
+            high_cnt += 1
+        elif rs['risk_tier'] == 1:
+            med_cnt += 1
+        # 排序主键：手动覆盖档位 > 自动风险分 > 错误次数 > 复习次数
+        override_rank = -1 if p.risk_override is None else p.risk_override
+        pool.append((rs, p, override_rank))
 
-    pool.sort(key=lambda x: (-x[0], -x[1].error_count, -x[1].review_count))
+    def _sort_key(x):
+        rs, p, override_rank = x
+        score = rs['risk_score'] if rs['risk_score'] is not None else 0.0
+        # 手动覆盖(1/0)在该档位内排最前，再按自动分高低，再按错误/复习次数
+        return (-rs['risk_tier'], -override_rank, -score,
+                -p.error_count, -p.review_count)
+
+    pool.sort(key=_sort_key)
     selected = pool[:50]
 
     items = []
-    for score, p in selected:
+    for rs, p, _ in selected:
         w = p.word
-        items.append({
+        item = {
             'id': w.id,
             'word': w.word,
             'phonetic_us': w.phonetic_us,
@@ -959,14 +1090,18 @@ def weak_words(request):
             'unit_number': w.unit.number,
             'unit_name': w.unit.name,
             'is_favorite': hasattr(w, 'favorite'),
-            'score': round(score, 1),
-        })
+        }
+        item.update(rs)
+        item['score'] = rs['risk_score'] if rs['risk_score'] is not None else rs['risk_tier']
+        items.append(item)
 
     stats = {
         'total': len(pool),
-        'unmastered': sum(1 for _, p in pool if p.status != 'mastered'),
+        'unmastered': sum(1 for _, p, _ in pool if p.status != 'mastered'),
         'total_errors': total_errors,
         'reviewed': reviewed,
+        'high': high_cnt,
+        'medium': med_cnt,
     }
     return render(request, 'weak_words.html', {
         'items': items,
@@ -1106,24 +1241,216 @@ def api_word_detail(request, word_id):
     return JsonResponse(data)
 
 
-def _record_study(word, action, data=None, mode=''):
-    """写一条背词历史记录；失败不影响主流程"""
+def _record_study(word, action, data=None, mode='', mistake_type='', error_detail=None):
+    """写一条背词历史记录；失败不影响主流程。
+    mistake_type: 错误类型(spelling/meaning/meaning_confusion/pos/collocation/other)
+    error_detail: {"user_answer": 你的答案, "correct": 标准答案}
+    来源优先取 data['source']；未传或非法时可用 mode 覆盖（如 'exam'）；
+    mode 与 payload['mode'] 同时存在时拼接，仍可区分大方向与细分模式。
+    """
     try:
         payload = data or {}
-        src = payload.get('source', 'learn')
-        if src not in ('learn', 'review', 'favorite'):
-            src = 'learn'
+        valid_sources = {c[0] for c in StudyRecord.SOURCE_CHOICES}
+        src = payload.get('source', '')
+        if src not in valid_sources:
+            # mode 形如 'exam_choice' / 'exam_spelling' / 'pos_identify' 时，
+            # 允许用其前缀覆盖 source，保证考试、词性练习来源真实可查。
+            prefix = (mode or '').split('_', 1)[0]
+            src = prefix if prefix in valid_sources else 'learn'
+        sub_mode = payload.get('mode') or ''
+        parts = [p for p in ((mode or ''), sub_mode) if p]
+        mode_str = '/'.join(parts)[:30]
+        valid_types = {c[0] for c in StudyRecord.MISTAKE_CHOICES}
+        mtype = mistake_type if mistake_type in valid_types else ''
+        detail = error_detail if isinstance(error_detail, dict) else {}
         StudyRecord.objects.create(
             word=word,
             action=action,
             source=src,
-            mode=(mode or payload.get('mode') or '')[:30],
+            mode=mode_str,
+            mistake_type=mtype,
+            error_detail=detail,
         )
     except Exception:
         pass
 
 
+def _exam_mistake_type(qtype, direction):
+    """根据考试题型与方向推断错误事件类型。
+    - spelling/meaning 默写：spelling / meaning
+    - 选择：英选汉=义项混淆；汉选英=拼写/词形辨识不清（视为其他）
+    """
+    if qtype == 'spelling':
+        return 'spelling'
+    if qtype == 'meaning':
+        return 'meaning'
+    if qtype == 'choice':
+        return 'meaning_confusion' if direction == 'en2zh' else 'other'
+    return ''
+
+
+def _exam_error_detail(qtype, word, ans, sq):
+    """构造考试错误的错误详情（你的答案 vs 标准答案）"""
+    if qtype in ('spelling', 'meaning'):
+        return {'user_answer': ans.get('answer') or '',
+                'correct': word.word if qtype == 'spelling' else word.get_meanings()}
+    selected = ans.get('selected')
+    options = sq.get('options') or []
+    ci = sq.get('correct_index')
+    return {
+        'user_answer': options[selected] if isinstance(selected, int) and 0 <= selected < len(options) else selected,
+        'correct': options[ci] if isinstance(ci, int) and 0 <= ci < len(options) else '',
+    }
+
+
 CONSECUTIVE_THRESHOLD = 20
+
+# ─── 错误风险引擎（只依据真实错误事件）────────────────────
+DECAY_HALFLIFE_DAYS = 21      # 错误事件衰减半衰期（天）
+MISTAKE_WEIGHTS = {
+    'spelling': 1.2,          # 拼写
+    'meaning': 1.0,           # 释义
+    'meaning_confusion': 1.5, # 义项混淆
+    'pos': 1.5,               # 词性
+    'collocation': 1.8,       # 搭配
+    'other': 0.8,             # 其他
+    'unknown': 0.8,           # 普通「不会」（无具体错因）
+}
+RISK_ERR_RATE_W = 1.2        # 错误率平滑修正权重
+RISK_UNMASTERED_W = 0.5      # 未掌握修正
+RISK_OVERDUE_W = 0.3         # 逾期修正
+RISK_CORRECT_W = 0.2         # 连续答对修正（每项扣减）
+RISK_SCORE_CAP = 10.0        # 风险分封顶，避免高频无限抬分
+RISK_TIER_LOW = 1.5
+RISK_TIER_MEDIUM = 4.0
+# 错误动作全集：真实答错才会写这些 action
+RISK_ERROR_ACTIONS = ('spelling_wrong', 'meaning_wrong', 'unknown')
+
+
+def _mistake_weight_for_record(rec):
+    """从背词记录解析错误类型与权重；旧记录无 mistake_type 时按 action 兜底。"""
+    mtype = rec.mistake_type
+    if not mtype:
+        mtype = 'spelling' if rec.action == 'spelling_wrong' else (
+            'meaning' if rec.action == 'meaning_wrong' else 'unknown')
+    return MISTAKE_WEIGHTS.get(mtype, MISTAKE_WEIGHTS['other'])
+
+
+def compute_risk_score(progress, today=None, events=None):
+    """计算某词的风险分并定档。只依据真实错误事件的时间衰减做证据，
+    不使用 last_review 作为「近期仍错」的证据；答对表现只通过连续答对降分。
+    返回 (score, tier, reasons, overridden)：
+      tier: 0低 1中 2高
+      reasons: 供展示的推荐理由列表
+      overridden: 是否命中了手动覆盖
+    events: 可选，传入该词预先批量查出的错误记录列表，避免逐词查询造成 N+1。
+    """
+    today = today or timezone.localdate()
+    if progress.risk_override is not None:
+        tier = min(max(int(progress.risk_override), 0), 2)
+        label = {0: '手动低风险', 1: '手动中风险', 2: '手动高风险'}[tier]
+        return (None, tier, [label], True)
+
+    reasons = []
+    # 1) 真实错误事件时间衰减
+    if events is None:
+        events = StudyRecord.objects.filter(
+            word=progress.word, action__in=RISK_ERROR_ACTIONS).order_by('created_at')
+    decay_score = 0.0
+    for rec in events:
+        days = (today - timezone.localdate(rec.created_at)).days
+        if days < 0:
+            days = 0
+        weight = _mistake_weight_for_record(rec)
+        decay_score += weight * math.exp(-days / DECAY_HALFLIFE_DAYS)
+    if decay_score > 0:
+        reasons.append(f'近期错误事件衰减分 {decay_score:.2f}')
+
+    # 2) 错误率平滑修正（遇到 history sparse / attempt 少时避免异常放大）
+    attempts = (progress.spelling_attempts + progress.meaning_attempts
+                + progress.review_count)
+    err_rate = (progress.error_count + 1) / (attempts + 4) if attempts is not None else 0
+    rate_penalty = RISK_ERR_RATE_W * err_rate
+    # 3) 未掌握修正
+    unmastered = RISK_UNMASTERED_W if progress.status != 'mastered' else 0.0
+    # 4) 逾期修正
+    overdue = 0.0
+    if progress.next_review is None or progress.next_review <= today:
+        overdue = RISK_OVERDUE_W
+    # 5) 连续答对修正（只降分）
+    correct_credit = RISK_CORRECT_W * max(progress.consecutive_correct, 0)
+
+    score = (decay_score + rate_penalty + unmastered + overdue - correct_credit)
+    score = max(0.0, min(score, RISK_SCORE_CAP))
+
+    if rate_penalty > 0.05:
+        reasons.append(f'错误率 {progress.error_count} 次/回答 {attempts} 次')
+    if unmastered:
+        reasons.append('尚未掌握')
+    if overdue:
+        reasons.append('复习已到期')
+
+    if score >= RISK_TIER_MEDIUM:
+        tier = 2
+    elif score >= RISK_TIER_LOW:
+        tier = 1
+    else:
+        tier = 0
+    return (round(score, 3), tier, reasons, False)
+
+
+def _progress_risk_summary(p, today=None, events=None):
+    """返回含风险档位与原因的业务结构，供视图/排序复用。
+    events: 批量预取的错误记录列表，避免每张词表触发一次查询。"""
+    score, tier, reasons, overridden = compute_risk_score(p, today, events=events)
+    return {
+        'risk_score': score,
+        'risk_tier': tier,
+        'risk_label': {0: '低', 1: '中', 2: '高'}[tier],
+        'risk_reasons': reasons,
+        'risk_overridden': overridden,
+        'risk_override': p.risk_override,
+    }
+
+
+def _batch_error_events(word_ids):
+    """按词批量取出真实错误事件（RISK_ERROR_ACTIONS），按 word_id 分桶返回。
+    供 weak_words、_get_today_task 等列表视图一次性拉取，避免 N+1。"""
+    if not word_ids:
+        return {}
+    events = (StudyRecord.objects
+              .filter(word_id__in=word_ids, action__in=RISK_ERROR_ACTIONS)
+              .only('word_id', 'action', 'mistake_type', 'created_at')
+              .order_by('created_at'))
+    buckets = {}
+    for rec in events:
+        buckets.setdefault(rec.word_id, []).append(rec)
+    return buckets
+
+
+def _sort_bucket_with_risk_jitter(bucket, key_fn):
+    """桶内排序 + 同优先级区间随机。
+    先按 key_fn 升序，再按「相邻 key 相同」切分成组打乱；
+    避免早期按固定位置每3个一切、把不同优先级的词混进同一随机组。
+    """
+    ordered = sorted(bucket, key=key_fn)
+    if len(ordered) <= 1:
+        return ordered
+    groups = []
+    start = 0
+    prev_key = key_fn(ordered[0])
+    for idx in range(1, len(ordered) + 1):
+        cur = key_fn(ordered[idx]) if idx < len(ordered) else None
+        if cur != prev_key:
+            groups.append(ordered[start:idx])
+            start = idx
+            prev_key = cur
+    result = []
+    for g in groups:
+        if len(g) > 1:
+            random.shuffle(g)
+        result.extend(g)
+    return result
 
 
 def _track_consecutive(progress, correct):
@@ -1153,6 +1480,35 @@ def _schedule_next_review(progress, today):
         progress.next_review = None
     else:
         progress.next_review = today + timedelta(days=1)
+
+
+def _apply_wrong_progress(word, today=None, now=None):
+    """把一次已确认的真实答错应用到 StudyProgress，与既有考试错题口径一致：
+    增加错误计数、记录最近复习时间、安排明天复习；已掌握词保持「会」不降级，
+    仅清零连续答对计数。供词性学习等入口复用，保证错误知识库/风险推荐不漏词。
+    返回更新后的 StudyProgress（失败时不抛出，返回 None）。"""
+    try:
+        today = today or timezone.localdate()
+        now = now or timezone.now()
+        progress, created = StudyProgress.objects.get_or_create(word=word)
+        if created or progress.status == 'new':
+            progress.learned_date = today
+            progress.is_today_new = True
+        progress.error_count += 1
+        if progress.status == 'mastered':
+            # 已掌握词一次失误不清零降级，仅清零连续答对并安排明天巩固
+            progress.consecutive_correct = 0
+        else:
+            progress.mastery_level = 0
+            progress.status = 'learning'
+            _track_consecutive(progress, False)
+        progress.review_count += 1
+        progress.last_review = now
+        _schedule_next_review(progress, today)
+        progress.save()
+        return progress
+    except Exception:
+        return None
 
 
 @require_http_methods(['POST'])
@@ -1253,6 +1609,42 @@ def api_mark_unskip(request, word_id):
             'success': True,
             'is_excluded': False,
             'status': progress.status,
+        })
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+
+@require_http_methods(['POST'])
+def api_risk_override(request, word_id):
+    """手动覆盖风险档位：0=低 1=中 2=高，传 -1 清除覆盖恢复自动计算。"""
+    try:
+        word = get_object_or_404(Word, id=word_id)
+        progress, _ = StudyProgress.objects.get_or_create(word=word)
+        try:
+            payload = json.loads(request.body or '{}')
+        except Exception:
+            payload = {}
+        try:
+            level = int(payload.get('level', request.POST.get('level', 0)) or 0)
+        except (TypeError, ValueError):
+            return JsonResponse({'error': 'level 必须是整数'}, status=400)
+
+        if level == -1:
+            progress.risk_override = None
+        elif level in (0, 1, 2):
+            progress.risk_override = level
+        else:
+            return JsonResponse({'error': 'level 需为 -1/0/1/2'}, status=400)
+        progress.save()
+
+        score, tier, reasons, overridden = compute_risk_score(progress)
+        return JsonResponse({
+            'success': True,
+            'risk_override': progress.risk_override,
+            'risk_tier': tier,
+            'risk_score': score,
+            'risk_reasons': reasons,
+            'risk_overridden': overridden,
         })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
@@ -1471,7 +1863,12 @@ def api_spelling_check(request, word_id):
         checkin.save()
 
         # 记录背词历史
-        _record_study(word, 'spelling_ok' if correct else 'spelling_wrong', data)
+        if correct:
+            _record_study(word, 'spelling_ok', data)
+        else:
+            _record_study(word, 'spelling_wrong', data,
+                          mistake_type='spelling',
+                          error_detail={'user_answer': answer, 'correct': word.word})
 
         auto_checked = update_daily_checkin()
 
@@ -1528,7 +1925,12 @@ def api_meaning_check(request, word_id):
         checkin.save()
 
         # 记录背词历史
-        _record_study(word, 'meaning_ok' if ok else 'meaning_wrong', data)
+        if ok:
+            _record_study(word, 'meaning_ok', data)
+        else:
+            _record_study(word, 'meaning_wrong', data,
+                          mistake_type='meaning',
+                          error_detail={'user_answer': answer, 'correct': word.get_meanings()})
 
         auto_checked = update_daily_checkin()
 
@@ -1868,12 +2270,22 @@ def _get_today_task(today=None):
             return 2
         return 3
 
-    buckets = ([], [], [], [])
+    buckets = [[], [], [], []]
     for p in all_progress:
         buckets[_priority(p)].append(p)
-    for i in (0, 1, 2):
-        random.shuffle(buckets[i])
-    buckets[3].sort(key=lambda p: (p.learned_date or today))
+    # 批量预取错误事件，避免桶内排序时逐词查库（列表大时是明显 N+1）
+    events_map = _batch_error_events([p.word_id for p in all_progress])
+    # 桶内排序：人工重点(手动等级1=熟练优先) > 手动风险档 > 自动风险分 > 到期紧迫度，再有限随机
+    def _bucket_key(p):
+        rs = _progress_risk_summary(p, today, events=events_map.get(p.word_id, []))
+        score = rs['risk_score'] if rs['risk_score'] is not None else 0.0
+        manual_rank = {1: 0, 2: 1, 3: 2}.get(p.manual_level, 2)
+        override = -1 if p.risk_override is None else p.risk_override
+        over = (today - (p.next_review or today)).days
+        # key 越小优先级越高；_sort_bucket_with_risk_jitter 按升序取词
+        return (manual_rank, -override, -score, over)
+    for i in range(4):
+        buckets[i] = _sort_bucket_with_risk_jitter(buckets[i], _bucket_key)
     review_ordered = buckets[0] + buckets[1] + buckets[2] + buckets[3]
 
     return {
@@ -2549,6 +2961,54 @@ def api_check_update(request):
     return JsonResponse(payload)
 
 
+def _knowledge_feedback_ref(fb):
+    """为知识反馈导出稳定的自然引用（不使用数据库主键，跨库可解析）。
+    - word：词条文本；- family：词族 key；
+    - member：词族 key + 词条/词库外文本 + 词性 + 成员关系；
+    - pattern：词族 key + 规范化构词元素（name+kind）；
+    - relation：词族 key + 起点词 + 终点词/词库外文本 + 关系类型。
+    """
+    tt = fb.target_type
+    if tt == 'word':
+        w = Word.objects.filter(id=fb.target_id).values_list('word', flat=True).first()
+        return {'word': w} if w else {}
+    if tt == 'family':
+        key = WordFamily.objects.filter(id=fb.target_id).values_list('key', flat=True).first()
+        return {'key': key} if key else {}
+    if tt == 'member':
+        m = (WordFamilyMember.objects.filter(id=fb.target_id)
+             .select_related('word', 'family').first())
+        if not m:
+            return {}
+        return {
+            'family_key': m.family.key,
+            'word': m.word.word if m.word else None,
+            'outside_word': m.outside_word,
+            'pos': m.pos, 'relation': m.relation,
+        }
+    if tt == 'pattern':
+        p = (WordFormationPattern.objects.filter(id=fb.target_id)
+             .select_related('family').first())
+        if not p:
+            return {}
+        return {
+            'family_key': p.family.key if p.family else None,
+            'name': p.name, 'kind': p.kind,
+        }
+    if tt == 'relation':
+        r = (WordRelation.objects.filter(id=fb.target_id)
+             .select_related('word', 'related_word', 'family').first())
+        if not r:
+            return {}
+        return {
+            'family_key': r.family.key if r.family else None,
+            'word': r.word.word if r.word else None,
+            'related_word': r.related_word.word if r.related_word else None,
+            'outside_word': r.outside_word, 'rel_type': r.rel_type,
+        }
+    return {}
+
+
 def _build_backup_payload(settings_obj):
     """全量备份数据结构：词库（单元+单词）、设置、学习进度、背词记录、打卡、收藏、笔记、
     速记、计划、预设、AI 模型、会话与消息、写作练习、写作好句、导入记录、学习周报。"""
@@ -2582,6 +3042,7 @@ def _build_backup_payload(settings_obj):
                 'word': r.word.word if r.word else None,
                 'action': r.action, 'source': r.source,
                 'mode': r.mode, 'created_at': r.created_at.isoformat(),
+                'mistake_type': r.mistake_type, 'error_detail': r.error_detail,
             }
             for r in StudyRecord.objects.all()
         ],
@@ -2628,6 +3089,19 @@ def _build_backup_payload(settings_obj):
              'word': dp.word.word if dp.word else None,
              'date': dp.date.isoformat()}
             for dp in DailyPick.objects.all()
+        ],
+        # 选词记录（第十八节）：记录名 / 创建时间 / 成员单词稳定引用 + position
+        'pick_records': [
+            {
+                'name': r.name,
+                'created_at': r.created_at.isoformat(),
+                'words': [
+                    {'word': m.word.word, 'position': m.position}
+                    for m in r.words.select_related('word').order_by('position', 'id')
+                    if m.word
+                ],
+            }
+            for r in PickRecord.objects.all()
         ],
         'presets': [
             {'name': p.name, 'preset_type': p.preset_type, 'params': p.params,
@@ -2691,6 +3165,67 @@ def _build_backup_payload(settings_obj):
                 'created_at': lr.created_at.isoformat(),
             }
             for lr in LearningReport.objects.all()
+        ],
+        # 词性学习 / 词族与构词法 / 知识反馈（HANDOVER 第十二节）
+        'pos_attempts': [
+            {
+                'word': pa.word.word if pa.word else None,
+                'target_pos': pa.target_pos, 'question_type': pa.question_type,
+                'question': pa.question, 'user_answer': pa.user_answer,
+                'result': pa.result, 'judged_by': pa.judged_by,
+                'feedback': pa.feedback,
+                'created_at': pa.created_at.isoformat(),
+            }
+            for pa in PosLearningAttempt.objects.select_related('word').all()
+        ],
+        'word_families': [
+            {
+                'key': f.key, 'title': f.title, 'description': f.description,
+                'source': f.source,
+                'confirmed_at': f.confirmed_at.isoformat() if f.confirmed_at else None,
+                'members': [
+                    {
+                        'word': m.word.word if m.word else None,
+                        'outside_word': m.outside_word,
+                        'pos': m.pos, 'meaning': m.meaning,
+                        'relation': m.relation, 'note': m.note,
+                        'sort_order': m.sort_order, 'source': m.source,
+                        'confirmed_at': m.confirmed_at.isoformat() if m.confirmed_at else None,
+                    }
+                    for m in f.members.select_related('word').all()
+                ],
+                'patterns': [
+                    {
+                        'name': p.name, 'kind': p.kind,
+                        'from_pos': p.from_pos, 'to_pos': p.to_pos,
+                        'rule': p.rule, 'exception': p.exception,
+                        'confidence': p.confidence, 'is_confirmed': p.is_confirmed,
+                        'source': p.source,
+                    }
+                    for p in f.patterns.all()
+                ],
+                'relations': [
+                    {
+                        'word': r.word.word if r.word else None,
+                        'related_word': r.related_word.word if r.related_word else None,
+                        'outside_word': r.outside_word,
+                        'rel_type': r.rel_type, 'note': r.note,
+                        'confidence': r.confidence, 'is_confirmed': r.is_confirmed,
+                        'source': r.source,
+                    }
+                    for r in f.relations.select_related('word', 'related_word').all()
+                ],
+            }
+            for f in WordFamily.objects.all()
+        ],
+        'knowledge_feedback': [
+            {
+                'target_type': fb.target_type,
+                'ref': _knowledge_feedback_ref(fb),
+                'action': fb.action,
+                'created_at': fb.created_at.isoformat(),
+            }
+            for fb in KnowledgeFeedback.objects.all()
         ],
     }
 
@@ -2789,6 +3324,7 @@ def _backup_settings(s):
         'meaning_check_model_id': s.meaning_check_model_id,
         'exam_model_id': s.exam_model_id,
         'cet6_translation_model_id': s.cet6_translation_model_id,
+        'pos_learning_model_id': s.pos_learning_model_id,
     }
 
 
@@ -2807,6 +3343,7 @@ def _backup_progress(p):
         'meaning_correct': p.meaning_correct,
         'consecutive_correct': p.consecutive_correct, 'is_excluded': p.is_excluded,
         'manual_level': p.manual_level,
+        'risk_override': p.risk_override,
     }
 
 
@@ -2837,6 +3374,49 @@ def api_restore(request):
             if w and w in exe_word_map:
                 return exe_word_map[w]
             skipped[table] = skipped.get(table, 0) + 1
+            return None
+
+        def _resolve_fb_target(tt, ref):
+            """把知识反馈的自然引用解析为目标库对象 id；解析不到返回 None（跳过并计数）。"""
+            if tt == 'word':
+                return exe_word_map.get(ref.get('word', ''))
+            if tt == 'family':
+                key = ref.get('key')
+                if not key:
+                    return None
+                return WordFamily.objects.filter(key=key).values_list('id', flat=True).first()
+            family = WordFamily.objects.filter(key=ref.get('family_key') or '').first()
+            if family is None:
+                return None
+            if tt == 'member':
+                wordtext = ref.get('word')
+                wid = exe_word_map.get(wordtext) if wordtext else None
+                qs = family.members.all()
+                qs = (qs.filter(word_id=wid) if wid is not None
+                      else qs.filter(outside_word=ref.get('outside_word') or ''))
+                if ref.get('relation'):
+                    qs = qs.filter(relation=ref['relation'])
+                if ref.get('pos'):
+                    qs = qs.filter(pos=ref['pos'])
+                return qs.values_list('id', flat=True).first()
+            if tt == 'pattern':
+                return (family.patterns
+                        .filter(name=ref.get('name') or '', kind=ref.get('kind') or '')
+                        .values_list('id', flat=True).first())
+            if tt == 'relation':
+                wordtext = ref.get('word')
+                wid = exe_word_map.get(wordtext) if wordtext else None
+                if wid is None:
+                    return None
+                qs = family.relations.filter(word_id=wid)
+                if ref.get('rel_type'):
+                    qs = qs.filter(rel_type=ref['rel_type'])
+                related = ref.get('related_word')
+                if related:
+                    qs = qs.filter(related_word_id=exe_word_map.get(related))
+                else:
+                    qs = qs.filter(outside_word=ref.get('outside_word') or '')
+                return qs.values_list('id', flat=True).first()
             return None
 
         with transaction.atomic():
@@ -2945,6 +3525,8 @@ def api_restore(request):
                     settings_obj.meaning_check_model_id = _map_fk('meaning_check_model_id')
                     settings_obj.exam_model_id = _map_fk('exam_model_id')
                     settings_obj.cet6_translation_model_id = _map_fk('cet6_translation_model_id')
+                    # 备份无此键时明确置空（None），不悄然保留目标库旧值
+                    settings_obj.pos_learning_model_id = _map_fk('pos_learning_model_id')
                     settings_obj.save()
 
                 # --- 3) 学习进度（用 word 字符串跨库映射 word_id）---
@@ -2972,6 +3554,7 @@ def api_restore(request):
                             consecutive_correct=p.get('consecutive_correct', 0),
                             is_excluded=p.get('is_excluded', False),
                             manual_level=p.get('manual_level', 3),
+                            risk_override=p.get('risk_override'),
                         )
 
                 # --- 4) 背词记录 ---
@@ -2990,6 +3573,8 @@ def api_restore(request):
                         rec = StudyRecord.objects.create(
                             word_id=new_wid, action=r['action'],
                             source=r.get('source', 'learn'), mode=r.get('mode', ''),
+                            mistake_type=r.get('mistake_type', ''),
+                            error_detail=r.get('error_detail') or {},
                         )
                         # created_at 为 auto_now_add，先创建再用 update 写回原始时间
                         StudyRecord.objects.filter(pk=rec.pk).update(created_at=parsed)
@@ -3057,6 +3642,26 @@ def api_restore(request):
                             DailyPick.objects.get_or_create(date=pick_date, word_id=new_wid)
                         except (ValueError, TypeError):
                             continue
+
+                # --- 8.6) 选词记录（第十八节，按单词字符串映射，保留顺序）---
+                if data.get('pick_records'):
+                    PickRecord.objects.all().delete()
+                    for pr in data['pick_records']:
+                        rec = PickRecord.objects.create(name=pr.get('name', '')[:100])
+                        # created_at 为 auto_now_add，先创建再用 update 写回原始时间
+                        raw_ca = pr.get('created_at')
+                        parsed_ca = parse_datetime(raw_ca) if raw_ca else None
+                        if parsed_ca:
+                            PickRecord.objects.filter(pk=rec.pk).update(created_at=parsed_ca)
+                        members = []
+                        for m in pr.get('words', []):
+                            new_wid = _resolve_word_id(m, 'pick_records')
+                            if new_wid is None:
+                                continue
+                            members.append(PickRecordWord(
+                                record=rec, word_id=new_wid,
+                                position=m.get('position', 0)))
+                        PickRecordWord.objects.bulk_create(members, ignore_conflicts=True)
 
                 # --- 9) 计划（无 Word 引用）---
                 if 'plans' in data:
@@ -3154,6 +3759,98 @@ def api_restore(request):
                             summary_json=lr.get('summary_json', '{}'),
                             ai_comment=lr.get('ai_comment', ''),
                         )
+
+                # --- 15) 词性学习作答 / 词族与构词法 / 知识反馈 ---
+                if data.get('pos_attempts'):
+                    PosLearningAttempt.objects.all().delete()
+                    for pa in data['pos_attempts']:
+                        new_wid = _resolve_word_id(pa, 'pos_attempts')
+                        if new_wid is None:
+                            continue
+                        rec = PosLearningAttempt.objects.create(
+                            word_id=new_wid,
+                            target_pos=pa.get('target_pos', ''),
+                            question_type=pa.get('question_type', 'pos_choice'),
+                            question=pa.get('question', {}),
+                            user_answer=pa.get('user_answer', ''),
+                            result=pa.get('result', ''),
+                            judged_by=pa.get('judged_by', ''),
+                            feedback=pa.get('feedback', ''),
+                        )
+                        # created_at 为 auto_now_add，先创建再用 update 写回原始时间
+                        raw_ca = pa.get('created_at')
+                        parsed_ca = parse_datetime(raw_ca) if raw_ca else None
+                        if parsed_ca:
+                            PosLearningAttempt.objects.filter(pk=rec.pk).update(created_at=parsed_ca)
+
+                if data.get('word_families'):
+                    # 词族整组恢复（成员/构词法/关系内联在 family 下）
+                    WordFamily.objects.all().delete()
+                    WordFormationPattern.objects.filter(family__isnull=False).delete()
+                    WordRelation.objects.filter(family__isnull=False).delete()
+                    for fam in data['word_families']:
+                        f = WordFamily.objects.create(
+                            key=fam.get('key', ''), title=fam.get('title', ''),
+                            description=fam.get('description', ''),
+                            source=fam.get('source', 'manual'),
+                            confirmed_at=parse_datetime(fam['confirmed_at']) if fam.get('confirmed_at') else None,
+                        )
+                        for i, m in enumerate(fam.get('members', [])):
+                            mw = m.get('word')
+                            wid = exe_word_map.get(mw) if mw else None
+                            if mw and wid is None:
+                                skipped['word_family_members'] = skipped.get('word_family_members', 0) + 1
+                            WordFamilyMember.objects.create(
+                                family=f, word_id=wid,
+                                outside_word='' if wid else (m.get('outside_word') or (mw or '')),
+                                pos=m.get('pos', ''), meaning=m.get('meaning', ''),
+                                relation=m.get('relation', 'derived'),
+                                note=m.get('note', ''), sort_order=m.get('sort_order', i),
+                                source=m.get('source', 'manual'),
+                                confirmed_at=parse_datetime(m['confirmed_at']) if m.get('confirmed_at') else None,
+                            )
+                        for p in fam.get('patterns', []):
+                            WordFormationPattern.objects.create(
+                                family=f, name=p.get('name', ''),
+                                kind=p.get('kind', 'suffix'),
+                                from_pos=p.get('from_pos', ''), to_pos=p.get('to_pos', ''),
+                                rule=p.get('rule', ''), exception=p.get('exception', ''),
+                                confidence=p.get('confidence', 1.0),
+                                is_confirmed=p.get('is_confirmed', True),
+                                source=p.get('source', 'manual'),
+                            )
+                        for r in fam.get('relations', []):
+                            from_w = r.get('word')
+                            from_id = exe_word_map.get(from_w) if from_w else None
+                            if not from_id:
+                                skipped['word_relations'] = skipped.get('word_relations', 0) + 1
+                                continue
+                            rel_w = r.get('related_word')
+                            rel_id = exe_word_map.get(rel_w) if rel_w else None
+                            if rel_w and rel_id is None:
+                                skipped['word_relations'] = skipped.get('word_relations', 0) + 1
+                            WordRelation.objects.create(
+                                family=f, word_id=from_id, related_word_id=rel_id,
+                                outside_word='' if rel_id else (r.get('outside_word') or (rel_w or '')),
+                                rel_type=r.get('rel_type', 'confusing'),
+                                note=r.get('note', ''),
+                                confidence=r.get('confidence', 1.0),
+                                is_confirmed=r.get('is_confirmed', True),
+                                source=r.get('source', 'manual'),
+                            )
+
+                if data.get('knowledge_feedback'):
+                    KnowledgeFeedback.objects.all().delete()
+                    for fb in data['knowledge_feedback']:
+                        tt = fb.get('target_type')
+                        ref = fb.get('ref') or {}
+                        # 按稳定自然引用解析（member/pattern/relation 在词族恢复后再解析）
+                        tid = _resolve_fb_target(tt, ref)
+                        if tid is None:
+                            skipped['knowledge_feedback'] = skipped.get('knowledge_feedback', 0) + 1
+                            continue
+                        KnowledgeFeedback.objects.create(
+                            target_type=tt, target_id=tid, action=fb.get('action', 'focus'))
             finally:
                 with connection.cursor() as cur2:
                     cur2.execute('PRAGMA foreign_keys = ON')
@@ -3189,6 +3886,7 @@ def api_settings(request):
             'meaning_check_model_id': settings_obj.meaning_check_model_id,
             'exam_model_id': settings_obj.exam_model_id,
             'cet6_translation_model_id': settings_obj.cet6_translation_model_id,
+            'pos_learning_model_id': settings_obj.pos_learning_model_id,
             'use_ai_meaning_check': settings_obj.use_ai_meaning_check,
         })
     try:
@@ -3983,6 +4681,7 @@ def api_exam_submit(request):
 
         answer_map = {a['word_id']: a for a in answers}
         cached_judgments = request.session.get('exam_judgments') or {}
+        exam_direction = request.session.get('exam_direction', 'choice')
 
         # ===== 阶段一：全部题先在内存里判定完，此阶段不写库 =====
         # 释义题优先使用答题过程中逐题判定的缓存（答案必须与缓存一致，改了答案则重判），
@@ -4113,6 +4812,17 @@ def api_exam_submit(request):
                 # 自动复习调度：今天考过的词 → 明天自动进入复习栏目
                 _schedule_next_review(progress, today)
                 progress.save()
+
+                # 真实答错 → 沉淀错误事件（只记录知识错误，不改计分/掌握口径）
+                if not is_correct:
+                    _record_study(
+                        word, 'meaning_wrong' if qtype == 'meaning' else
+                        ('spelling_wrong' if qtype == 'spelling' else 'unknown'),
+                        ans,
+                        mode=f'exam_{qtype}',
+                        mistake_type=_exam_mistake_type(qtype, exam_direction),
+                        error_detail=_exam_error_detail(qtype, word, ans, sq),
+                    )
                 results.append({
                     'word_id': qid,
                     'word': word.word,
@@ -8304,3 +9014,848 @@ def api_cet6_paper_delete(request, pid):
         return JsonResponse({'error': '该组卷已有练习记录，不能删除，请保留后重试'}, status=409)
     paper.delete()
     return JsonResponse({'success': True, 'deleted': pid})
+
+
+# ==================== 词性学习 / 词族与构词法（HANDOVER 第十二节） ====================
+
+COMMON_POS_LABELS = ('n.', 'v.', 'adj.', 'adv.', 'prep.', 'conj.', 'pron.', 'num.', 'art.', 'int.', 'abbr.')
+POS_EXERCISE_TYPES = {'pos_choice', 'pos_match', 'form_convert'}
+
+
+def _resolve_pos_learning_model_id(data=None):
+    """词性学习模型回退链（按方案契约）：接口显式 model_id → 词性学习模型 →
+    复审模型 → 第一个已启用模型。返回 AIModel.id 或 None。"""
+    data = data or {}
+    explicit = data.get('model_id')
+    if explicit:
+        try:
+            return AIModel.objects.get(id=int(explicit), enabled=True).id
+        except (AIModel.DoesNotExist, ValueError, TypeError):
+            return None
+    settings_obj = UserSettings.get_settings()
+    for field in ('pos_learning_model_id', 'review_model_id'):
+        mid = getattr(settings_obj, field, None)
+        if mid and AIModel.objects.filter(id=mid, enabled=True).exists():
+            return mid
+    first = AIModel.objects.filter(enabled=True).order_by('id').first()
+    return first.id if first else None
+
+
+def _extract_json_obj(text):
+    """从 AI 返回文本中提取第一个 JSON 对象；容忍代码块包裹。失败返回 None。"""
+    if not text:
+        return None
+    s = text.strip()
+    m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', s, re.S)
+    if m:
+        s = m.group(1)
+    start = s.find('{')
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(s)):
+        if s[i] == '{':
+            depth += 1
+        elif s[i] == '}':
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(s[start:i + 1])
+                except (json.JSONDecodeError, ValueError):
+                    return None
+    return None
+
+
+def _build_local_pos_exercises(word, focus_pos=''):
+    """完全基于本地词库数据生成词性客观题（无 AI 也可学、可判）。
+    题型：pos_choice（释义→词性）、pos_match（词性→释义）、form_convert（词形转换）。
+    只产出满足「≥2 个不重复选项且答案在选项中」的题。"""
+    exercises = []
+    by_pos = word.get_meanings_by_pos() or {}
+    pos_labels = [p for p, ms in by_pos.items() if ms]
+    distractor_pool = [p for p in COMMON_POS_LABELS if p not in pos_labels]
+
+    # pos_choice：给释义选词性
+    for pos in pos_labels:
+        for m in by_pos[pos][:1]:
+            options = list(pos_labels)
+            for d in distractor_pool:
+                if len(options) >= 4:
+                    break
+                options.append(d)
+            options = options[:4]
+            random.shuffle(options)
+            exercises.append({
+                'type': 'pos_choice',
+                'target_pos': pos,
+                'prompt': f'「{word.word}」的释义「{m}」对应的词性是？',
+                'options': options,
+                'answer': pos,
+            })
+
+    # pos_match：给词性选释义
+    all_meanings = [(p, m) for p, ms in by_pos.items() for m in ms]
+    for pos in pos_labels:
+        correct_list = by_pos[pos][:1]
+        others = [m for p, m in all_meanings if p != pos]
+        if correct_list and others:
+            options = correct_list + others[:3]
+            options = list(dict.fromkeys(options))[:4]
+            if len(options) >= 2:
+                random.shuffle(options)
+                exercises.append({
+                    'type': 'pos_match',
+                    'target_pos': pos,
+                    'prompt': f'「{word.word}」作 {pos} 时的释义是？',
+                    'options': options,
+                    'answer': correct_list[0],
+                })
+
+    # form_convert：词形转换（基于 word_forms）
+    forms = word.get_word_forms() or {}
+    flat = []
+    for k, v in forms.items():
+        values = v if isinstance(v, list) else [v]
+        for val in values:
+            if isinstance(val, str) and val and val.lower() != word.word.lower():
+                flat.append((k, val))
+    if len(flat) >= 2:
+        for k, val in flat[:3]:
+            distractors = [v2 for k2, v2 in flat if v2 != val][:3]
+            options = list(dict.fromkeys([val] + distractors))[:4]
+            if len(options) >= 2:
+                random.shuffle(options)
+                exercises.append({
+                    'type': 'form_convert',
+                    'target_pos': k,
+                    'prompt': f'「{word.word}」的 {k} 形式是？',
+                    'options': options,
+                    'answer': val,
+                })
+
+    # focus_pos 优先排前
+    if focus_pos:
+        exercises.sort(key=lambda e: 0 if e.get('target_pos') == focus_pos else 1)
+    return exercises[:6]
+
+
+def _validate_pos_lesson(payload, word):
+    """校验 AI 词性讲解 JSON（方案第四节）。返回 (clean, warnings) 或 (None, [错误])。"""
+    warnings = []
+    if not isinstance(payload, dict):
+        return None, ['返回不是 JSON 对象']
+    if payload.get('word') != word.word:
+        return None, ['word 字段与请求目标不一致']
+    allowed_pos = set((word.get_meanings_by_pos() or {}).keys()) | set(COMMON_POS_LABELS)
+    if word.pos:
+        allowed_pos.add(word.pos)
+
+    clean = {'lesson_version': payload.get('lesson_version', 1), 'word': word.word}
+
+    pos_groups = payload.get('pos_groups') or []
+    if not isinstance(pos_groups, list):
+        return None, ['pos_groups 不是数组']
+    groups_out = []
+    for g in pos_groups[:6]:
+        if not isinstance(g, dict):
+            continue
+        pos = (g.get('pos') or '').strip()
+        if pos not in allowed_pos:
+            warnings.append(f'忽略未知词性标签 {pos}')
+            continue
+        groups_out.append({
+            'pos': pos,
+            'meaning': str(g.get('meaning') or '')[:200],
+            'usage': str(g.get('usage') or '')[:300],
+            'memory_tip': str(g.get('memory_tip') or '')[:200],
+        })
+    clean['pos_groups'] = groups_out
+
+    confs_out = []
+    for c in (payload.get('confusions') or [])[:3]:
+        if isinstance(c, dict) and c.get('word'):
+            try:
+                conf = float(c.get('confidence', 0.5))
+            except (TypeError, ValueError):
+                conf = 0.5
+            confs_out.append({
+                'word': str(c['word'])[:60],
+                'difference': str(c.get('difference') or '')[:300],
+                'confidence': max(0.0, min(1.0, conf)),
+            })
+    clean['confusions'] = confs_out
+
+    pats_out = []
+    for p in (payload.get('patterns') or [])[:3]:
+        if isinstance(p, dict) and p.get('name'):
+            pats_out.append({
+                'name': str(p['name'])[:40],
+                'rule': str(p.get('rule') or '')[:300],
+                'exception': str(p.get('exception') or '')[:300],
+            })
+    clean['patterns'] = pats_out
+
+    exs_out = []
+    for e in (payload.get('exercises') or [])[:3]:
+        if not isinstance(e, dict):
+            continue
+        etype = e.get('type')
+        if etype not in POS_EXERCISE_TYPES:
+            warnings.append(f'忽略未知题型 {etype}')
+            continue
+        options = [str(o)[:100] for o in (e.get('options') or []) if str(o).strip()]
+        options = list(dict.fromkeys(options))
+        answer = str(e.get('answer') or '')[:100]
+        prompt = str(e.get('prompt') or '')[:300]
+        if len(options) < 2 or answer not in options or not prompt:
+            warnings.append('忽略一道选项/答案不合法的客观题')
+            continue
+        exs_out.append({'type': etype, 'prompt': prompt, 'options': options,
+                        'answer': answer, 'target_pos': str(e.get('target_pos') or '')[:20]})
+    clean['exercises'] = exs_out
+    return clean, warnings
+
+
+@require_http_methods(['POST'])
+def api_pos_lesson(request):
+    """生成或读取词性讲解与客观题候选。
+    请求：{word_id, focus_pos?, model_id?, use_ai?}
+    - use_ai 为假或未配置模型：只返回本地讲解与本地客观题（保证无 AI 可学）。
+    - use_ai 为真：调用 AI 生成讲解；同词同提示词版本命中缓存直接返回。
+    失败（模型不可用/非 JSON/校验不过）不写任何学习数据，返回可读错误。"""
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': '请求体不是合法 JSON'}, status=400)
+    word = get_object_or_404(Word, id=data.get('word_id'))
+    focus_pos = (data.get('focus_pos') or '').strip()[:20]
+    use_ai = bool(data.get('use_ai'))
+
+    progress = StudyProgress.objects.filter(word=word).first()
+    uncommon = parse_uncommon_pos(progress.uncommon_pos) if progress else []
+    by_pos = word.get_meanings_by_pos() or {}
+
+    local_lesson = {
+        'pos_groups': [
+            {'pos': p, 'meaning': '；'.join(ms), 'usage': '', 'memory_tip': '',
+             'is_uncommon': p in uncommon}
+            for p, ms in by_pos.items() if ms
+        ],
+        'word_forms': word.get_word_forms() or {},
+        'example_en': word.example_en or '',
+    }
+    exercises = _build_local_pos_exercises(word, focus_pos)
+
+    resp = {
+        'success': True,
+        'word_id': word.id,
+        'word': word.word,
+        'lesson': local_lesson,
+        'exercises': exercises,
+        'model_id': '',
+        'cache_hit': False,
+        'content_version': '',
+        'warnings': [],
+    }
+
+    if not use_ai:
+        return JsonResponse(resp)
+
+    model_pk = _resolve_pos_learning_model_id(data)
+    if not model_pk:
+        return JsonResponse({
+            'error': '未配置可用 AI 模型；本地讲解与练习仍可学习',
+            'fallback': resp,
+        }, status=400)
+    model_row = AIModel.objects.get(id=model_pk)
+    resp['model_id'] = model_row.model_id
+
+    cached = PosLessonCache.objects.filter(
+        word=word, prompt_version=POS_LESSON_PROMPT_VERSION).first()
+    if cached:
+        resp['ai_lesson'] = cached.content
+        resp['cache_hit'] = True
+        resp['content_version'] = cached.prompt_version
+        return JsonResponse(resp)
+
+    prompt = pos_lesson_prompt(
+        word.word, by_pos, focus_pos=focus_pos,
+        uncommon_pos=uncommon, example_en=word.example_en or '')
+    content, err = builtin_ai_exam_call(
+        prompt, temperature=0.3, data={'model_id': model_pk}, action='pos_lesson')
+    if err:
+        return JsonResponse({
+            'error': f'AI 生成失败：{err}',
+            'fallback': {k: resp[k] for k in ('success', 'word_id', 'word', 'lesson', 'exercises')},
+        }, status=502)
+    payload = _extract_json_obj(content)
+    clean, warns = _validate_pos_lesson(payload, word) if payload else (None, ['AI 返回不是合法 JSON'])
+    if clean is None:
+        return JsonResponse({
+            'error': 'AI 输出未通过校验：' + '；'.join(warns),
+            'fallback': {k: resp[k] for k in ('success', 'word_id', 'word', 'lesson', 'exercises')},
+        }, status=502)
+
+    PosLessonCache.objects.update_or_create(
+        word=word,
+        defaults={'content': clean, 'model_id': model_row.model_id,
+                  'prompt_version': POS_LESSON_PROMPT_VERSION})
+    resp['ai_lesson'] = clean
+    resp['content_version'] = POS_LESSON_PROMPT_VERSION
+    resp['warnings'] = warns
+    return JsonResponse(resp)
+
+
+def _norm_answer(s):
+    return re.sub(r'\s+', ' ', (s or '').strip()).lower()
+
+
+@require_http_methods(['POST'])
+def api_pos_grade(request):
+    """判定词性作答。
+    请求：{attempt_id?, word_id?, question?, answer, model_id?}
+    - 客观题（pos_choice/pos_match/form_convert）本地判分；
+    - 开放题（open）调用 AI 判定，verdict 仅接受 correct/partial/wrong；
+    - 仅 wrong 写 StudyRecord(mistake_type='pos')；partial 不加风险；
+    - 判定失败（无模型/非 JSON/越界输出）整次失败，不写任何数据。"""
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': '请求体不是合法 JSON'}, status=400)
+
+    question = data.get('question') or {}
+    qtype = question.get('type') or ''
+    answer = str(data.get('answer') or '')
+
+    attempt = None
+    if data.get('attempt_id'):
+        attempt = PosLearningAttempt.objects.filter(id=data['attempt_id']).first()
+        if attempt is None:
+            return JsonResponse({'error': '作答记录不存在'}, status=404)
+        if attempt.result:
+            return JsonResponse({
+                'success': True, 'result': attempt.result, 'judged_by': attempt.judged_by,
+                'feedback': attempt.feedback, 'idempotent': True})
+        word = attempt.word
+        question = attempt.question or question
+        qtype = attempt.question_type
+    else:
+        word = get_object_or_404(Word, id=data.get('word_id'))
+        if qtype not in POS_EXERCISE_TYPES and qtype != 'open':
+            return JsonResponse({'error': '未知题型'}, status=400)
+
+    if qtype == 'open':
+        if not answer.strip():
+            return JsonResponse({'error': '答案为空'}, status=400)
+        model_pk = _resolve_pos_learning_model_id(data)
+        if not model_pk:
+            return JsonResponse({'error': '开放题判定需要配置可用 AI 模型；本次未写入任何数据'}, status=400)
+        prompt = pos_open_grade_prompt(
+            word.word, question.get('target_pos', ''),
+            question.get('prompt', ''), question.get('reference', ''), answer)
+        content, err = builtin_ai_exam_call(
+            prompt, temperature=0.1, data={'model_id': model_pk}, action='pos_grade')
+        if err:
+            return JsonResponse({'error': f'AI 判定失败：{err}；本次未写入任何数据'}, status=502)
+        payload = _extract_json_obj(content)
+        verdict = (payload or {}).get('verdict')
+        if verdict not in ('correct', 'partial', 'wrong'):
+            return JsonResponse({'error': 'AI 判定输出不合法；本次未写入任何数据'}, status=502)
+        result = verdict
+        judged_by = 'ai'
+        feedback = str(payload.get('feedback') or '')[:200]
+    else:
+        correct_ans = question.get('answer')
+        if correct_ans is None:
+            return JsonResponse({'error': '题目缺少标准答案'}, status=400)
+        result = 'correct' if _norm_answer(answer) == _norm_answer(str(correct_ans)) else 'wrong'
+        judged_by = 'local'
+        feedback = ''
+
+    # 保存/更新作答记录
+    if attempt is None:
+        attempt = PosLearningAttempt.objects.create(
+            word=word, target_pos=str(question.get('target_pos') or '')[:20],
+            question_type=qtype, question=question,
+            user_answer=answer, result=result, judged_by=judged_by, feedback=feedback)
+    else:
+        attempt.user_answer = answer
+        attempt.result = result
+        attempt.judged_by = judged_by
+        attempt.feedback = feedback
+        attempt.save(update_fields=['user_answer', 'result', 'judged_by', 'feedback'])
+
+    # 仅 wrong 写错误事件（服务端唯一写入点），并走与背诵/考试错题一致的进度更新路径
+    if result == 'wrong':
+        _apply_wrong_progress(word)
+        _record_study(
+            word, 'meaning_wrong', {'source': 'pos'},
+            mode=f'pos_{qtype}', mistake_type='pos',
+            error_detail={
+                'target_pos': str(question.get('target_pos') or '')[:20],
+                'question_type': qtype,
+                'user_answer': answer[:200],
+                'correct': str(question.get('answer') or question.get('reference') or '')[:200],
+                'judged_by': judged_by,
+            })
+
+    return JsonResponse({
+        'success': True, 'attempt_id': attempt.id, 'result': result,
+        'judged_by': judged_by, 'feedback': feedback,
+    })
+
+
+def _validate_family_candidate(payload):
+    """校验 AI 词族候选 JSON。返回 (clean, warnings) 或 (None, [错误])。"""
+    warnings = []
+    if not isinstance(payload, dict):
+        return None, ['返回不是 JSON 对象']
+    fam = payload.get('family') or {}
+    key = str(fam.get('key') or '').strip()[:60]
+    title = str(fam.get('title') or '').strip()[:120]
+    if not key or not title:
+        return None, ['family.key / family.title 缺失']
+    clean = {
+        'family': {'key': key, 'title': title,
+                   'description': str(fam.get('description') or '')[:400]},
+        'members': [], 'patterns': [], 'relations': [],
+    }
+    members = payload.get('members') or []
+    if not isinstance(members, list) or not members:
+        return None, ['members 为空或不是数组']
+    valid_rel = {'core', 'derived', 'inflection', 'compound'}
+    for m in members[:8]:
+        if not isinstance(m, dict) or not m.get('word'):
+            continue
+        rel = m.get('relation') if m.get('relation') in valid_rel else 'derived'
+        clean['members'].append({
+            'word': str(m['word']).strip()[:100],
+            'pos': str(m.get('pos') or '')[:20],
+            'meaning': str(m.get('meaning') or '').strip()[:100],
+            'relation': rel,
+            'note': str(m.get('note') or '')[:200],
+        })
+    if not any(m['relation'] == 'core' for m in clean['members']):
+        return None, ['members 缺少核心词（relation=core）']
+    valid_kind = {'prefix', 'suffix', 'root'}
+    for p in (payload.get('patterns') or [])[:4]:
+        if isinstance(p, dict) and p.get('name'):
+            clean['patterns'].append({
+                'name': str(p['name'])[:40],
+                'kind': p['kind'] if p.get('kind') in valid_kind else 'suffix',
+                'from_pos': str(p.get('from_pos') or '')[:20],
+                'to_pos': str(p.get('to_pos') or '')[:20],
+                'rule': str(p.get('rule') or '')[:300],
+                'exception': str(p.get('exception') or '')[:300],
+            })
+    valid_reltype = {'confusing', 'collocation', 'synonym', 'antonym', 'derived'}
+    for r in (payload.get('relations') or [])[:4]:
+        if not isinstance(r, dict) or not r.get('word'):
+            continue
+        try:
+            conf = max(0.0, min(1.0, float(r.get('confidence', 0.5))))
+        except (TypeError, ValueError):
+            conf = 0.5
+        clean['relations'].append({
+            'word': str(r['word']).strip()[:100],
+            'rel_type': r['rel_type'] if r.get('rel_type') in valid_reltype else 'confusing',
+            'note': str(r.get('note') or '')[:200],
+            'confidence': conf,
+        })
+    return clean, warnings
+
+
+def _normalize_family_key(raw):
+    """规范化词族标识：去空白、统一小写、空白折叠为连字符，长度对齐模型字段。"""
+    k = re.sub(r'\s+', '-', (raw or '').strip().lower())
+    return k[:60]
+
+
+@require_http_methods(['GET'])
+def api_word_family_get(request, word_id):
+    """返回某词的词族变式（同根派生词，如 operate → operation / operator / operational）。
+    优先取已人工确认的词族，其次取 AI 候选；无则 family 为 null。"""
+    word = get_object_or_404(Word, id=word_id)
+    memberships = list(
+        WordFamilyMember.objects.filter(word=word).select_related('family'))
+    if not memberships:
+        return JsonResponse({'success': True, 'family': None,
+                             'members': [], 'patterns': []})
+    # 已确认优先，其次取最早候选
+    memberships.sort(key=lambda m: (m.family.confirmed_at is None, m.family.id))
+    family = memberships[0].family
+    members = []
+    for m in family.members.select_related('word').order_by('sort_order', 'id'):
+        # 库内词优先取词库释义（权威、可随编辑更新），库外词用 AI 生成时保存的释义
+        lib_meaning = '；'.join(m.word.get_meanings()) if m.word_id else ''
+        meaning = (lib_meaning or m.meaning or '').strip()
+        members.append({
+            'word': m.word.word if m.word_id else (m.outside_word or ''),
+            'in_library': bool(m.word_id),
+            'pos': m.pos,
+            'meaning': meaning[:60],
+            'relation': m.relation,
+            'relation_label': m.get_relation_display(),
+            'note': m.note,
+            'is_core': m.relation == 'core',
+        })
+    patterns = [
+        {
+            'name': p.name, 'kind': p.kind, 'kind_label': p.get_kind_display(),
+            'rule': p.rule, 'exception': p.exception,
+        }
+        for p in family.patterns.order_by('id')
+    ]
+    return JsonResponse({
+        'success': True,
+        'family': {
+            'key': family.key, 'title': family.title,
+            'description': family.description,
+            'is_confirmed': family.confirmed_at is not None,
+            'source': family.source,
+        },
+        'members': members,
+        'patterns': patterns,
+    })
+
+
+@require_http_methods(['POST'])
+def api_word_family_candidates(request):
+    """生成待确认词族/构词法/易混关系候选。
+    请求：{word_id, model_id?}
+    成功：候选落库为未确认状态（source=ai_candidate，confirmed_at 空 / is_confirmed=False），
+    词库不存在的成员标记 outside_word（绝不暗中创建 Word）。
+    失败（无模型/非 JSON/校验不过）：零写入，返回可读错误。"""
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': '请求体不是合法 JSON'}, status=400)
+    word = get_object_or_404(Word, id=data.get('word_id'))
+
+    model_pk = _resolve_pos_learning_model_id(data)
+    if not model_pk:
+        return JsonResponse({'error': '未配置可用 AI 模型，无法生成候选；未写入任何数据'}, status=400)
+    model_row = AIModel.objects.get(id=model_pk)
+
+    # 词库中可能相关的词：同前缀（前 4 字母）或词形变化中出现的
+    prefix = word.word[:4].lower()
+    related_qs = Word.objects.filter(word__istartswith=prefix).exclude(id=word.id)
+    candidate_words = list(related_qs.values_list('word', flat=True)[:40])
+
+    prompt = word_family_candidate_prompt(
+        word.word, word.pos, word.get_word_forms() or {},
+        word.get_meanings(), candidate_words)
+    content, err = builtin_ai_exam_call(
+        prompt, temperature=0.3, data={'model_id': model_pk},
+        action='word_family_candidate')
+    if err:
+        return JsonResponse({'error': f'AI 生成失败：{err}；未写入任何数据'}, status=502)
+    payload = _extract_json_obj(content)
+    clean, warns = _validate_family_candidate(payload) if payload else (None, ['AI 返回不是合法 JSON'])
+    if clean is None:
+        return JsonResponse({'error': 'AI 输出未通过校验：' + '；'.join(warns) + '；未写入任何数据'}, status=502)
+
+    word_map = {w.word: w for w in Word.objects.filter(
+        word__in=[m['word'] for m in clean['members']] +
+                 [r['word'] for r in clean['relations']])}
+
+    normalized_key = _normalize_family_key(clean['family']['key'])
+    clean['family']['key'] = normalized_key
+    with transaction.atomic():
+        # 写前规范化 key + get_or_create/唯一冲突兜底：已有同 key 词族一律不覆盖，
+        # 转为可读的成功复用响应，避免唯一约束把 AI 成功后页面打成 500。
+        existing = WordFamily.objects.filter(key=normalized_key).first()
+        if existing is not None:
+            return JsonResponse({
+                'success': True, 'reused': True, 'candidate_id': existing.id,
+                'key': existing.key, 'model_id': model_row.model_id,
+                'warnings': warns + ['已存在同标识词族，未覆盖既有内容；未新建候选'],
+            })
+        try:
+            family = WordFamily.objects.create(
+                key=normalized_key, title=clean['family']['title'],
+                description=clean['family']['description'],
+                source='ai_candidate', confirmed_at=None)
+        except IntegrityError:
+            existing = WordFamily.objects.filter(key=normalized_key).first()
+            return JsonResponse({
+                'success': True, 'reused': True,
+                'candidate_id': existing.id if existing else None,
+                'key': normalized_key, 'model_id': model_row.model_id,
+                'warnings': warns + ['并发写入冲突：已存在同标识词族，未覆盖'],
+            })
+        outside = []
+        for i, m in enumerate(clean['members']):
+            w = word_map.get(m['word'])
+            if w is None:
+                outside.append(m['word'])
+            WordFamilyMember.objects.create(
+                family=family, word=w, outside_word='' if w else m['word'],
+                pos=m['pos'], meaning=m['meaning'], relation=m['relation'], note=m['note'],
+                sort_order=i, source='ai_candidate', confirmed_at=None)
+        for p in clean['patterns']:
+            WordFormationPattern.objects.create(
+                family=family, name=p['name'], kind=p['kind'],
+                from_pos=p['from_pos'], to_pos=p['to_pos'],
+                rule=p['rule'], exception=p['exception'],
+                confidence=0.5, is_confirmed=False, source='ai_candidate')
+        for r in clean['relations']:
+            w = word_map.get(r['word'])
+            if w is None:
+                outside.append(r['word'])
+            WordRelation.objects.create(
+                family=family, word=word, related_word=w,
+                outside_word='' if w else r['word'],
+                rel_type=r['rel_type'], note=r['note'],
+                confidence=r['confidence'], is_confirmed=False, source='ai_candidate')
+        # confirm=1：生成即当正式数据入库（背诵页/详情页触发时使用），跳过候选确认流程
+        if data.get('confirm'):
+            now = timezone.now()
+            family.confirmed_at = now
+            family.save(update_fields=['confirmed_at'])
+            family.members.update(confirmed_at=now)
+            family.patterns.update(is_confirmed=True)
+            family.relations.update(is_confirmed=True)
+
+    if outside:
+        warns.append('以下词不在词库中，已标记为「词库外示例」：' + '、'.join(sorted(set(outside))))
+    return JsonResponse({
+        'success': True, 'candidate_id': family.id, 'model_id': model_row.model_id,
+        'confirmed': bool(data.get('confirm')),
+        'cache_hit': False, 'content_version': '', 'warnings': warns,
+        'candidate': {
+            'family': clean['family'],
+            'members': clean['members'],
+            'patterns': clean['patterns'],
+            'relations': clean['relations'],
+        },
+    })
+
+
+@require_http_methods(['POST'])
+def api_word_family_candidate_confirm(request, cid):
+    """人工确认 / 拒绝 / 编辑候选批次（WordFamily 及其成员、构词法、关系）。
+    请求：{action: confirm|reject|edit, payload?}
+    - confirm：整批确认（confirmed_at=now / is_confirmed=True），此后可用于正式推荐；
+    - reject：整批删除，不留库；
+    - edit：按 payload 调整 family 标题/说明后再确认。"""
+    family = get_object_or_404(WordFamily, id=cid)
+    if family.source != 'ai_candidate' or family.confirmed_at is not None:
+        return JsonResponse({'error': '该记录不是待确认候选'}, status=400)
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': '请求体不是合法 JSON'}, status=400)
+    action = data.get('action')
+
+    if action == 'reject':
+        family.delete()  # 级联删除成员/构词法/关系
+        return JsonResponse({'success': True, 'rejected': cid})
+    if action not in ('confirm', 'edit'):
+        return JsonResponse({'error': 'action 必须是 confirm / reject / edit'}, status=400)
+
+    if action == 'edit':
+        payload = data.get('payload') or {}
+        if payload.get('title'):
+            family.title = str(payload['title'])[:120]
+        if payload.get('description') is not None:
+            family.description = str(payload['description'])[:400]
+        family.save(update_fields=['title', 'description'])
+
+    now = timezone.now()
+    with transaction.atomic():
+        family.confirmed_at = now
+        family.save(update_fields=['confirmed_at'])
+        family.members.update(confirmed_at=now)
+        family.patterns.update(is_confirmed=True)
+        family.relations.update(is_confirmed=True)
+    return JsonResponse({'success': True, 'confirmed': cid})
+
+
+@require_http_methods(['POST'])
+def api_knowledge_feedback(request):
+    """写入知识反馈：重点/已掌握/不相关/暂停。
+    请求：{target_type, target_id, action}
+    「不相关」会立刻屏蔽对应未确认候选/关系（is_confirmed=False）。"""
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': '请求体不是合法 JSON'}, status=400)
+    target_type = data.get('target_type')
+    action = data.get('action')
+    valid_targets = {c[0] for c in KnowledgeFeedback.TARGET_CHOICES}
+    valid_actions = {c[0] for c in KnowledgeFeedback.ACTION_CHOICES}
+    if target_type not in valid_targets or action not in valid_actions:
+        return JsonResponse({'error': 'target_type 或 action 不合法'}, status=400)
+    try:
+        target_id = int(data.get('target_id'))
+    except (TypeError, ValueError):
+        return JsonResponse({'error': 'target_id 必须是整数'}, status=400)
+
+    target_model = {
+        'word': Word, 'family': WordFamily, 'member': WordFamilyMember,
+        'pattern': WordFormationPattern, 'relation': WordRelation,
+    }[target_type]
+    if not target_model.objects.filter(id=target_id).exists():
+        return JsonResponse({'error': '目标对象不存在'}, status=404)
+
+    fb = KnowledgeFeedback.objects.create(
+        target_type=target_type, target_id=target_id, action=action)
+
+    # 「不相关」立即屏蔽该候选/关系
+    if action == 'irrelevant' and target_type in ('relation', 'pattern', 'member'):
+        obj = target_model.objects.get(id=target_id)
+        if hasattr(obj, 'is_confirmed'):
+            obj.is_confirmed = False
+            obj.save(update_fields=['is_confirmed'])
+        elif hasattr(obj, 'confirmed_at'):
+            obj.confirmed_at = None
+            obj.save(update_fields=['confirmed_at'])
+
+    return JsonResponse({'success': True, 'feedback_id': fb.id})
+
+
+# ==================== AI 词性扩展（HANDOVER 第十四节：背诵页 / 今日自选入口） ====================
+
+def _word_needs_pos_expand(word):
+    """是否需要 AI 扩展词性：无按词性释义，或全部归「未分类」。已有有效分组的一律不覆盖。"""
+    existing = word.get_meanings_by_pos()
+    return not existing or all(k == '未分类' for k in existing)
+
+
+def _validate_pos_grouping(item, word):
+    """校验 AI 按词性分组结果：词性标签白名单过滤（COMMON_POS_LABELS ∪ 该词 pos 字段）、
+    释义统一转字符串截断 100 字。返回 (cleaned|None, warnings)。"""
+    warnings = []
+    if not isinstance(item, dict) or not item:
+        return None, warnings
+    allowed = set(COMMON_POS_LABELS) | {p for p in (word.pos or '').split() if p}
+    cleaned = {}
+    for pos, meanings in item.items():
+        p = str(pos).strip()
+        if p == '未分类' or p not in allowed:
+            warnings.append(f'已丢弃非标准词性标签「{p}」')
+            continue
+        if not isinstance(meanings, list):
+            meanings = [meanings]
+        ms = [str(m).strip()[:100] for m in meanings if str(m).strip()]
+        if ms:
+            cleaned[p] = ms
+    if not cleaned:
+        return None, warnings
+    return cleaned, warnings
+
+
+def _pos_expand_lines(words):
+    return ['%s | %s | %s' % (w.word, w.pos or '', '；'.join(w.get_meanings()))
+            for w in words]
+
+
+@require_http_methods(['POST'])
+def api_word_pos_expand(request, word_id):
+    """单个词 AI 扩展词性（背诵页入口）：仅补缺，不覆盖已有按词性释义。
+    请求：{model_id?}；返回：{success, updated, meanings_by_pos, skipped_reason?, warnings?}"""
+    word = get_object_or_404(Word, id=word_id)
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        data = {}
+    if not _word_needs_pos_expand(word):
+        return JsonResponse({
+            'success': True, 'updated': False,
+            'skipped_reason': '该词已有按词性释义，未做改动',
+            'meanings_by_pos': word.get_meanings_by_pos(),
+        })
+    model_id = _resolve_pos_learning_model_id(data)
+    if not model_id:
+        return JsonResponse({'error': '未配置可用 AI 模型，请先在「设置 → AI模型」中配置'}, status=400)
+    content, err = builtin_ai_exam_call(
+        pos_grouping_prompt(_pos_expand_lines([word])), temperature=0.1,
+        data={'model_id': model_id}, action='pos_expand',
+        settings_model_field='pos_learning_model')
+    if err:
+        return JsonResponse({'error': f'AI 调用失败：{err}'}, status=502)
+    payload = _extract_json_obj(content)
+    if not isinstance(payload, dict):
+        return JsonResponse({'error': 'AI 返回格式异常，未写入任何内容'}, status=502)
+    cleaned, warnings = _validate_pos_grouping(payload.get(word.word), word)
+    if cleaned is None:
+        return JsonResponse({'error': 'AI 未返回该词的有效词性分组，未写入任何内容',
+                             'warnings': warnings}, status=502)
+    word.meanings_by_pos = json.dumps(cleaned, ensure_ascii=False)
+    word.save(update_fields=['meanings_by_pos'])
+    return JsonResponse({'success': True, 'updated': True,
+                         'meanings_by_pos': cleaned, 'warnings': warnings})
+
+
+@require_http_methods(['POST'])
+def api_daily_pick_pos_expand(request):
+    """批量扩展今日自选清单中缺词性释义的词（30个/批，同步执行，失败零写入）。
+    请求：{model_id?}；返回：{success, total, updated, failed, skipped, warnings?}"""
+    rollover_daily_picks()
+    try:
+        data = json.loads(request.body or '{}')
+    except json.JSONDecodeError:
+        data = {}
+    words = [p.word for p in
+             DailyPick.objects.filter(date=timezone.localdate()).select_related('word')]
+    need = [w for w in words if _word_needs_pos_expand(w)]
+    skipped = len(words) - len(need)
+    if not words:
+        return JsonResponse({'error': '今日自选清单为空'}, status=400)
+    if not need:
+        return JsonResponse({'success': True, 'total': len(words), 'updated': 0,
+                             'failed': 0, 'skipped': skipped})
+    model_id = _resolve_pos_learning_model_id(data)
+    if not model_id:
+        return JsonResponse({'error': '未配置可用 AI 模型，请先在「设置 → AI模型」中配置'}, status=400)
+    updated = 0
+    failed = 0
+    warnings = []
+    batch = 30
+    for i in range(0, len(need), batch):
+        chunk = need[i:i + batch]
+        content, err = builtin_ai_exam_call(
+            pos_grouping_prompt(_pos_expand_lines(chunk)), temperature=0.1,
+            data={'model_id': model_id}, action='pos_expand',
+            settings_model_field='pos_learning_model')
+        if err:
+            failed += len(chunk)
+            continue
+        payload = _extract_json_obj(content)
+        if not isinstance(payload, dict):
+            failed += len(chunk)
+            continue
+        for w in chunk:
+            cleaned, ws = _validate_pos_grouping(payload.get(w.word), w)
+            warnings.extend(ws)
+            if cleaned is None:
+                failed += 1
+                continue
+            w.meanings_by_pos = json.dumps(cleaned, ensure_ascii=False)
+            w.save(update_fields=['meanings_by_pos'])
+            updated += 1
+    return JsonResponse({'success': True, 'total': len(words), 'updated': updated,
+                         'failed': failed, 'skipped': skipped, 'warnings': warnings[:5]})
+
+
+def pos_learning_page(request, word_id):
+    """词性学习页：本地讲解 + 客观题 + 开放题 + AI 讲解/词族候选入口。"""
+    word = get_object_or_404(Word, id=word_id)
+    progress = StudyProgress.objects.filter(word=word).first()
+    recent_attempts = PosLearningAttempt.objects.filter(word=word)[:10]
+    return render(request, 'pos_learning.html', {
+        'word': word,
+        'uncommon_pos': parse_uncommon_pos(progress.uncommon_pos) if progress else [],
+        'recent_attempts': recent_attempts,
+        'has_ai_model': _resolve_pos_learning_model_id({}) is not None,
+    })
+
+
+def word_family_candidates_page(request):
+    """候选确认队列：列出全部待确认的词族候选批次。"""
+    families = (WordFamily.objects
+                .filter(source='ai_candidate', confirmed_at__isnull=True)
+                .prefetch_related('members__word', 'patterns', 'relations__related_word')
+                .order_by('-created_at'))
+    return render(request, 'word_family_candidates.html', {'families': families})

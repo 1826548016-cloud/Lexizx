@@ -117,28 +117,6 @@
   {% include '_word_ext_panel.html' %}
 </div>
 
-<div id="batchCard" class="card word-card hidden">
-  <div class="card-header"><i class="ph ph-check-circle" style="color: var(--c-green);"></i> 第 <span id="batchNum">1</span> / <span id="batchTotal">1</span> 批完成</div>
-  <p class="text-secondary" id="batchMsg"></p>
-  <div class="summary-grid">
-    <div class="summary-card">
-      <div id="batchMasteredCount" class="summary-value text-accent">0</div>
-      <div class="summary-label">本批会</div>
-    </div>
-    <div class="summary-card">
-      <div id="batchUnknownCount" class="summary-value">0</div>
-      <div class="summary-label">本批不会</div>
-    </div>
-  </div>
-  <div id="batchWrongWrap" class="wrong-wrap hidden">
-    <div class="wrong-title"><i class="ph ph-warning-circle" style="color: var(--c-red);"></i> 本批答错的词（<span id="batchWrongCount">0</span>）</div>
-    <div id="batchWrongList" class="wrong-list"></div>
-  </div>
-  <div class="flex gap-2" style="flex-wrap: wrap; margin-top: 14px;">
-    <button id="repracticeBtn" class="btn btn-secondary btn-lg hidden"><i class="ph ph-arrows-counter-clockwise"></i> 错词再练一轮</button>
-    <button id="nextBatchBtn" class="btn btn-primary btn-lg"><i class="ph ph-arrow-right"></i> 继续下一批</button>
-  </div>
-</div>
 <div id="completionCard" class="card word-card hidden">
   <div class="card-header">🎉 复习完成</div>
   <p class="text-secondary">本次共复习 <strong>{{ review_count }}</strong> 个单词</p>
@@ -155,6 +133,7 @@
   <div id="finalWrongWrap" class="wrong-wrap hidden" style="text-align: left;">
     <div id="finalWrongList" class="wrong-list"></div>
   </div>
+  <button id="repracticeBtn" class="btn btn-secondary btn-lg hidden" style="margin-bottom: 12px;"><i class="ph ph-arrows-counter-clockwise"></i> 错词再练一轮</button>
   <p class="text-secondary" style="margin-bottom: 16px;" id="completionMsg"></p>
   <div class="flex flex-column gap-2" style="gap: 8px;">
     <a href="{% url 'words:dashboard' %}" class="btn btn-primary btn-lg">返回仪表盘</a>
@@ -162,7 +141,7 @@
       {% if random_mode %}
       <a href="{% url 'words:review_session' %}?random=1&count={{ random_count }}&scope={{ scope }}{% if units_param %}&{{ units_param }}{% endif %}" class="btn btn-secondary btn-lg">继续随机复习（剩 {{ remaining_due }} 个待复习）</a>
       {% else %}
-      <a href="{% url 'words:review_start' %}" class="btn btn-secondary btn-lg">继续复习下一批（剩 {{ remaining_due }} 个待复习词）</a>
+      <a href="{% url 'words:review_start' %}" class="btn btn-secondary btn-lg">继续复习（剩 {{ remaining_due }} 个待复习词）</a>
       {% endif %}
     {% endif %}
   </div>
@@ -191,7 +170,6 @@
   if (savedDate !== batchDate) {
     sessionStorage.removeItem('vocab-review-idx');
     sessionStorage.removeItem('vocab-review-counts');
-    sessionStorage.removeItem('vocab-review-batch-start');
     sessionStorage.removeItem('vocab-review-gate-done');
     sessionStorage.removeItem('vocab-review-wrong');
   }
@@ -201,7 +179,6 @@
   if (sessionStorage.getItem('vocab-review-sig') !== location.search) {
     sessionStorage.removeItem('vocab-review-idx');
     sessionStorage.removeItem('vocab-review-counts');
-    sessionStorage.removeItem('vocab-review-batch-start');
     sessionStorage.removeItem('vocab-review-gate-done');
     sessionStorage.removeItem('vocab-review-wrong');
   }
@@ -240,16 +217,7 @@
     }
   } catch (e) {}
 
-  // 分批复习：每批 batchSize 个，复习完一批小结后点「继续下一批」
-  var batchSize = parseInt('{{ batch_size }}', 10) || 10;
-  var totalBatches = Math.max(1, Math.ceil(reviewCount / batchSize));
-  var batchStartCounts = { mastered: counts.mastered, unknown: counts.unknown };
-  try {
-    var savedBatchStart = JSON.parse(sessionStorage.getItem('vocab-review-batch-start') || 'null');
-    if (savedBatchStart) batchStartCounts = savedBatchStart;
-  } catch (e) {}
-
-  // 错词追踪：答错的词记入 wrongList，供批间小结展示与「错词再练一轮」
+  // 错词追踪：答错的词记入 wrongList，供完成页展示与「错词再练一轮」
   var wrongList = [];
   try {
     var savedWrong = JSON.parse(sessionStorage.getItem('vocab-review-wrong') || 'null');
@@ -262,15 +230,12 @@
   }
   function recordWrong() {
     if (!currentWord) return;
-    var b = Math.floor(currentIndex / batchSize);
     var entry = null;
     for (var i = 0; i < wrongList.length; i++) {
       if (wrongList[i].id === currentWord.id && !wrongList[i].fixed) { entry = wrongList[i]; break; }
     }
-    if (entry) {
-      entry.batch = b; // 再练又答错：更新到当前批
-    } else {
-      wrongList.push({ id: currentWord.id, word: currentWord.word, meaning: firstMeaningOf(currentWord), batch: b, fixed: false });
+    if (!entry) {
+      wrongList.push({ id: currentWord.id, word: currentWord.word, meaning: firstMeaningOf(currentWord), fixed: false });
     }
     saveWrong();
   }
@@ -310,13 +275,6 @@
     errorBadge: document.getElementById('errorBadge'),
     reviewCountBadge: document.getElementById('reviewCountBadge'),
     completionMsg: document.getElementById('completionMsg'),
-    batchCard: document.getElementById('batchCard'),
-    batchNum: document.getElementById('batchNum'),
-    batchTotal: document.getElementById('batchTotal'),
-    batchMsg: document.getElementById('batchMsg'),
-    batchMasteredCount: document.getElementById('batchMasteredCount'),
-    batchUnknownCount: document.getElementById('batchUnknownCount'),
-    nextBatchBtn: document.getElementById('nextBatchBtn'),
     repracticeBtn: document.getElementById('repracticeBtn'),
   };
 
@@ -832,12 +790,6 @@
       showCompletion();
       return;
     }
-    var nextIndex = currentIndex + 1;
-    // 到达批边界：先展示本批小结，等用户点「继续下一批」
-    if (Math.floor(nextIndex / batchSize) > Math.floor(currentIndex / batchSize)) {
-      showBatchCompletion();
-      return;
-    }
     currentIndex += 1;
     renderWord(wordsData[currentIndex]);
   }
@@ -850,54 +802,9 @@
         '</div>';
     }).join('');
   }
-  function batchWrongOf(b) {
-    return wrongList.filter(function (w) { return w.batch === b && !w.fixed; });
-  }
-
-  function showBatchCompletion() {
-    var batchIdx = Math.floor(currentIndex / batchSize) + 1; // 刚完成的批（从 1 开始）
-    var wordsInBatch = Math.min(batchSize, reviewCount - (batchIdx - 1) * batchSize);
-    els.wordCard.classList.add('hidden');
-    els.batchCard.classList.remove('hidden');
-    els.batchNum.textContent = batchIdx;
-    els.batchTotal.textContent = totalBatches;
-    els.batchMasteredCount.textContent = (counts.mastered || 0) - (batchStartCounts.mastered || 0);
-    els.batchUnknownCount.textContent = (counts.unknown || 0) - (batchStartCounts.unknown || 0);
-    // 本批答错的词清单
-    var wrongs = batchWrongOf(batchIdx);
-    var wrap = document.getElementById('batchWrongWrap');
-    var listEl = document.getElementById('batchWrongList');
-    var cnt = document.getElementById('batchWrongCount');
-    if (wrap && listEl) {
-      if (wrongs.length) {
-        wrap.classList.remove('hidden');
-        if (cnt) cnt.textContent = wrongs.length;
-        listEl.innerHTML = renderWrongRows(wrongs);
-      } else {
-        wrap.classList.add('hidden');
-        if (listEl) listEl.innerHTML = '';
-      }
-    }
-    if (els.repracticeBtn) els.repracticeBtn.classList.toggle('hidden', wrongs.length === 0);
-    els.batchMsg.textContent = wrongs.length
-      ? '本批 ' + wordsInBatch + ' 个单词复习完，其中 ' + wrongs.length + ' 个答错。建议先「错词再练一轮」再继续。'
-      : '本批 ' + wordsInBatch + ' 个单词已复习完，可稍作休息再继续。';
-  }
-
-  // 继续下一批
-  if (els.nextBatchBtn) els.nextBatchBtn.addEventListener('click', function () {
-    batchStartCounts = { mastered: counts.mastered || 0, unknown: counts.unknown || 0 };
-    sessionStorage.setItem('vocab-review-batch-start', JSON.stringify(batchStartCounts));
-    els.batchCard.classList.add('hidden');
-    els.wordCard.classList.remove('hidden');
-    currentIndex += 1;
-    renderWord(wordsData[currentIndex]);
-  });
-
-  // 错词再练：把本批答错的词插队到当前位置之后重练；重练通过会把该词从「不会」修正为「会」
+  // 错词再练：把本轮答错的词重新组成一轮重练；重练通过会把该词从「不会」修正为「会」
   function requeueWrong() {
-    var b = Math.floor(currentIndex / batchSize);
-    var wrongs = batchWrongOf(b);
+    var wrongs = wrongList.filter(function (w) { return !w.fixed; });
     if (!wrongs.length) return;
     var reData = [];
     wrongs.forEach(function (w) {
@@ -909,17 +816,17 @@
       }
     });
     if (!reData.length) return;
-    var before = wordsData.slice(0, currentIndex + 1);
-    var after = wordsData.slice(currentIndex + 1);
-    wordsData = before.concat(reData, after);
+    wordsData = reData;
     reviewCount = wordsData.length;
-    totalBatches = Math.max(1, Math.ceil(reviewCount / batchSize));
+    // 重练轮从索引 0 重新开始，必须清空按索引记录的高效模式通关状态，
+    // 否则旧轮 gateDone[0..n-1]=true 会让重练词无需默写即可「下一词」跳过
+    gateDone = {};
+    sessionStorage.removeItem('vocab-review-gate-done');
     var slider = document.getElementById('progressSlider');
     if (slider) slider.max = Math.max(0, reviewCount - 1);
-    els.batchTotal.textContent = totalBatches;
-    els.batchCard.classList.add('hidden');
+    els.completionCard.classList.add('hidden');
     els.wordCard.classList.remove('hidden');
-    currentIndex += 1;
+    currentIndex = 0;
     renderWord(wordsData[currentIndex]);
   }
   if (els.repracticeBtn) els.repracticeBtn.addEventListener('click', requeueWrong);
@@ -952,9 +859,9 @@
         finalWrap.classList.add('hidden');
       }
     }
+    if (els.repracticeBtn) els.repracticeBtn.classList.toggle('hidden', wrongList.filter(function (w) { return !w.fixed; }).length === 0);
     sessionStorage.removeItem('vocab-review-idx');
     sessionStorage.removeItem('vocab-review-counts');
-    sessionStorage.removeItem('vocab-review-batch-start');
     sessionStorage.removeItem('vocab-review-gate-done');
     sessionStorage.removeItem('vocab-review-wrong');
 
@@ -1105,16 +1012,27 @@
       if (e.key === 'Escape') AssistantPanel.close();
       return;
     }
-    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     if (els.wordCard.classList.contains('hidden')) return; // 展示小结/完成卡片时忽略操作键
-    // 高效模式：空格开始默写；上一词自由切换，下一词仅在已复习的词之间可用
+    // 上一词/下一词方向键：焦点在默写输入框内（拼写/释义模式）也生效，保证 ← → 始终能翻词
+    if (e.code === 'ArrowLeft') { e.preventDefault(); goPrev(); return; }
+    if (e.code === 'ArrowRight') {
+      if (checkMode === 'gates') {
+        // 高效模式：仅当本词或下一词已完成时才允许前进
+        if (gateDone[currentIndex] === true || gateDone[currentIndex + 1] === true) {
+          e.preventDefault(); goNext();
+        }
+      } else {
+        e.preventDefault(); goNext();
+      }
+      return;
+    }
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    // 高效模式：空格开始默写（会/不会由系统自动判定，数字键不参与）
     if (checkMode === 'gates') {
       if (e.code === 'Space' && gateStage === 0) {
         e.preventDefault();
         startGateSpelling(); // 预看阶段：空格直接进入拼写默写并聚焦输入框
       }
-      else if (e.code === 'ArrowLeft') { e.preventDefault(); goPrev(); }
-      else if (e.code === 'ArrowRight') { e.preventDefault(); if (gateDone[currentIndex] === true || gateDone[currentIndex + 1] === true) goNext(); }
       return;
     }
     switch (e.code) {
@@ -1122,8 +1040,6 @@
       case 'Digit1': case 'Numpad1': e.preventDefault(); mark('mastered'); break;
       case 'Digit2': case 'Numpad2': e.preventDefault(); mark('unknown'); break;
       case 'Digit3': case 'Numpad3': e.preventDefault(); skipWord(); break;
-      case 'ArrowLeft': e.preventDefault(); goPrev(); break;
-      case 'ArrowRight': e.preventDefault(); goNext(); break;
     }
   });
 

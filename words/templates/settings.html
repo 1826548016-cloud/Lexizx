@@ -142,11 +142,6 @@
           <div class="form-help">建议 40-100 个</div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="batchSize">每批背诵数量</label>
-          <input type="number" class="form-input" id="batchSize" value="{{ settings.batch_size }}" min="5" max="100">
-          <div class="form-help">背诵 / 复习时每批 10 个左右，背完一批小结后可休息再继续</div>
-        </div>
-        <div class="form-group">
           <label class="form-label" for="gateAnswerShow">高效模式答错后</label>
           <select class="form-input" id="gateAnswerShow">
             <option value="1" {% if settings.gate_answer_show %}selected{% endif %}>显示答案后继续重写</option>
@@ -232,6 +227,13 @@
             <div class="feat-desc">六级翻译「真题解析 / 译文批改 / AI 专项组卷」使用的模型；不选时自动继承考研写作工坊模型</div>
             <select id="cet6TranslationModelSelect" class="form-input" onchange="saveFeatureModel('cet6_translation_model', this.value)">
               <option value="">自动（继承考研写作工坊模型）</option>
+            </select>
+          </div>
+          <div class="feat-item">
+            <div class="feat-head"><i class="ph ph-brackets-round" style="color: var(--c-blue);"></i> 词性学习模型</div>
+            <div class="feat-desc">词性记忆「AI 讲解 / 开放题判定 / 词族候选生成」使用的模型；不选时自动继承复审模型</div>
+            <select id="posLearningModelSelect" class="form-input" onchange="saveFeatureModel('pos_learning_model', this.value)">
+              <option value="">自动（继承复审模型）</option>
             </select>
           </div>
           <div class="feat-item">
@@ -330,7 +332,7 @@
             <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
             <span class="about-stat-title">最后更新</span>
           </div>
-          <div class="stat-value">2026-10-15</div>
+          <div class="stat-value">2026-10-18</div>
         </div>
       </div>
 
@@ -730,14 +732,12 @@ async function savePronunciationSettings() {
 async function saveDailyTargets() {
   var newTarget = parseInt(document.getElementById('dailyNewTarget').value) || 30;
   var reviewTarget = parseInt(document.getElementById('dailyReviewTarget').value) || 50;
-  var batchSize = parseInt(document.getElementById('batchSize').value) || 10;
   var gateAnswerShow = document.getElementById('gateAnswerShow').value === '1';
 
   try {
     var res = await VOCAB_API.post('/api/settings/', {
       daily_new_target: newTarget,
       daily_review_target: reviewTarget,
-      batch_size: batchSize,
       gate_answer_show: gateAnswerShow,
     });
     if (res.success) {
@@ -930,6 +930,7 @@ function loadFeatureModels() {
     fillModelSelect('meaningCheckModelSelect', res.meaning_check_model_id);
     fillModelSelect('examModelSelect', res.exam_model_id);
     fillModelSelect('cet6TranslationModelSelect', res.cet6_translation_model_id);
+    fillModelSelect('posLearningModelSelect', res.pos_learning_model_id);
   }).catch(function () {});
 }
 

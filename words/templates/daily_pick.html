@@ -79,9 +79,22 @@
   .gates-inline.show { display: flex; }
   .gates-inline input { width: 64px; padding: 4px 8px; }
   .pick-start-row { margin-top: 16px; }
+
+  .pick-record-list { display: flex; flex-direction: column; gap: 8px; max-height: 40dvh; overflow-y: auto; }
+  .pick-record-row {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    border: 1px solid var(--c-border-light); border-radius: var(--radius-sm);
+    transition: border-color .15s;
+  }
+  .pick-record-row:hover { border-color: var(--c-blue); }
+  .pick-record-name { flex: 1; font-weight: 600; color: var(--c-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pick-record-meta { color: var(--c-text-3); font-size: var(--fs-sm); flex: none; display: inline-flex; align-items: center; gap: 4px; }
+  .pick-record-empty { padding: 20px; text-align: center; color: var(--c-text-3); }
+  .pick-record-actions { display: flex; gap: 6px; flex: none; }
   @media (max-width: 640px) {
     .pick-phonetic { display: none; }
     .pick-list { max-height: 46dvh; }
+    .pick-record-meta { display: none; }
   }
 </style>
 {% endblock %}
@@ -96,6 +109,7 @@
     <span class="pick-count-badge"><span id="pickedNum">{{ picked_count }}</span><small>个词</small></span>
     <span class="pick-tip">按勾选顺序背诵；清单每天独立保存，可随时增减</span>
     <span style="flex:1;"></span>
+    <button type="button" class="btn btn-ghost" id="posExpandBtn" title="为清单中缺少按词性释义的词调用 AI 补全（已有词性释义的词自动跳过）"><i class="ph ph-brackets-round"></i> AI 补全词性</button>
     <button type="button" class="btn btn-ghost" id="clearBtn"><i class="ph ph-trash"></i> 清空清单</button>
   </div>
 
@@ -137,8 +151,19 @@
       </div>
     </div>
     <div class="choice-group">
-      <span class="choice-group-title">每批数量</span>
-      <input type="number" id="pBatch" value="{{ batch_size }}" min="1" max="1000" class="form-input" style="width: 110px;">
+      <span class="choice-group-title">选择状态</span>
+      <label class="choice-option">
+        <input type="radio" name="pState" value="" checked>
+        <span>全部</span>
+      </label>
+      <label class="choice-option">
+        <input type="radio" name="pState" value="unmastered">
+        <span>不会的 <span class="text-secondary text-sm">（未掌握）</span></span>
+      </label>
+      <label class="choice-option">
+        <input type="radio" name="pState" value="mastered">
+        <span>已掌握的 <span class="text-secondary text-sm">（会的）</span></span>
+      </label>
     </div>
     <div class="choice-group">
       <span class="choice-group-title">背诵数量</span>
@@ -172,6 +197,17 @@
       <i class="ph ph-play"></i> 开始背诵今日自选（<span id="pickedNum2">{{ picked_count }}</span> 词）
     </button>
   </div>
+</div>
+
+<!-- 选词记录 -->
+<div class="card" style="margin-bottom: 20px;">
+  <div class="pick-summary" style="margin-bottom: 4px;">
+    <span class="pick-tip" style="font-weight: 700; color: var(--c-text);"><i class="ph ph-clock-counter-clockwise" style="color: var(--c-blue);"></i> 选词记录</span>
+    <span class="pick-tip">把当前勾选的清单存成记录，之后可随时载入继续背</span>
+    <span style="flex:1;"></span>
+    <button type="button" class="btn btn-secondary btn-sm" id="saveRecordBtn"><i class="ph ph-floppy-disk"></i> 存为记录</button>
+  </div>
+  <div class="pick-record-list" id="pickRecordList"></div>
 </div>
 
 <!-- 选词区 -->
@@ -354,6 +390,27 @@
     }
   });
 
+  // AI 补全词性：批量扩展今日清单中缺按词性释义的词（已有词性释义的自动跳过，失败零写入）
+  document.getElementById('posExpandBtn').addEventListener('click', async function () {
+    if (!picked.size) { if (window.appToast) appToast('清单是空的，先勾选要背的词', 'info'); return; }
+    if (!window.appConfirm || !await appConfirm('将为今日清单中缺少按词性释义的词调用 AI 补全（已有词性释义的词自动跳过）。继续吗？')) return;
+    var btn = this;
+    btn.disabled = true;
+    try {
+      var res = await VOCAB_API.post('/api/daily-picks/pos-expand/', {});
+      if (res && res.success) {
+        var msg = '词性补全完成：成功 ' + res.updated + ' 个 / 跳过 ' + res.skipped + ' 个';
+        if (res.failed) msg += ' / 失败 ' + res.failed + ' 个';
+        if (window.appToast) appToast(msg, res.failed ? 'info' : 'success');
+      } else {
+        if (window.appToast) appToast((res && res.error) || '补全失败，请重试', 'error');
+      }
+    } catch (e) {
+      if (window.appToast) appToast('补全失败，请检查网络与 AI 配置后重试', 'error');
+    }
+    btn.disabled = false;
+  });
+
   // 随机抽取加入清单
   document.getElementById('randomBtn').addEventListener('click', async function () {
     var btn = this;
@@ -387,11 +444,13 @@
     if (!picked.size) { if (window.appToast) appToast('请先勾选今天要背的词', 'error'); return; }
     var mode = document.querySelector('input[name="pMode"]:checked').value;
     var check = document.querySelector('input[name="pCheck"]:checked').value;
-    var batch = parseInt(document.getElementById('pBatch').value, 10) || 10;
+    var stateEl = document.querySelector('input[name="pState"]:checked');
+    var state = stateEl ? stateEl.value : '';
     var countEl = document.getElementById('pCount');
     var count = (countEl && countEl.value.trim()) ? parseInt(countEl.value, 10) : 0;
     var url = '{% url "words:learn_session" %}?scope=daily&mode=' + mode +
-              '&check=' + check + '&batch=' + batch;
+              '&check=' + check;
+    if (state) url += '&state=' + state;
     if (count >= 1) url += '&count=' + count;
     if (check === 'gates') {
       var repeats = Math.max(1, Math.min(10, parseInt(document.getElementById('pRepeats').value, 10) || 3));
@@ -401,8 +460,112 @@
     window.location.href = url;
   });
 
+  // —— 选词记录：快照保存 / 载入续作 / 改名 / 删除 ——
+  var pickRecords = {{ pick_records_json|safe }};
+  var recordListEl = document.getElementById('pickRecordList');
+
+  function renderRecords() {
+    if (!pickRecords.length) {
+      recordListEl.innerHTML = '<div class="pick-record-empty">还没有选词记录。挑好词后点「存为记录」即可回看续作。</div>';
+      return;
+    }
+    recordListEl.innerHTML = pickRecords.map(function (r) {
+      return '<div class="pick-record-row" data-id="' + r.id + '">' +
+        '<div class="pick-record-name" title="' + esc(r.name) + '">' + esc(r.name) + '</div>' +
+        '<span class="pick-record-meta"><i class="ph ph-stack"></i>' + r.count + ' 词 · ' + esc(r.created_at) + '</span>' +
+        '<span class="pick-record-actions">' +
+          '<button type="button" class="btn btn-ghost btn-sm pick-record-load" title="载入此记录并替换当前清单"><i class="ph ph-arrow-down"></i> 载入</button>' +
+          '<button type="button" class="btn btn-ghost btn-sm pick-record-rename" title="重命名"><i class="ph ph-pencil-simple"></i></button>' +
+          '<button type="button" class="btn btn-ghost btn-sm pick-record-del" title="删除"><i class="ph ph-trash"></i></button>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  recordListEl.addEventListener('click', function (e) {
+    var id = parseInt(e.target.closest('.pick-record-row').getAttribute('data-id'), 10);
+    var rec = pickRecords.find(function (r) { return r.id === id; });
+    if (!rec) return;
+    if (e.target.closest('.pick-record-load')) { loadRecord(rec); return; }
+    if (e.target.closest('.pick-record-rename')) { renameRecord(rec); return; }
+    if (e.target.closest('.pick-record-del')) { deleteRecord(rec); return; }
+  });
+
+  document.getElementById('saveRecordBtn').addEventListener('click', async function () {
+    if (!picked.size) { if (window.appToast) appToast('清单是空的，先勾选要背的词', 'info'); return; }
+    var name = await appPrompt('给这条选词记录起个名（可留空，自动命名）', '');
+    if (name === null) return; // 用户取消
+    var btn = this;
+    btn.disabled = true;
+    try {
+      var res = await VOCAB_API.post('/api/pick-records/create/', { name: (name || '').trim() });
+      if (res && res.success) {
+        pickRecords.unshift(res.record);
+        renderRecords();
+        if (window.appToast) appToast('已存为选词记录「' + res.record.name + '」', 'success');
+      } else {
+        if (window.appToast) appToast((res && res.error) || '保存失败，请重试', 'error');
+      }
+    } catch (e) {
+      if (window.appToast) appToast('保存失败，请重试', 'error');
+    }
+    btn.disabled = false;
+  });
+
+  async function loadRecord(rec) {
+    if (picked.size && window.appConfirm &&
+        !await appConfirm('载入「' + rec.name + '」会替换当前清单里的 ' + picked.size + ' 个词，确定吗？')) return;
+    try {
+      var res = await VOCAB_API.post('/api/pick-records/' + rec.id + '/load/', {});
+      if (res && res.success) {
+        picked = new Set(res.picked_ids);
+        refreshCount();
+        render();
+        if (window.appToast) appToast('已载入记录「' + rec.name + '」（' + res.count + ' 词）', 'success');
+      } else {
+        if (window.appToast) appToast((res && res.error) || '载入失败', 'error');
+      }
+    } catch (e) {
+      if (window.appToast) appToast('载入失败，请重试', 'error');
+    }
+  }
+
+  async function renameRecord(rec) {
+    var name = await appPrompt('重命名记录', rec.name);
+    if (name === null || !name.trim()) return;
+    try {
+      var res = await VOCAB_API.post('/api/pick-records/' + rec.id + '/rename/', { name: name.trim() });
+      if (res && res.success) {
+        rec.name = res.name;
+        renderRecords();
+        if (window.appToast) appToast('已重命名', 'success');
+      } else {
+        if (window.appToast) appToast((res && res.error) || '重命名失败', 'error');
+      }
+    } catch (e) {
+      if (window.appToast) appToast('重命名失败，请重试', 'error');
+    }
+  }
+
+  async function deleteRecord(rec) {
+    if (!window.appConfirm || !await appConfirm('确定删除选词记录「' + rec.name + '」吗？此操作不可恢复。')) return;
+    try {
+      var res = await VOCAB_API.post('/api/pick-records/' + rec.id + '/delete/', {});
+      if (res && res.success) {
+        pickRecords = pickRecords.filter(function (r) { return r.id !== rec.id; });
+        renderRecords();
+        if (window.appToast) appToast('已删除', 'success');
+      } else {
+        if (window.appToast) appToast((res && res.error) || '删除失败', 'error');
+      }
+    } catch (e) {
+      if (window.appToast) appToast('删除失败，请重试', 'error');
+    }
+  }
+
   render();
   refreshCount();
+  renderRecords();
 })();
 </script>
 {% endblock %}
