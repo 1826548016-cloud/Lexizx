@@ -52,7 +52,7 @@ python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath pro
 - **考试/翻译**：`ExamPaper/ExamQuestion`、`TranslationSentence/TranslationPractice`（英语一长难句）、`Cet6TranslationPassage/Cet6TranslationPractice/GeneratedCet6Paper/GeneratedCet6Question`（六级汉译英，与英语一数据模型独立）
 - **AI**：`AIModel`（密钥本机明文存储）、`AICallLog`、`UserSettings`（各功能模型选择）
 
-## 四、红线约束（违反即事故）
+## 四、红线约束（违反即事故，一定不能动）
 
 1. 服务器只绑 `127.0.0.1`，禁止 `0.0.0.0`。
 2. 必须启用 `CsrfViewMiddleware`；**所有改状态的接口 POST-only**，禁止 `@csrf_exempt`。
