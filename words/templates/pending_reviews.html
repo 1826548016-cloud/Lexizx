@@ -1,0 +1,167 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}待复核 - 考研单词背诵系统{% endblock %}
+{% block page_title %}待复核{% endblock %}
+
+{% block content %}
+{% csrf_token %}
+
+<div class="flex justify-between items-center" style="margin-bottom: 24px; flex-wrap: wrap; gap: 16px;">
+  <h2 style="margin: 0; font-size: var(--fs-xl); display: flex; align-items: center; gap: 8px;">
+    <i class="ph ph-clock-counter-clockwise" style="color: var(--c-amber);"></i> 待复核
+    <span class="text-sm text-secondary" style="font-weight: 400;">
+      AI 暂时不可用时的作答已安全保存，可一键补判或人工改判
+    </span>
+  </h2>
+  <div class="flex" style="gap: 8px;">
+    <button id="rejudgeAllBtn" class="btn btn-primary btn-sm">
+      <i class="ph ph-robot"></i> 一键补判
+    </button>
+    <button id="refreshBtn" class="btn btn-secondary btn-sm">
+      <i class="ph ph-arrows-clockwise"></i> 刷新
+    </button>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 20px;">
+  <div class="card-header" style="display: flex; align-items: center; gap: 6px;">
+    <i class="ph ph-info ph-sm"></i> 说明
+  </div>
+  <div class="text-sm text-secondary" style="line-height: 1.8;">
+    判定请求超时、网络不通、密钥或模型配置错误、AI 输出不合法时，作答会进入「待复核」，
+    <strong>不会被记作答错</strong>，也不会改变掌握状态与错误知识库。
+    恢复连接后点「一键补判」重新判定；也可以在这里人工改判（人工结论优先级最高）。
+    确认结论后只会写入一次学习记录。
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">待复核列表（<span id="pendingCount">0</span> 条）</div>
+  <div id="pendingBody">
+    <div class="text-sm text-secondary" style="padding: 8px 0;">加载中…</div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+  var body = document.getElementById('pendingBody');
+  var countEl = document.getElementById('pendingCount');
+
+  function reasonText(item) {
+    return item.reason_label || '待复核';
+  }
+
+  function render(items) {
+    countEl.textContent = items.length;
+    if (!items.length) {
+      body.innerHTML = '<div class="empty-state" style="padding: 24px 0;">' +
+        '<i class="ph ph-confetti"></i>' +
+        '<div class="empty-state-title">没有待复核题目</div>' +
+        '<div class="empty-state-hint">所有作答都已判定完成。</div></div>';
+      return;
+    }
+    var rows = items.map(function (it) {
+      var meanings = (it.meanings || []).join('；') || '—';
+      return '<tr data-id="' + it.id + '">' +
+        '<td><a href="/words/' + it.word_id + '/" style="font-weight:600;text-decoration:none;">' +
+          escapeHtml(it.word) + '</a></td>' +
+        '<td class="text-secondary">' + escapeHtml(it.kind_display) + '</td>' +
+        '<td class="text-secondary" style="max-width:220px;">' + escapeHtml(it.user_answer || '（空）') + '</td>' +
+        '<td class="text-secondary" style="max-width:260px;">' + escapeHtml(meanings) + '</td>' +
+        '<td><span class="badge badge-warn">' + escapeHtml(reasonText(it)) + '</span></td>' +
+        '<td>' +
+          '<div class="flex" style="gap:4px; flex-wrap:wrap;">' +
+            '<button class="btn btn-xs btn-outline pj-manual" data-verdict="correct">正确</button>' +
+            '<button class="btn btn-xs btn-outline pj-manual" data-verdict="partial">部分正确</button>' +
+            '<button class="btn btn-xs btn-outline pj-manual" data-verdict="wrong">错误</button>' +
+            '<button class="btn btn-xs btn-primary pj-rejudge"><i class="ph ph-robot"></i> 补判</button>' +
+          '</div>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+    body.innerHTML = '<div style="overflow-x:auto;"><table class="data-table">' +
+      '<thead><tr><th>单词</th><th>类型</th><th>你的答案</th><th>标准释义</th>' +
+      '<th>待复核原因</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    bind();
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function load() {
+    VOCAB_API.get('/api/pending-judgments/').then(function (res) {
+      if (!res || res.error) { showToast((res && res.error) || '加载失败', 'error'); return; }
+      render(res.items || []);
+    }).catch(function () { showToast('网络错误', 'error'); });
+  }
+
+  function manual(id, verdict, btn) {
+    btn.disabled = true;
+    VOCAB_API.post('/api/pending-judgments/' + id + '/manual/', { verdict: verdict })
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res || res.error || res.success === false) {
+          showToast((res && (res.error || res.message)) || '改判失败', 'error');
+          return;
+        }
+        showToast('已改判为「' + verdict + '」', 'success');
+        load();
+      }).catch(function () { btn.disabled = false; showToast('网络错误', 'error'); });
+  }
+
+  function rejudge(id, btn) {
+    btn.disabled = true;
+    VOCAB_API.post('/api/pending-judgments/' + id + '/rejudge/', {})
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res || res.error) {
+          showToast((res && res.error) || '补判失败', 'error');
+          return;
+        }
+        if (res.result === 'pending_review') {
+          showToast(res.message || '仍待复核', 'error');
+          load();
+          return;
+        }
+        showToast('补判完成：' + res.result, 'success');
+        load();
+      }).catch(function () { btn.disabled = false; showToast('网络错误', 'error'); });
+  }
+
+  function bind() {
+    body.querySelectorAll('.pj-manual').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.closest('tr').dataset.id;
+        manual(id, btn.dataset.verdict, btn);
+      });
+    });
+    body.querySelectorAll('.pj-rejudge').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        rejudge(btn.closest('tr').dataset.id, btn);
+      });
+    });
+  }
+
+  document.getElementById('refreshBtn').addEventListener('click', load);
+  document.getElementById('rejudgeAllBtn').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    VOCAB_API.post('/api/pending-judgments/rejudge-all/', {}).then(function (res) {
+      btn.disabled = false;
+      if (!res || res.error) { showToast((res && res.error) || '补判失败', 'error'); return; }
+      showToast('补判完成：成功 ' + res.resolved + ' · 仍待复核 ' + res.pending, 'success');
+      load();
+    }).catch(function () { btn.disabled = false; showToast('网络错误', 'error'); });
+  });
+
+  load();
+})();
+</script>
+{% endblock %}

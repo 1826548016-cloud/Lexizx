@@ -1460,6 +1460,8 @@ textarea.form-input { resize: vertical; min-height: 80px; }
   --tone-partial-fg: var(--c-amber);
   --tone-wrong-bg: var(--c-red-bg);
   --tone-wrong-fg: var(--c-red);
+  --tone-pending-bg: var(--c-blue-bg);
+  --tone-pending-fg: var(--c-blue);
 }
 .setup-scope--review .check-scope {
   --check-accent: var(--c-purple);
@@ -1486,6 +1488,7 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 .check-result.result-correct { display: block; background: var(--tone-correct-bg); border: 1px solid var(--tone-correct-fg); color: var(--tone-correct-fg); }
 .check-result.result-partial { display: block; background: var(--tone-partial-bg); border: 1px solid var(--tone-partial-fg); color: var(--tone-partial-fg); }
 .check-result.result-wrong   { display: block; background: var(--tone-wrong-bg);   border: 1px solid var(--tone-wrong-fg);   color: var(--tone-wrong-fg); }
+.check-result.result-pending { display: block; background: var(--tone-pending-bg); border: 1px solid var(--tone-pending-fg); color: var(--tone-pending-fg); }
 .check-result-title { font-weight: 700; margin-bottom: 6px; }
 .check-comment { margin-top: 4px; opacity: .92; color: var(--c-text-2); }
 .check-flag {
@@ -2391,6 +2394,8 @@ button.quick-card:hover { background: var(--c-surface); }
 .judge-mark.mk-partial { background: var(--c-amber); }
 .judge-mark.mk-wrong, .judge-mark.mk-err { background: var(--c-red); }
 .judge-mark.mk-done { background: var(--c-text-3); }
+.judge-mark.mk-pending { background: var(--c-blue); }
+.exam-dot.j-pending { border-color: var(--c-blue); color: var(--c-blue); background: var(--c-blue-bg); }
 .judge-banner { margin-top: 10px; border-radius: var(--radius-sm); padding: 10px 14px; font-size: .9rem; display: flex; align-items: flex-start; gap: 8px; }
 .judge-banner i { font-size: 18px; margin-top: 1px; }
 .judge-banner.jb-ing { background: var(--c-amber-bg); color: var(--c-amber); }
@@ -2398,6 +2403,7 @@ button.quick-card:hover { background: var(--c-surface); }
 .judge-banner.jb-partial { background: var(--c-amber-bg); color: var(--c-amber); }
 .judge-banner.jb-wrong, .judge-banner.jb-err { background: var(--c-red-bg); color: var(--c-red); }
 .judge-banner.jb-done { background: var(--c-bg); color: var(--c-text-3); }
+.judge-banner.jb-pending { background: var(--c-blue-bg); color: var(--c-blue); }
 .judge-banner .jb-retry { margin-left: auto; flex: none; background: none; border: none; cursor: pointer; color: inherit; font-size: .85rem; text-decoration: underline; padding: 0; }
 .judge-banner .jb-comment { flex: 1; line-height: 1.55; word-break: break-all; }
 .judge-src-tag { font-size: .72rem; opacity: .75; margin-left: 6px; }

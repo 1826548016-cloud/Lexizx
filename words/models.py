@@ -572,6 +572,29 @@ class AIModel(models.Model):
         return self.display_name or self.model_id
 
 
+class AIModelHealth(models.Model):
+    """AI 模型健康状态（运行时数据，不随备份导出/恢复）。每个 AIModel 一条。
+    连续可用性失败（连接/超时/429/5xx）达阈值即熔断，冷却后半开探测。"""
+    model = models.OneToOneField(AIModel, on_delete=models.CASCADE,
+        related_name='health', verbose_name='模型')
+    last_success_at = models.DateTimeField(null=True, blank=True, verbose_name='最近成功时间')
+    last_failure_at = models.DateTimeField(null=True, blank=True, verbose_name='最近失败时间')
+    fail_streak = models.IntegerField(default=0, verbose_name='连续可用性失败次数')
+    circuit_open_until = models.DateTimeField(null=True, blank=True, db_index=True,
+        verbose_name='熔断至')
+    last_error = models.CharField(max_length=200, blank=True, default='', verbose_name='最近错误')
+    last_failure_category = models.CharField(max_length=20, blank=True, default='',
+        verbose_name='最近失败类别', help_text='config=配置错误（401/403/404），其余为可用性失败')
+    last_probe_at = models.DateTimeField(null=True, blank=True, verbose_name='最近探测时间')
+
+    class Meta:
+        verbose_name = 'AI 模型健康状态'
+        verbose_name_plural = 'AI 模型健康状态'
+
+    def __str__(self):
+        return f'{self.model} - streak={self.fail_streak}'
+
+
 class ImportLog(models.Model):
     """导入记录：记录每次单词导入的历史，便于回溯查看"""
     SOURCE_CHOICES = [
@@ -1021,8 +1044,9 @@ class PosLearningAttempt(models.Model):
         ('correct', '正确'),
         ('partial', '部分正确'),
         ('wrong', '错误'),
+        ('pending_review', '待复核'),
     ]
-    JUDGED_BY_CHOICES = [('local', '本地判定'), ('ai', 'AI判定')]
+    JUDGED_BY_CHOICES = [('local', '本地判定'), ('ai', 'AI判定'), ('pending', '待复核')]
 
     word = models.ForeignKey(Word, on_delete=models.CASCADE,
         related_name='pos_attempts', verbose_name='单词')
@@ -1033,11 +1057,15 @@ class PosLearningAttempt(models.Model):
     question = models.JSONField(default=dict, verbose_name='题目',
         help_text='{prompt, options?, answer, reference?}')
     user_answer = models.TextField(blank=True, default='', verbose_name='用户答案')
-    result = models.CharField(max_length=10, choices=RESULT_CHOICES,
+    result = models.CharField(max_length=20, choices=RESULT_CHOICES,
         blank=True, default='', verbose_name='判定结果')
     judged_by = models.CharField(max_length=10, choices=JUDGED_BY_CHOICES,
         blank=True, default='', verbose_name='判定来源')
     feedback = models.TextField(blank=True, default='', verbose_name='点评')
+    pending_review = models.BooleanField(default=False, verbose_name='待复核',
+        help_text='AI 不可用/输出非法时置位，结果暂不生效，待补判或人工改判')
+    reason_code = models.CharField(max_length=30, blank=True, default='',
+        verbose_name='待复核原因', help_text='如 ai_timeout / ai_circuit_open / ai_no_model')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='作答时间')
 
     class Meta:
@@ -1047,6 +1075,60 @@ class PosLearningAttempt(models.Model):
 
     def __str__(self):
         return f'{self.word.word} - {self.get_question_type_display()}'
+
+
+class PendingJudgment(models.Model):
+    """待复核判定：AI 不可用/超时/输出非法时暂存用户答案与题面，
+    连接恢复后可自动补判，也可由用户人工改判（人工优先级最高）。
+    仅在最终结论落库一次（applied 幂等标记），绝不在此前写 StudyRecord 错误事件。"""
+    KIND_CHOICES = [
+        ('meaning', '释义默写'),
+        ('exam_meaning', '考试释义'),
+        ('pos_open', '词性开放题'),
+    ]
+
+    word = models.ForeignKey(Word, on_delete=models.CASCADE,
+        related_name='pending_judgments', verbose_name='单词')
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES,
+        default='meaning', verbose_name='题目类型')
+    user_answer = models.TextField(blank=True, default='', verbose_name='用户答案')
+    dedupe_key = models.CharField(max_length=64, blank=True, default='', db_index=True,
+        verbose_name='去重标识',
+        help_text='来源会话 + 题目实例的稳定标识；同一键最多保留一条未复核记录（部分唯一约束兜底并发）')
+    question = models.JSONField(default=dict, blank=True, verbose_name='题面快照',
+        help_text='考试/词性题的题干与标准答案快照')
+    mode = models.CharField(max_length=30, blank=True, default='', verbose_name='作答模式')
+    source = models.CharField(max_length=20, blank=True, default='learn', verbose_name='来源')
+    reason_code = models.CharField(max_length=30, blank=True, default='',
+        verbose_name='待复核原因')
+    resolved = models.BooleanField(default=False, db_index=True, verbose_name='是否已复核')
+    final_verdict = models.CharField(max_length=20, blank=True, default='',
+        verbose_name='最终结论')
+    resolved_by = models.CharField(max_length=10, blank=True, default='',
+        verbose_name='复核方式', help_text='ai=补判 / manual=人工改判')
+    resolved_at = models.DateTimeField(null=True, blank=True, verbose_name='复核时间')
+    applied = models.BooleanField(default=False, verbose_name='最终学习记录是否已落库',
+        help_text='幂等标记：保证补判或人工改判后只写一次学习记录')
+    attempt = models.ForeignKey('PosLearningAttempt', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='pending_judgments',
+        verbose_name='关联词性作答')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '待复核判定'
+        verbose_name_plural = '待复核判定'
+        constraints = [
+            # 同一「会话 + 题目实例」最多只有一条**未复核**记录：
+            # 靠部分唯一约束兜住并发双击 / 断网重发，避免重复写最终学习记录。
+            models.UniqueConstraint(
+                fields=['word', 'kind', 'dedupe_key'],
+                condition=models.Q(resolved=False) & ~models.Q(dedupe_key=''),
+                name='uniq_pending_open_per_key'),
+        ]
+
+    def __str__(self):
+        return f'{self.word.word} - {self.get_kind_display()}'
 
 
 class PosLessonCache(models.Model):

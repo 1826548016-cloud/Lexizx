@@ -417,7 +417,7 @@ function judgeMeaning(id) {
   if (judgeInFlight[id]) return judgeInFlight[id];
   if (j && j.status === 'done' && j.answer === answer) return Promise.resolve(); // 同一答案已判定，不重复请求
   const token = (judgeSeq[id] = (judgeSeq[id] || 0) + 1);
-  examState.judgments[id] = { answer: answer, status: 'judging', verdict: '', comment: '', source: '' };
+  examState.judgments[id] = { answer: answer, status: 'judging', verdict: '', comment: '', source: '', reason_code: '' };
   saveExamState();
   refreshJudgeUI(id);
   const p = VOCAB_API.post('/api/exam/judge-meaning/', { word_id: id, answer: answer })
@@ -427,6 +427,7 @@ function judgeMeaning(id) {
         examState.judgments[id] = {
           answer: res.answer, status: 'done',
           verdict: res.verdict, comment: res.comment || '', source: res.source || 'ai',
+          reason_code: res.reason_code || '',
         };
       } else {
         examState.judgments[id] = { answer: answer, status: 'error', verdict: '', comment: (res && res.error) || '判定失败' };
@@ -478,7 +479,14 @@ function renderJudgeBanner(id) {
       '<button type="button" class="jb-retry" onclick="retryJudgeMeaning(' + id + ')">重试</button>';
     return;
   }
-  // 判定已完成，但不公布对错/评语/来源，交卷后在成绩页统一显示
+  // 判定已完成：待复核题与已定论题区分显示（不公布对错），交卷后统一展示
+  if (j.verdict === 'pending_review') {
+    box.className = 'judge-banner jb-pending';
+    box.innerHTML = '<i class="ph ph-clock"></i>' +
+      '<span class="jb-comment">AI 暂不可用，本题<strong>已保存为待复核</strong>（不会记作答错）；' +
+      '可在交卷后到「待复核」页补判或人工改判</span>';
+    return;
+  }
   box.className = 'judge-banner jb-done';
   box.innerHTML = '<i class="ph ph-check-circle"></i>' +
     '<span class="jb-comment">已完成判定，<strong>成绩将在交卷后统一公布</strong></span>';
@@ -503,15 +511,19 @@ function renderNavigator() {
     if (meaningMode) {
       const j = examState.judgments && examState.judgments[q.id];
       if (j) {
+        const pending = j.status === 'done' && j.verdict === 'pending_review';
         const cls = j.status === 'judging' ? 'j-ing'
-          : j.status === 'error' ? 'j-err' : 'j-done';
+          : j.status === 'error' ? 'j-err'
+          : (pending ? 'j-pending' : 'j-done');
         d.classList.add(cls);
         const mark = document.createElement('span');
-        mark.className = 'judge-mark mk-' + cls.substring(2);
+        mark.className = 'judge-mark mk-' + (pending ? 'pending' : cls.substring(2));
         mark.innerHTML = j.status === 'judging'
           ? '<i class="ph ph-circle-notch" style="animation: spin 1s linear infinite; font-size:10px; color:#fff;"></i>'
           : (j.status === 'error' ? '!'
-            : '<i class="ph ph-check" style="font-size:10px; color:#fff;"></i>');
+            : (pending
+              ? '<i class="ph ph-clock" style="font-size:10px; color:#fff;"></i>'
+              : '<i class="ph ph-check" style="font-size:10px; color:#fff;"></i>'));
         d.appendChild(mark);
       }
     }
@@ -608,7 +620,7 @@ function renderResult(res) {
   document.getElementById('examWrongCount').textContent = res.wrong_count;
   document.getElementById('examTimeUsed').textContent = formatTime(res.duration);
 
-  // 释义判定来源统计（AI 批量/逐题判定、本地精确匹配、AI 不可用时的本地兜底）
+  // 释义判定来源统计（AI 逐题/批量判定、本地精确匹配、未作答、待复核）
   const statsEl = document.getElementById('examJudgeStats');
   if (statsEl) {
     const st = res.meaning_judge_stats;
@@ -616,9 +628,10 @@ function renderResult(res) {
       let html = '<div style="color: var(--c-text-3);">释义判定：AI 判定 <strong style="color: var(--c-green);">' + st.ai + '</strong> 题' +
         ' · 本地精确匹配 <strong>' + st.local_exact + '</strong> 题' +
         (st.blank ? ' · 未作答 <strong>' + st.blank + '</strong> 题' : '') + '</div>';
-      if (st.local_fallback > 0) {
-        html += '<div style="color: var(--c-amber); margin-top:4px;"><i class="ph ph-warning-circle"></i> ' +
-          st.local_fallback + ' 题因 AI 服务不可用使用本地兜底判定（标准偏严），可在设置页测试 API 连接后重考</div>';
+      if (st.pending > 0) {
+        html += '<div style="color: var(--c-blue); margin-top:4px;"><i class="ph ph-clock"></i> ' +
+          st.pending + ' 题因 AI 暂不可用进入待复核（<strong>不计对错、未影响掌握状态</strong>），可在 ' +
+          '<a href="/pending-reviews/">待复核页</a>补判或人工改判</div>';
       }
       statsEl.innerHTML = html;
     } else {
@@ -626,10 +639,11 @@ function renderResult(res) {
     }
   }
 
-  const wrong = res.results.filter(r => !r.correct);
+  const pending = res.results.filter(r => r.pending);
+  const wrong = res.results.filter(r => !r.correct && !r.pending);
   const list = document.getElementById('examWrongList');
   list.innerHTML = '';
-  document.getElementById('examAllCorrect').classList.toggle('hidden', wrong.length > 0);
+  document.getElementById('examAllCorrect').classList.toggle('hidden', (wrong.length + pending.length) > 0);
   document.getElementById('examWrongHeader').textContent = '错题回顾' + (wrong.length ? '（' + wrong.length + ' 题）' : '');
 
   const qmap = {};
@@ -747,6 +761,7 @@ function restoreExamState() {
               examState.judgments[id] = {
                 answer: cj.answer, status: 'done',
                 verdict: cj.verdict, comment: cj.comment || '', source: cj.source || 'ai',
+                reason_code: cj.reason_code || '',
               };
               changed = true;
             }

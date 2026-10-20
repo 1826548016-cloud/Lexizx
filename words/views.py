@@ -12,6 +12,7 @@ import urllib.request
 import urllib.error
 import base64
 import math
+import socket
 from datetime import date, timedelta, datetime
 from io import BytesIO
 
@@ -28,7 +29,7 @@ from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
 from .models import (Unit, Word, StudyProgress, StudyPlan,
-                     DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, PickRecord, PickRecordWord, AIModel, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog, TranslationSentence, TranslationPractice, TranslationFavorite, GeneratedPaper, GeneratedQuestion,
+                     DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, PickRecord, PickRecordWord, AIModel, AIModelHealth, PendingJudgment, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog, TranslationSentence, TranslationPractice, TranslationFavorite, GeneratedPaper, GeneratedQuestion,
                      Cet6TranslationPassage, Cet6TranslationPractice,
                      GeneratedCet6Paper, GeneratedCet6Question,
                      PosLearningAttempt, PosLessonCache, WordFamily, WordFamilyMember,
@@ -1711,64 +1712,88 @@ def _local_meaning_match(word, answer):
     return False, meaning_parts
 
 
-def _judge_meaning_core(word, answer, data):
-    """判定释义默写答案：AI 优先（跟随设置里选的模型），失败退回本地比对。
-    返回 (verdict, comment, source)，source ∈ ai / local-exact / local-fallback。
-    只判定、不写库——模拟考试逐题判定与交卷汇总共用。"""
+def _policy_local(verdict, comment, source='local_exact', confidence='high'):
+    """构造本地确定性结论（is_final=True）。"""
+    return {'verdict': verdict, 'source': source, 'is_final': True,
+            'reason_code': '', 'confidence': confidence, 'comment': comment}
+
+
+def _policy_pending(reason_code, comment=None):
+    """构造待复核结论（未定论：不得据此判错、不得改掌握状态）。
+    comment 以解读原因，但不泄露任何内部异常细节。"""
+    return {'verdict': 'pending_review', 'source': 'pending', 'is_final': False,
+            'reason_code': reason_code or 'ai_unavailable', 'confidence': 'low',
+            'comment': comment or '已保存，待 AI 可用后复核'}
+
+
+def judge_with_policy(word, answer, data, kind='meaning'):
+    """统一判定服务（HANDOVER 第八节）：
+    空答/拼写等确定性题 → 本地立即判定；释义等语义题 → 本地高置信规则先筛，
+    其余交 AI 仲裁；AI 超时/失败/输出非法时**绝不默认判错**，一律 pending_review。
+    只判定、不写库。返回 policy dict：
+    verdict ∈ correct/partial/wrong/pending_review；
+    source ∈ local_exact/local_confident/ai/ai_consensus/manual/pending。"""
     answer = (answer or '').strip()
     if not answer:
-        return 'wrong', '未作答', 'local-blank'
+        return _policy_local('wrong', '未作答')
 
     settings_obj = UserSettings.get_settings()
+    # 本地强匹配先筛：明显一致的直接判对，省一次 AI 调用（仅作「高置信正确」）
+    hit, meaning_parts = _local_meaning_match(word, answer)
+    if hit:
+        return _policy_local('correct', '本地判定：与标准释义一致')
+
+    # 未开启 AI 判定：本地不能确认，交给待复核而不是默认判错
+    if not settings_obj.use_ai_meaning_check:
+        return _policy_pending('ai_disabled')
+
     if settings_obj.meaning_check_model and not data.get('model_id'):
         data['model_id'] = settings_obj.meaning_check_model_id
 
-    # 本地强匹配先筛：明显一致的直接判对，省一次 AI 调用
-    hit, meaning_parts = _local_meaning_match(word, answer)
-    if hit:
-        return 'correct', '本地判定：与标准释义一致', 'local-exact'
+    try:
+        cfg = resolve_ai_model(data)
+    except ValueError:
+        return _policy_pending('ai_no_model', '已保存，待配置可用 AI 模型后复核')
 
-    if settings_obj.use_ai_meaning_check:
-        meaning_text = '；'.join(meaning_parts)
-        try:
-            cfg = resolve_ai_model(data)
-            prompt = MEANING_JUDGE_PROMPT.format(
-                word=word.word, meanings=meaning_text, answer=answer)
-            content = _ai_chat_once(cfg, prompt, max_tokens=500, temperature=0.1)
-            parsed = _extract_json_object(content)
-            v = parsed.get('verdict')
-            if v in ('correct', 'partial', 'wrong'):
-                comment = (parsed.get('comment') or '').strip()
-                return v, comment, 'ai'
-        except Exception:
-            pass
+    prompt = MEANING_JUDGE_PROMPT.format(
+        word=word.word, meanings='；'.join(meaning_parts), answer=answer)
+    content, _error, reason = _ai_judge_call(cfg, prompt, max_tokens=500, temperature=0.1)
+    if not content:
+        return _policy_pending(reason)
+    parsed = _extract_json_object(content) or {}
+    v = parsed.get('verdict')
+    if v not in ('correct', 'partial', 'wrong'):
+        return _policy_pending('ai_invalid_output')
+    return {'verdict': v, 'source': 'ai', 'is_final': True,
+            'reason_code': '', 'confidence': 'medium',
+            'comment': (parsed.get('comment') or '').strip()}
 
-    # AI 不可用 / 判定异常 → 本地兜底（标准偏严，需明确告知用户）
-    return 'wrong', '本地判定：与标准释义不符', 'local-fallback'
+
+def _judge_meaning_core(word, answer, data):
+    """释义判定统一入口（返回 policy dict，见 judge_with_policy）。"""
+    return judge_with_policy(word, answer, data)
 
 
 def _judge_meaning_answer(word, answer, data):
-    """判定释义默写答案：AI 优先（跟随设置里选的模型），失败退回本地比对。
-    返回 (verdict, comment, used_ai)。"""
-    verdict, comment, source = _judge_meaning_core(word, answer, data)
-    return verdict, comment, source == 'ai'
+    """释义默写判定（返回 policy dict）。"""
+    return judge_with_policy(word, answer, data)
 
 
-def _judge_meaning_batch(pairs, data, chunk_size=10):
-    """批量判定多道释义默写题，pairs=[(word, answer), ...]。
-    本地强匹配先筛 → 其余按 chunk_size 分组，每组一次 AI 调用统一标准 →
-    失败组重试 1 次 → 仍失败的逐题补判（单次 AI + 本地兜底）。
-    返回 {word_id: (verdict, comment, source)}。"""
+def judge_meaning_batch_with_policy(pairs, data, chunk_size=10):
+    """批量释义判定，pairs=[(word, answer), ...]；返回 {word_id: policy dict}。
+    本地确定层先筛 → 其余按 chunk_size 分组，每组一次 AI 调用统一标准。
+    整组失败 / 缺项 / 组内同一 id 出现互相冲突的 verdict → 该组所有未定论题
+    一律 pending_review（不再逐题兜底判错）。"""
     results = {}
-    pending = []  # (word, answer) 待 AI 判定
+    pending = []
     for word, answer in pairs:
         answer = (answer or '').strip()
         if not answer:
-            results[word.id] = ('wrong', '未作答', 'local-blank')
+            results[word.id] = _policy_local('wrong', '未作答')
             continue
         hit, _ = _local_meaning_match(word, answer)
         if hit:
-            results[word.id] = ('correct', '本地判定：与标准释义一致', 'local-exact')
+            results[word.id] = _policy_local('correct', '本地判定：与标准释义一致')
         else:
             pending.append((word, answer))
 
@@ -1780,46 +1805,196 @@ def _judge_meaning_batch(pairs, data, chunk_size=10):
 
     for start in range(0, len(pending), chunk_size):
         group = pending[start:start + chunk_size]
-        judged = {}
+        if use_ai and settings_obj.meaning_check_model and not data.get('model_id'):
+            data['model_id'] = settings_obj.meaning_check_model_id
+        got, reason = {}, None
         if use_ai:
-            if settings_obj.meaning_check_model and not data.get('model_id'):
-                data['model_id'] = settings_obj.meaning_check_model_id
-            items = [
-                {'id': w.id, 'word': w.word,
-                 'meanings': '；'.join(_local_meaning_match(w, a)[1]),
-                 'answer': a}
-                for w, a in group
-            ]
-            for attempt in range(2):  # 首调 + 失败重试 1 次
-                try:
-                    cfg = resolve_ai_model(data)
-                    prompt = MEANING_BATCH_JUDGE_PROMPT.format(
-                        n=len(items), items=json.dumps(items, ensure_ascii=False))
-                    content = _ai_chat_once(
-                        cfg, prompt, max_tokens=400 * len(items), temperature=0.1)
-                    arr = _extract_json_array(content)
-                    got = {}
-                    for el in arr:
+            cfg = None
+            try:
+                cfg = resolve_ai_model(data)
+            except ValueError:
+                reason = 'ai_no_model'
+            if cfg is not None:
+                items = [
+                    {'id': w.id, 'word': w.word,
+                     'meanings': '；'.join(_local_meaning_match(w, a)[1]),
+                     'answer': a}
+                    for w, a in group
+                ]
+                prompt = MEANING_BATCH_JUDGE_PROMPT.format(
+                    n=len(items), items=json.dumps(items, ensure_ascii=False))
+                content, _err, reason = _ai_judge_call(
+                    cfg, prompt, max_tokens=400 * len(items), temperature=0.1)
+                if content:
+                    conflict = False
+                    for el in _extract_json_array(content):
                         if not isinstance(el, dict):
                             continue
-                        vid = el.get('id')
-                        v = el.get('verdict')
-                        if vid is not None and v in ('correct', 'partial', 'wrong'):
-                            got[int(vid)] = (v, (el.get('comment') or '').strip())
-                    # 必须整组 ID 齐全且合法才算成功，避免漏判悄悄混入
-                    if all(w.id in got for w, _ in group):
-                        judged = got
-                        break
-                except Exception:
-                    judged = {}
+                        vid, v = el.get('id'), el.get('verdict')
+                        if vid is None or v not in ('correct', 'partial', 'wrong'):
+                            continue
+                        key = int(vid)
+                        if key in got and got[key][0] != v:
+                            conflict = True
+                        got.setdefault(key, (v, (el.get('comment') or '').strip()))
+                    if conflict:
+                        got, reason = {}, 'ai_conflict'
+                    elif not all(w.id in got for w, _ in group):
+                        got, reason = {}, 'ai_invalid_output'
+                else:
+                    got = {}
+        else:
+            reason = 'ai_disabled'
 
-        for w, a in group:
-            if w.id in judged:
-                results[w.id] = (judged[w.id][0], judged[w.id][1], 'ai')
+        for w, _a in group:
+            if w.id in got:
+                results[w.id] = {
+                    'verdict': got[w.id][0], 'source': 'ai', 'is_final': True,
+                    'reason_code': '', 'confidence': 'medium',
+                    'comment': got[w.id][1]}
             else:
-                # 批量失败/缺项 → 逐题补判（内部还会尝试单次 AI，再失败才本地兜底）
-                results[w.id] = _judge_meaning_core(w, a, data)[:3]
+                results[w.id] = _policy_pending(reason or 'ai_unavailable')
     return results
+
+
+def _judge_meaning_batch(pairs, data, chunk_size=10):
+    """兼容包装：批量释义判定转调 judge_meaning_batch_with_policy。"""
+    return judge_meaning_batch_with_policy(pairs, data, chunk_size)
+
+
+def _ensure_session_key(request):
+    """确保当前浏览器会话有稳定 session_key（用于待复核去重），返回该 key。"""
+    if not request.session.session_key:
+        request.session.create()
+    return request.session.session_key or ''
+
+
+def _pending_dedupe_key(kind, source, mode, word_id, session_key):
+    """待复核去重键：同一次浏览器会话里的同一题（词 + 题型 + 来源 + 模式）只保留一条未复核。
+    刻意不用答案文本做键——同一答案在不同学习轮次应保留独立审计记录；
+    会话标识做哈希，避免把 session key 原文落库。"""
+    digest = hashlib.sha256((session_key or '').encode('utf-8')).hexdigest()[:16]
+    return ('%s:%s:%s:%s:%s' % (kind, source or 'learn', mode or '-', word_id, digest))[:64]
+
+
+def _get_or_create_pending_judgment(word, kind, answer, *, question=None, mode='',
+                                    source='learn', reason_code='', attempt=None,
+                                    dedupe_key=''):
+    """建立或复用待复核记录（幂等入口）。
+    dedupe_key 为稳定去重标识；同一键最多保留一条**未复核**记录，
+    并发双击 / 断网重发由数据库部分唯一约束兜住；重复提交只更新答案与题面。"""
+    answer = (answer or '').strip()
+    defaults = {
+        'user_answer': answer[:2000],
+        'question': question or {},
+        'mode': (mode or '')[:30],
+        'source': (source or 'learn')[:20],
+        'reason_code': reason_code or '',
+        'attempt': attempt,
+    }
+    obj, created = PendingJudgment.objects.get_or_create(
+        word=word, kind=kind, dedupe_key=dedupe_key or '', resolved=False,
+        defaults=defaults)
+    if not created:
+        fields = []
+        if obj.user_answer != defaults['user_answer']:
+            obj.user_answer = defaults['user_answer']
+            fields.append('user_answer')
+        if defaults['question'] and obj.question != defaults['question']:
+            obj.question = defaults['question']
+            fields.append('question')
+        if reason_code and obj.reason_code != reason_code:
+            obj.reason_code = reason_code
+            fields.append('reason_code')
+        if attempt is not None and obj.attempt_id != attempt.id:
+            obj.attempt = attempt
+            fields.append('attempt')
+        if fields:
+            obj.save(update_fields=fields)
+    return obj
+
+
+def _apply_meaning_verdict(word, verdict, *, data=None, mode='meaning', source='learn',
+                           record=True, mistake_type='meaning', error_detail=None,
+                           attempt=None):
+    """把一个**已定论**的释义结果落到学习进度与统计（correct/partial/wrong）。
+    pending_review 不走这里；本函数与 `_apply_wrong_progress` 口径一致，
+    是最终结论的唯一写库入口，保证补判/人工改判后只写一次。"""
+    today = timezone.localdate()
+    now = timezone.now()
+    checkin, _ = DailyCheckIn.objects.get_or_create(date=today)
+
+    if verdict in ('correct', 'partial'):
+        progress, created = StudyProgress.objects.get_or_create(word=word)
+        if created or progress.status == 'new':
+            progress.learned_date = today
+            progress.is_today_new = True
+        progress.meaning_attempts += 1
+        progress.meaning_correct += 1
+        progress.mastery_level = 5
+        progress.status = 'mastered'
+        _track_consecutive(progress, True)
+        progress.review_count += 1
+        progress.last_review = now
+        _schedule_next_review(progress, today)
+        progress.save()
+        checkin.today_correct += 1
+        checkin.save()
+        if record:
+            _record_study(word, 'meaning_ok', data or {})
+        return progress, checkin
+
+    # 已确认的真实答错：与既有考试错题口径一致（mastered 不降级，仅 error_count+1）
+    progress = _apply_wrong_progress(word, today, now)
+    if progress is not None:
+        progress.meaning_attempts += 1
+        progress.save(update_fields=['meaning_attempts'])
+    checkin.today_wrong += 1
+    checkin.save()
+    if record:
+        _record_study(word, 'meaning_wrong', data or {}, mode=mode,
+                      mistake_type=mistake_type, error_detail=error_detail or {})
+    return progress, checkin
+
+
+def _finalize_pending_judgment(pj, verdict, comment, source, by, data=None):
+    """把待复核记录定论并落库；幂等——resolved/applied 后直接返回，不重复写学习记录。
+    verdict ∈ correct/partial/wrong；by ∈ ai/manual。返回 (ok, message)。"""
+    if verdict not in ('correct', 'partial', 'wrong'):
+        return False, '无效的判定结论'
+    with transaction.atomic():
+        fresh = PendingJudgment.objects.select_for_update().get(pk=pj.pk)
+        if fresh.resolved or fresh.applied:
+            return True, '已复核'
+        word = fresh.word
+        if fresh.kind == 'pos_open':
+            if verdict == 'wrong':
+                _apply_wrong_progress(word)
+                _record_study(
+                    word, 'meaning_wrong', {'source': 'pos'},
+                    mode='pos_open', mistake_type='pos',
+                    error_detail={'user_answer': fresh.user_answer[:200],
+                                  'judged_by': by})
+            if fresh.attempt_id:
+                PosLearningAttempt.objects.filter(pk=fresh.attempt_id).update(
+                    result=verdict, judged_by=by, pending_review=False,
+                    reason_code='', feedback=(comment or '')[:200])
+        else:
+            _apply_meaning_verdict(
+                word, verdict, data=dict(data or {}),
+                mode=(fresh.mode or fresh.kind), source=(fresh.source or 'learn'),
+                mistake_type='meaning',
+                error_detail={'user_answer': fresh.user_answer,
+                              'correct': word.get_meanings(),
+                              'judged_by': by})
+        fresh.resolved = True
+        fresh.final_verdict = verdict
+        fresh.resolved_by = by
+        fresh.resolved_at = timezone.now()
+        fresh.applied = True
+        fresh.save(update_fields=['resolved', 'final_verdict', 'resolved_by',
+                                  'resolved_at', 'applied'])
+    return True, ''
 
 
 @require_http_methods(['POST'])
@@ -1885,63 +2060,57 @@ def api_spelling_check(request, word_id):
 
 @require_http_methods(['POST'])
 def api_meaning_check(request, word_id):
-    """释义默写：看英文写中文意思，AI 判定正确 / 部分正确 / 错误（失败时退回本地比对）"""
+    """释义默写：看英文写中文意思。本地强匹配即时判定，其余交 AI 仲裁；
+    AI 不可用/超时/输出非法时落「待复核」，不判错、不改掌握状态。"""
     try:
         data = json.loads(request.body)
         answer = (data.get('answer') or '').strip()
         word = get_object_or_404(Word, id=word_id)
-        progress, created = StudyProgress.objects.get_or_create(word=word)
 
-        verdict, comment, used_ai = _judge_meaning_answer(word, answer, data)
+        policy = _judge_meaning_answer(word, answer, data)
+        verdict = policy['verdict']
+        comment = policy['comment']
 
-        today = timezone.localdate()
-        now = timezone.now()
-        if created or progress.status == 'new':
-            progress.learned_date = today
-            progress.is_today_new = True
+        if verdict == 'pending_review':
+            # 待复核：只留「尝试过」的痕迹，绝不写错误事件、不改掌握状态与今日对错
+            today = timezone.localdate()
+            progress, created = StudyProgress.objects.get_or_create(word=word)
+            if created or progress.status == 'new':
+                progress.learned_date = today
+                progress.is_today_new = True
+            progress.meaning_attempts += 1
+            progress.last_review = timezone.now()
+            progress.save()
+            pending = _get_or_create_pending_judgment(
+                word, 'meaning', answer, mode=(data.get('mode') or ''),
+                source=(data.get('source') or 'learn'),
+                reason_code=policy['reason_code'],
+                dedupe_key=_pending_dedupe_key(
+                    'meaning', data.get('source') or 'learn',
+                    data.get('mode') or '-', word.id, _ensure_session_key(request)))
+            auto_checked = update_daily_checkin()
+            return JsonResponse({
+                'success': True, 'verdict': 'pending_review', 'comment': comment,
+                'reason_code': policy['reason_code'], 'pending_id': pending.id,
+                'used_ai': False, 'status': progress.status,
+                'auto_checked': auto_checked, 'auto_excluded': False,
+            })
 
-        progress.meaning_attempts += 1
-        ok = verdict in ('correct', 'partial')
-        if ok:
-            progress.meaning_correct += 1
-            progress.mastery_level = 5
-            progress.status = 'mastered'
-        else:
-            progress.error_count += 1
-            progress.mastery_level = 0
-            progress.status = 'learning'
-        auto_excluded = _track_consecutive(progress, ok)
-        progress.review_count += 1
-        progress.last_review = now
-        # 自动复习调度：今天默写过的词 → 明天自动进入复习栏目
-        _schedule_next_review(progress, today)
-        progress.save()
-
-        checkin, _ = DailyCheckIn.objects.get_or_create(date=today)
-        if ok:
-            checkin.today_correct += 1
-        else:
-            checkin.today_wrong += 1
-        checkin.save()
-
-        # 记录背词历史
-        if ok:
-            _record_study(word, 'meaning_ok', data)
-        else:
-            _record_study(word, 'meaning_wrong', data,
-                          mistake_type='meaning',
-                          error_detail={'user_answer': answer, 'correct': word.get_meanings()})
-
+        progress, _checkin = _apply_meaning_verdict(
+            word, verdict, data=data, mode='',
+            source=(data.get('source') or 'learn'), mistake_type='meaning',
+            error_detail={'user_answer': answer, 'correct': word.get_meanings()})
         auto_checked = update_daily_checkin()
 
         return JsonResponse({
             'success': True,
             'verdict': verdict,
             'comment': comment,
-            'used_ai': used_ai,
-            'status': progress.status,
+            'source': policy['source'],
+            'used_ai': policy['source'] == 'ai',
+            'status': progress.status if progress else 'learning',
             'auto_checked': auto_checked,
-            'auto_excluded': auto_excluded,
+            'auto_excluded': bool(progress and progress.is_excluded),
         })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
@@ -3178,6 +3347,23 @@ def _build_backup_payload(settings_obj):
             }
             for pa in PosLearningAttempt.objects.select_related('word').all()
         ],
+        # 待复核判定（第八节）：AI 暂不可用时的作答，必须随备份导出/恢复。
+        # 注意：AIModelHealth 是运行时健康数据，刻意不写入备份。
+        'pending_judgments': [
+            {
+                'word': pj.word.word if pj.word else None,
+                'kind': pj.kind, 'mode': pj.mode, 'source': pj.source,
+                'reason_code': pj.reason_code,
+                'user_answer': pj.user_answer, 'question': pj.question,
+                'dedupe_key': pj.dedupe_key,
+                'resolved': pj.resolved, 'final_verdict': pj.final_verdict,
+                'resolved_by': pj.resolved_by,
+                'resolved_at': pj.resolved_at.isoformat() if pj.resolved_at else None,
+                'applied': pj.applied,
+                'created_at': pj.created_at.isoformat(),
+            }
+            for pj in PendingJudgment.objects.select_related('word').all()
+        ],
         'word_families': [
             {
                 'key': f.key, 'title': f.title, 'description': f.description,
@@ -3783,6 +3969,34 @@ def api_restore(request):
                         if parsed_ca:
                             PosLearningAttempt.objects.filter(pk=rec.pk).update(created_at=parsed_ca)
 
+                # --- 15b) 待复核判定（第八节）：随备份恢复，缺 word 字符串一律跳过 ---
+                if data.get('pending_judgments'):
+                    PendingJudgment.objects.all().delete()
+                    for pj in data['pending_judgments']:
+                        new_wid = _resolve_word_id(pj, 'pending_judgments')
+                        if new_wid is None:
+                            continue
+                        rec = PendingJudgment.objects.create(
+                            word_id=new_wid,
+                            kind=pj.get('kind', 'meaning'),
+                            mode=pj.get('mode', ''),
+                            source=pj.get('source', 'learn'),
+                            reason_code=pj.get('reason_code', ''),
+                            user_answer=pj.get('user_answer', ''),
+                            dedupe_key=pj.get('dedupe_key', ''),
+                            question=pj.get('question') or {},
+                            resolved=pj.get('resolved', False),
+                            final_verdict=pj.get('final_verdict', ''),
+                            resolved_by=pj.get('resolved_by', ''),
+                            resolved_at=(parse_datetime(pj['resolved_at'])
+                                         if pj.get('resolved_at') else None),
+                            applied=pj.get('applied', False),
+                        )
+                        raw_ca = pj.get('created_at')
+                        parsed_ca = parse_datetime(raw_ca) if raw_ca else None
+                        if parsed_ca:
+                            PendingJudgment.objects.filter(pk=rec.pk).update(created_at=parsed_ca)
+
                 if data.get('word_families'):
                     # 词族整组恢复（成员/构词法/关系内联在 family 下）
                     WordFamily.objects.all().delete()
@@ -4036,15 +4250,17 @@ def api_quick_memory_generate(request, word_id):
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
+            raw = resp.read()
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', 'ignore')
         return JsonResponse({'error': 'AI 接口错误 (HTTP %s): %s' % (e.code, body[:400])}, status=502)
     except urllib.error.URLError as e:
         return JsonResponse({'error': '无法连接 %s: %s' % (resolve_ai_endpoint(base_url, endpoint), e.reason)}, status=502)
 
-    content = (result.get('choices', [{}])[0].get('message', {}).get('content', '') or '').strip()
-    if not content:
+    # 畸形 2xx（HTML / 非法 JSON / choices 异常 / 空内容）统一按「未返回有效内容」处理，不裸奔 500
+    try:
+        content = _ai_extract_content(_ai_parse_json_body(raw))
+    except _AIRequestError:
         return JsonResponse({'error': 'AI 未返回有效内容'}, status=502)
 
     qm, _ = QuickMemory.objects.get_or_create(word=word)
@@ -4138,7 +4354,7 @@ def api_assistant(request):
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
+            raw = resp.read()
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', 'ignore')
         user_msg.delete()
@@ -4147,8 +4363,9 @@ def api_assistant(request):
         user_msg.delete()
         return JsonResponse({'error': '无法连接 %s: %s' % (resolve_ai_endpoint(cfg['base_url'], cfg['endpoint']), e.reason)}, status=502)
 
-    content = (result.get('choices', [{}])[0].get('message', {}).get('content', '') or '').strip()
-    if not content:
+    try:
+        content = _ai_extract_content(_ai_parse_json_body(raw))
+    except _AIRequestError:
         user_msg.delete()
         return JsonResponse({'error': 'AI 未返回有效内容'}, status=502)
 
@@ -4332,7 +4549,7 @@ def api_ai_chat(request):
 
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
+            raw = resp.read()
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', 'ignore')
         user_msg.delete()
@@ -4345,8 +4562,9 @@ def api_ai_chat(request):
             conv.delete()
         return JsonResponse({'error': '无法连接 AI 服务: %s' % e.reason}, status=502)
 
-    content = (result.get('choices', [{}])[0].get('message', {}).get('content', '') or '').strip()
-    if not content:
+    try:
+        content = _ai_extract_content(_ai_parse_json_body(raw))
+    except _AIRequestError:
         user_msg.delete()
         if not ChatMessage.objects.filter(conversation_id=conv.id).exists():
             conv.delete()
@@ -4642,16 +4860,19 @@ def api_exam_judge_meaning(request):
         if not word:
             return JsonResponse({'error': '单词不存在'}, status=404)
 
-        verdict, comment, source = _judge_meaning_core(word, answer, data)
+        policy = _judge_meaning_core(word, answer, data)
         cache = request.session.get('exam_judgments') or {}
         cache[str(word_id)] = {
-            'answer': answer, 'verdict': verdict,
-            'comment': comment, 'source': source,
+            'answer': answer, 'verdict': policy['verdict'],
+            'comment': policy['comment'], 'source': policy['source'],
+            'reason_code': policy['reason_code'], 'is_final': policy['is_final'],
         }
         request.session['exam_judgments'] = cache
         return JsonResponse({
             'success': True, 'word_id': word_id, 'answer': answer,
-            'verdict': verdict, 'comment': comment, 'source': source,
+            'verdict': policy['verdict'], 'comment': policy['comment'],
+            'source': policy['source'], 'reason_code': policy['reason_code'],
+            'is_final': policy['is_final'],
         })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
@@ -4688,13 +4909,15 @@ def api_exam_submit(request):
         # 未缓存/已变更的残留释义题收集起来走批量判定（10 题/组、统一标准）。
         word_objs = {w.id: w for w in Word.objects.filter(id__in=[sq['id'] for sq in stored])}
         residual_pairs = []          # (word, answer) 需批量判定
-        graded = []                  # [{sq, ans, word, is_correct, comment, source}]
+        graded = []                  # [{sq, ans, word, is_correct, comment, source, pending}]
         for sq in stored:
             qid = sq['id']
             qtype = sq.get('type', 'choice')
             ans = answer_map.get(qid) or {}
             word = word_objs.get(qid)
             is_correct = False
+            is_pending = False
+            reason_code = ''
             comment = ''
             source = 'local'
 
@@ -4708,9 +4931,16 @@ def api_exam_submit(request):
                 cj = cached_judgments.get(str(qid))
                 if word and cj and (cj.get('answer') or '') == text:
                     # 缓存命中：以最后一次保存并判定过的答案为准
-                    is_correct = cj.get('verdict') == 'correct'
-                    comment = cj.get('comment') or ''
-                    source = cj.get('source') or 'ai'
+                    if cj.get('verdict') == 'pending_review':
+                        # 答题过程中已判定为待复核：交卷时保持待复核，不重复出网
+                        is_pending = True
+                        source = 'pending'
+                        reason_code = cj.get('reason_code') or ''
+                        comment = cj.get('comment') or ''
+                    else:
+                        is_correct = cj.get('verdict') == 'correct'
+                        comment = cj.get('comment') or ''
+                        source = cj.get('source') or 'ai'
                 elif word and answered:
                     # 已作答但无缓存/答案已变更 → 批量判定；未作答的题不浪费 AI 调用
                     residual_pairs.append((word, text))
@@ -4724,20 +4954,25 @@ def api_exam_submit(request):
 
             graded.append({'sq': sq, 'ans': ans, 'word': word,
                            'is_correct': is_correct, 'answered': answered,
-                           'comment': comment,
+                           'comment': comment, 'pending': is_pending,
+                           'reason_code': reason_code,
                            'source': source, 'need_batch': qtype == 'meaning' and answered and not (
                                word and cached_judgments.get(str(qid))
                                and (cached_judgments[str(qid)].get('answer') or '') == (ans.get('answer') or '').strip())})
 
-        # 残留释义题一次批量判定（同组统一标准，失败自动逐题兜底）
+        # 残留释义题一次批量判定（同组统一标准；整组失败/冲突一律落待复核）
         batch_results = _judge_meaning_batch(residual_pairs, data) if residual_pairs else {}
         for g in graded:
             if g['need_batch'] and g['word']:
-                verdict, comment, source = batch_results.get(
-                    g['word'].id, ('wrong', '未作答', 'local-blank'))
-                g['is_correct'] = verdict == 'correct'
-                g['comment'] = comment
-                g['source'] = source
+                policy = batch_results.get(g['word'].id) or _policy_local('wrong', '未作答')
+                if policy['verdict'] == 'pending_review':
+                    g['pending'] = True
+                    g['is_correct'] = False
+                    g['reason_code'] = policy['reason_code']
+                else:
+                    g['is_correct'] = policy['verdict'] == 'correct'
+                g['comment'] = policy['comment']
+                g['source'] = policy['source']
             g.pop('need_batch', None)
 
         # ===== 阶段二：判定全部完成后，统一写库（中途失败则零写入，可安全重新交卷）=====
@@ -4747,16 +4982,50 @@ def api_exam_submit(request):
 
         results = []
         correct_count = 0
-        source_stats = {'ai': 0, 'local-exact': 0, 'local-fallback': 0, 'local-blank': 0}
+        pending_count = 0
+        source_stats = {'ai': 0, 'local_exact': 0, 'local_blank': 0, 'pending': 0}
         for g in graded:
             sq, ans, word = g['sq'], g['ans'], g['word']
             qid, qtype = sq['id'], sq.get('type', 'choice')
             is_correct = g['is_correct']
             answered = g['answered']
+            if qtype == 'meaning':
+                if g['pending']:
+                    source_stats['pending'] += 1
+                elif g['source'] == 'ai':
+                    source_stats['ai'] += 1
+                elif g['source'] == 'local-blank':
+                    source_stats['local_blank'] += 1
+                else:
+                    source_stats['local_exact'] += 1
+
+            if word and g['pending']:
+                # 待复核：保存题目与答案供后续补判，绝不写 StudyRecord/进度/今日对错
+                pending = _get_or_create_pending_judgment(
+                    word, 'exam_meaning', ans.get('answer') or '',
+                    question={'type': qtype, 'word_id': qid,
+                              'meanings': word.get_meanings(),
+                              'correct_index': sq.get('correct_index')},
+                    mode='exam_meaning', source='exam',
+                    reason_code=g['reason_code'],
+                    dedupe_key=_pending_dedupe_key(
+                        'exam_meaning', 'exam', 'exam_meaning', qid,
+                        request.session.session_key or ''))
+                pending_count += 1
+                results.append({
+                    'word_id': qid, 'word': word.word, 'meanings': word.get_meanings(),
+                    'correct': False, 'pending': True, 'pending_id': pending.id,
+                    'reason_code': g['reason_code'],
+                    'selected_index': ans.get('selected'),
+                    'correct_index': sq.get('correct_index'), 'type': qtype,
+                    'comment': g['comment'], 'source': 'pending',
+                    'answer': ans.get('answer') or '',
+                    'progress_note': '待复核，未影响掌握状态',
+                })
+                continue
+
             if is_correct:
                 correct_count += 1
-            if qtype == 'meaning':
-                source_stats[g['source'] if g['source'] in source_stats else 'local-fallback'] += 1
 
             if word and not answered:
                 # 未作答：考试成绩按错题计分，但不改动任何学习进度
@@ -4863,23 +5132,26 @@ def api_exam_submit(request):
         request.session.pop('exam_questions', None)
         request.session.pop('exam_judgments', None)
 
-        meaning_total = (source_stats['ai'] + source_stats['local-exact']
-                         + source_stats['local-fallback'] + source_stats['local-blank'])
+        judged_count = total - pending_count
+        meaning_total = (source_stats['ai'] + source_stats['local_exact']
+                         + source_stats['local_blank'] + source_stats['pending'])
         return JsonResponse({
             'success': True,
             'total': total,
             'correct_count': correct_count,
-            'wrong_count': total - correct_count,
-            'correct_rate': round(correct_count / total * 100, 1) if total else 0,
+            'wrong_count': judged_count - correct_count,
+            'pending_count': pending_count,
+            'correct_rate': round(correct_count / judged_count * 100, 1) if judged_count else 0,
             'duration': duration,
             'results': results,
             'auto_checked': auto_checked,
             'meaning_judge_stats': {
                 'total': meaning_total,
                 'ai': source_stats['ai'],
-                'local_exact': source_stats['local-exact'],
-                'local_fallback': source_stats['local-fallback'],
-                'blank': source_stats['local-blank'],
+                'local_exact': source_stats['local_exact'],
+                'local_fallback': 0,
+                'blank': source_stats['local_blank'],
+                'pending': source_stats['pending'],
             },
         })
     except Exception as e:
@@ -5423,26 +5695,267 @@ def normalize_ai_words(words):
     return clean
 
 
-def _ai_chat_once(cfg, prompt, max_tokens=4000, temperature=0.5):
-    """单次调用 AI（OpenAI 兼容），返回纯文本内容"""
-    payload = {
-        'model': cfg['model_id'],
-        'temperature': temperature,
-        'max_tokens': max_tokens,
-        'messages': [{'role': 'user', 'content': prompt}],
-    }
+# ─── AI 请求健康包装层（HANDOVER 第八节）───────────────────────
+AI_JUDGE_TIMEOUT = 8            # 判定专用短超时（秒）；生成类长任务 300s 契约不变
+AI_HEALTH_FAIL_THRESHOLD = 3    # 连续可用性失败达此值即熔断
+AI_HEALTH_COOLDOWN_SECONDS = 300
+AI_PROBE_LOCK_SECONDS = 60      # 半开探测锁窗口，防止多页面同时重试造成请求风暴
+AI_JUDGE_MAX_ATTEMPTS = 2
+# 只有这些「可用性失败」参与熔断计数；invalid（空内容/非法结构）只算输出质量问题，
+# config（401/403/404）单独标记为配置错误并要求手动测试成功后才清除。
+AI_HEALTH_AVAILABILITY_CATEGORIES = ('network', 'timeout', 'ratelimit', 'server')
+
+
+class _AIRequestError(Exception):
+    """AI 请求失败：category ∈ timeout / network / ratelimit / server / config / invalid"""
+    def __init__(self, category, message):
+        super().__init__(message)
+        self.category = category
+        self.message = message
+
+
+def _ai_first_choice(result):
+    """校验 OpenAI 兼容响应结构并返回 choices[0]（dict）。
+    结构异常（根节点非对象 / choices 缺失或为空 / 元素非对象）一律抛
+    _AIRequestError('invalid')，避免调用方再直接假设 choices[0] 存在。"""
+    if not isinstance(result, dict):
+        raise _AIRequestError('invalid', 'AI 响应不是 JSON 对象')
+    choices = result.get('choices')
+    if not isinstance(choices, list) or not choices:
+        raise _AIRequestError('invalid', 'AI 响应缺少 choices')
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise _AIRequestError('invalid', 'AI 响应 choices 结构异常')
+    return first
+
+
+def _ai_extract_content(result):
+    """结构校验 + 提取非空 choices[0].message.content；异常抛 _AIRequestError('invalid')。"""
+    first = _ai_first_choice(result)
+    message = first.get('message')
+    if not isinstance(message, dict):
+        raise _AIRequestError('invalid', 'AI 响应缺少 message')
+    content = message.get('content')
+    if not isinstance(content, str) or not content.strip():
+        raise _AIRequestError('invalid', 'AI 返回为空')
+    return content.strip()
+
+
+def _ai_parse_json_body(raw):
+    """响应体 → JSON 对象；解码或解析失败归为 invalid（不回显第三方原始内容）。"""
+    try:
+        text = raw.decode('utf-8') if isinstance(raw, (bytes, bytearray)) else str(raw)
+        return json.loads(text)
+    except (UnicodeDecodeError, ValueError, TypeError):
+        raise _AIRequestError('invalid', 'AI 响应不是合法 JSON')
+
+
+def _ai_post_json(cfg, payload, timeout):
+    """底层 OpenAI 兼容 POST：成功返回内容文本；失败抛已分类的 _AIRequestError。
+    读取、UTF-8 解码、JSON 解析与响应结构校验全部在此收口，
+    畸形 2xx（HTML body / 非法 JSON / choices 异常 / 空内容）一律归为 invalid，
+    保证判定链路能安全降级为 pending_review，而不是 500。"""
     req = urllib.request.Request(
         resolve_ai_endpoint(cfg['base_url'], cfg['endpoint']),
         data=json.dumps(payload).encode('utf-8'),
         headers=build_ai_headers(cfg['api_key']),
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        result = json.loads(resp.read().decode('utf-8'))
-    content = (result.get('choices', [{}])[0].get('message', {}).get('content', '') or '').strip()
-    if not content:
-        raise RuntimeError('AI 返回为空')
-    return content
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', 'ignore')
+        code = e.code
+        if code in (401, 403):
+            raise _AIRequestError('config', '密钥或权限无效 (HTTP %s)' % code)
+        if code == 404:
+            raise _AIRequestError('config', '模型或接口地址不存在 (HTTP 404)')
+        if code == 429:
+            raise _AIRequestError('ratelimit', '请求过于频繁 (HTTP 429)')
+        if code >= 500:
+            raise _AIRequestError('server', '服务端错误 (HTTP %s)' % code)
+        raise _AIRequestError('config', '接口错误 (HTTP %s): %s' % (code, body[:200]))
+    except (socket.timeout, TimeoutError):
+        raise _AIRequestError('timeout', 'AI 请求超时')
+    except urllib.error.URLError as e:
+        reason = getattr(e, 'reason', e)
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            raise _AIRequestError('timeout', 'AI 请求超时')
+        raise _AIRequestError('network', '无法连接 AI 服务: %s' % reason)
+    return _ai_extract_content(_ai_parse_json_body(raw))
+
+
+def _get_model_health(model_pk):
+    """取（或建）某 AIModel 的健康记录；model_pk 缺失/非法时返回 None（如旧版内联配置）。"""
+    if not model_pk:
+        return None
+    try:
+        m = AIModel.objects.filter(id=int(model_pk)).first()
+    except (TypeError, ValueError):
+        return None
+    if m is None:
+        return None
+    health, _ = AIModelHealth.objects.get_or_create(model=m)
+    return health
+
+
+def _acquire_ai_slot(health, now):
+    """熔断门禁：返回 (allowed, reason_code)。
+    未熔断放行；熔断中拒绝；冷却到点用条件 UPDATE 抢半开锁，同一时刻只放行一条请求。"""
+    if health is None:
+        return True, ''
+    co = health.circuit_open_until
+    if co is None:
+        return True, ''
+    if now < co:
+        return False, 'ai_circuit_open'
+    lock_until = now + timedelta(seconds=AI_PROBE_LOCK_SECONDS)
+    updated = AIModelHealth.objects.filter(
+        id=health.id, circuit_open_until__lte=now).update(
+        circuit_open_until=lock_until, last_probe_at=now)
+    if updated:
+        return True, ''
+    return False, 'ai_circuit_open'
+
+
+def _ai_health_record_success(model_pk):
+    """记录一次可用性成功：清零失败计数与熔断。"""
+    health = _get_model_health(model_pk)
+    if health is None:
+        return
+    health.last_success_at = timezone.now()
+    health.fail_streak = 0
+    health.circuit_open_until = None
+    health.last_error = ''
+    health.last_failure_category = ''
+    health.save(update_fields=['last_success_at', 'fail_streak', 'circuit_open_until',
+                               'last_error', 'last_failure_category'])
+
+
+def _ai_health_record_failure(model_pk, category, message):
+    """记录一次失败。
+    - 只有「可用性失败」（network / timeout / ratelimit / server）参与熔断计数；
+    - `invalid`（空内容 / 非法结构）只记录输出质量错误，不改变连接健康，避免误熔断；
+    - 配置类错误（401/403/404）单独标记并立即熔断，需手动探活成功后才清除。"""
+    health = _get_model_health(model_pk)
+    if health is None:
+        return
+    now = timezone.now()
+    health.last_failure_at = now
+    health.last_error = (message or '')[:200]
+    health.last_failure_category = category or ''
+    if category == 'config':
+        health.fail_streak = AI_HEALTH_FAIL_THRESHOLD
+        health.circuit_open_until = now + timedelta(seconds=AI_HEALTH_COOLDOWN_SECONDS)
+    elif category in AI_HEALTH_AVAILABILITY_CATEGORIES:
+        health.fail_streak = (health.fail_streak or 0) + 1
+        if health.fail_streak >= AI_HEALTH_FAIL_THRESHOLD:
+            health.circuit_open_until = now + timedelta(seconds=AI_HEALTH_COOLDOWN_SECONDS)
+    health.save(update_fields=['last_failure_at', 'last_error', 'last_failure_category',
+                               'fail_streak', 'circuit_open_until'])
+
+
+def _ai_reason_code(category):
+    """失败类别 → 前端可解释的原因码（reason_code）。"""
+    return {
+        'timeout': 'ai_timeout',
+        'network': 'ai_network_error',
+        'ratelimit': 'ai_rate_limited',
+        'server': 'ai_server_error',
+        'config': 'ai_config_error',
+        'invalid': 'ai_invalid_output',
+        'circuit': 'ai_circuit_open',
+    }.get(category or '', 'ai_unavailable')
+
+
+def _ai_health_status(m):
+    """供设置页展示的模型健康状态：
+    available / config_error / cooling / output_error / unknown。"""
+    health = getattr(m, 'health', None)
+    if health is None:
+        return {'state': 'unknown', 'label': '未检测',
+                'circuit_open_until': None, 'last_error': '', 'last_success_at': None}
+    now = timezone.now()
+    cooling = bool(health.circuit_open_until and health.circuit_open_until > now)
+    if health.last_failure_category == 'config':
+        state, label = 'config_error', '配置错误'
+    elif cooling:
+        state, label = 'cooling', '暂不可用，冷却至 %s' % timezone.localtime(
+            health.circuit_open_until).strftime('%H:%M')
+    elif health.last_failure_category == 'invalid':
+        # 连接正常但输出不合法：只作输出质量提示，不算「不可用」
+        state, label = 'output_error', '输出异常'
+    elif health.last_success_at:
+        state, label = 'available', '可用'
+    else:
+        state, label = 'unknown', '未检测'
+    return {
+        'state': state, 'label': label,
+        'circuit_open_until': health.circuit_open_until.isoformat() if health.circuit_open_until else None,
+        'last_error': health.last_error,
+        'last_failure_category': health.last_failure_category,
+        'last_success_at': health.last_success_at.isoformat() if health.last_success_at else None,
+    }
+
+
+def _ai_gate(model_pk):
+    """统一熔断门禁：返回 '' 表示放行，否则返回原因码（此时不得出网）。
+    判定类与生成类共用；手动探活 api_ai_test 属于显式连通性测试，不经过此门禁。"""
+    allowed, reason = _acquire_ai_slot(_get_model_health(model_pk), timezone.now())
+    return '' if allowed else reason
+
+
+def _ai_judge_call(cfg, prompt, max_tokens=500, temperature=0.1):
+    """判定类 AI 调用：8 秒专用超时；可用性失败最多快速重试一次；配置类错误不重试。
+    返回 (content, error, reason_code)：成功时后两项均为 ''。
+    熔断开启时不出网，直接返回 reason_code='ai_circuit_open'。"""
+    model_pk = cfg.get('id')
+    payload = {
+        'model': cfg['model_id'],
+        'temperature': temperature,
+        'max_tokens': max_tokens,
+        'messages': [{'role': 'user', 'content': prompt}],
+    }
+    reason = _ai_gate(model_pk)
+    if reason:
+        return None, '', reason
+    last = None
+    for _attempt in range(AI_JUDGE_MAX_ATTEMPTS):
+        try:
+            content = _ai_post_json(cfg, payload, AI_JUDGE_TIMEOUT)
+            _ai_health_record_success(model_pk)
+            return content, '', ''
+        except _AIRequestError as e:
+            last = e
+            if e.category == 'config':
+                break
+    _ai_health_record_failure(model_pk, last.category, last.message)
+    return None, last.message, _ai_reason_code(last.category)
+
+
+def _ai_category_from_code(code):
+    """HTTP 状态码 → 失败类别（供探活/生成类调用记录健康状态）。"""
+    if code == 429:
+        return 'ratelimit'
+    if code >= 500:
+        return 'server'
+    return 'config'
+
+
+def _ai_chat_once(cfg, prompt, max_tokens=4000, temperature=0.5):
+    """单次调用 AI（OpenAI 兼容），返回纯文本内容。
+    生成/讲解类沿用 180 秒长超时（契约不变）；判定类请用 _ai_judge_call。
+    同样先过统一熔断门禁，避免失效模型在后台任务里反复等待。"""
+    if _ai_gate(cfg.get('id')):
+        raise _AIRequestError('circuit', 'ai_circuit_open：AI 暂不可用（熔断冷却中），已跳过请求')
+    payload = {
+        'model': cfg['model_id'],
+        'temperature': temperature,
+        'max_tokens': max_tokens,
+        'messages': [{'role': 'user', 'content': prompt}],
+    }
+    return _ai_post_json(cfg, payload, 180)
 
 
 def _extract_json_object(content):
@@ -5654,8 +6167,10 @@ def resolve_ai_model(data):
 def api_ai_models(request):
     """AI 模型管理：GET 列表 / POST 新增或更新 / DELETE 删除（配置统一存数据库，设置页管理）"""
     if request.method == 'GET':
-        models = AIModel.objects.all().order_by('-enabled', 'id')
-        return JsonResponse({'models': [serialize_ai_model(m) for m in models]})
+        models = AIModel.objects.select_related('health').all().order_by('-enabled', 'id')
+        return JsonResponse({'models': [
+            dict(serialize_ai_model(m), health=_ai_health_status(m)) for m in models
+        ]})
 
     if request.method == 'DELETE':
         try:
@@ -5789,7 +6304,7 @@ def api_ai_recognize(request):
 
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
+                raw = resp.read()
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', 'ignore')
             return JsonResponse({'error': 'AI 接口错误 (HTTP %s): %s' % (e.code, body[:400])}, status=502)
@@ -5797,7 +6312,10 @@ def api_ai_recognize(request):
             url = resolve_ai_endpoint(base_url, endpoint)
             return JsonResponse({'error': '无法连接 %s: %s' % (url, e.reason)}, status=502)
 
-        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+        try:
+            content = _ai_extract_content(_ai_parse_json_body(raw))
+        except _AIRequestError as e:
+            return JsonResponse({'error': 'AI 返回内容不合法：%s' % e.message}, status=502)
         words = normalize_ai_words(extract_json_array(content))
         if not words:
             return JsonResponse({'error': 'AI 未能识别出有效单词，请检查输入内容或更换模型'}, status=422)
@@ -5848,7 +6366,7 @@ def api_ai_review(request):
 
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
+                raw = resp.read()
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', 'ignore')
             return JsonResponse({'error': 'AI 接口错误 (HTTP %s): %s' % (e.code, body[:400])}, status=502)
@@ -5856,7 +6374,10 @@ def api_ai_review(request):
             url = resolve_ai_endpoint(base_url, endpoint)
             return JsonResponse({'error': '无法连接 %s: %s' % (url, e.reason)}, status=502)
 
-        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+        try:
+            content = _ai_extract_content(_ai_parse_json_body(raw))
+        except _AIRequestError as e:
+            return JsonResponse({'error': 'AI 返回内容不合法：%s' % e.message}, status=502)
         review = extract_json_array(content)
 
         # 规范化：保证数量与输入一致，缺失项按"正确"处理
@@ -6005,11 +6526,13 @@ def api_ai_test(request):
             base_url = saved.base_url
             endpoint = saved.endpoint
             model = saved.model_id
+            model_pk = saved.id
         else:
             api_key = data.get('api_key', '')
             base_url = data.get('base_url', 'https://api.openai.com/v1')
             endpoint = data.get('endpoint', '')
             model = data.get('model', 'gpt-4o-mini')
+            model_pk = None
 
         if not model:
             return JsonResponse({'error': '请填写模型 ID'}, status=400)
@@ -6029,22 +6552,34 @@ def api_ai_test(request):
 
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
+                raw = resp.read()
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', 'ignore')
+            err = '连接失败 (HTTP %s): %s' % (e.code, body[:200])
+            _ai_health_record_failure(model_pk, _ai_category_from_code(e.code), err)
             # 401/403 = 密钥无效；404 = 模型或地址错误；其余透出
             return JsonResponse({
-                'error': '连接失败 (HTTP %s): %s' % (e.code, body[:200]),
+                'error': err,
                 'key_invalid': e.code in (401, 403),
                 'model_invalid': e.code == 404,
             }, status=502)
+        except (socket.timeout, TimeoutError) as e:
+            _ai_health_record_failure(model_pk, 'timeout', '探活超时')
+            return JsonResponse({'error': '连接超时: %s' % e}, status=502)
         except urllib.error.URLError as e:
             url = resolve_ai_endpoint(base_url, endpoint)
+            _ai_health_record_failure(model_pk, 'network', '无法连接 %s' % url)
             return JsonResponse({'error': '无法连接 %s: %s' % (url, e.reason)}, status=502)
 
-        if result.get('choices'):
-            return JsonResponse({'success': True, 'message': '连接成功，密钥有效'})
-        return JsonResponse({'error': '接口响应异常'}, status=502)
+        # 畸形 2xx（HTML / 非法 JSON / choices 异常）也必须返回可读 502，不能裸奔成 500。
+        # 探活只校验响应结构，max_tokens=1 时 content 允许为空。
+        try:
+            _ai_first_choice(_ai_parse_json_body(raw))
+        except _AIRequestError as e:
+            _ai_health_record_failure(model_pk, 'invalid', e.message)
+            return JsonResponse({'error': '接口响应异常：%s' % e.message}, status=502)
+        _ai_health_record_success(model_pk)
+        return JsonResponse({'success': True, 'message': '连接成功，密钥有效'})
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
@@ -6077,6 +6612,15 @@ def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_genera
         _log_ai_call(action=action, practice=practice, model_id='', success=False,
                      error=str(e), prompt=prompt, t0=t0, duration_ms=0)
         return None, str(e)
+    model_pk = cfg.get('id')
+    # 生成类同样先过统一熔断门禁：熔断中立即快速返回可读错误，不再空等 300 秒。
+    # 探活 api_ai_test 属于显式连接测试，刻意不经过此门禁。
+    gate_reason = _ai_gate(model_pk)
+    if gate_reason:
+        err = 'ai_circuit_open：AI 暂不可用（熔断冷却中），已跳过请求'
+        _log_ai_call(action=action, practice=practice, model_id=cfg.get('model_id') or '',
+                     success=False, error=err, prompt=prompt, t0=t0, duration_ms=0)
+        return None, err
     payload = {
         'model': cfg['model_id'],
         'temperature': temperature,
@@ -6090,7 +6634,7 @@ def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_genera
     )
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
+            raw = resp.read()
         # 在 HTTP 请求完成后计算真实耗时（包含网络 + AI 生成时间）
         duration_ms = int((_time.monotonic() - t0) * 1000)
     except urllib.error.HTTPError as e:
@@ -6098,14 +6642,30 @@ def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_genera
         body = e.read().decode('utf-8', 'ignore')
         err = f'AI 接口错误 (HTTP {e.code}): {body[:300]}'
         _log_ai_call(action, practice, cfg['model_id'], False, err, prompt, t0, duration_ms)
+        _ai_health_record_failure(model_pk, _ai_category_from_code(e.code), err)
+        return None, err
+    except (socket.timeout, TimeoutError) as e:
+        duration_ms = int((_time.monotonic() - t0) * 1000)
+        err = f'AI 请求超时: {e}'
+        _log_ai_call(action, practice, cfg['model_id'], False, err, prompt, t0, duration_ms)
+        _ai_health_record_failure(model_pk, 'timeout', err)
         return None, err
     except urllib.error.URLError as e:
         duration_ms = int((_time.monotonic() - t0) * 1000)
         err = f'无法连接 AI 服务: {e.reason}'
         _log_ai_call(action, practice, cfg['model_id'], False, err, prompt, t0, duration_ms)
+        _ai_health_record_failure(model_pk, 'network', err)
         return None, err
-    content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+    # 空内容 / 非法 JSON / choices 结构异常一律记失败，不能当成功写入日志与健康状态
+    try:
+        content = _ai_extract_content(_ai_parse_json_body(raw))
+    except _AIRequestError as e:
+        _log_ai_call(action, practice, cfg['model_id'], False, e.message, prompt, t0,
+                     duration_ms, response=e.message)
+        _ai_health_record_failure(model_pk, e.category, e.message)
+        return None, e.message
     _log_ai_call(action, practice, cfg['model_id'], True, '', prompt, t0, duration_ms, response=content)
+    _ai_health_record_success(model_pk)
     return content, None
 
 
@@ -9315,9 +9875,9 @@ def api_pos_grade(request):
     """判定词性作答。
     请求：{attempt_id?, word_id?, question?, answer, model_id?}
     - 客观题（pos_choice/pos_match/form_convert）本地判分；
-    - 开放题（open）调用 AI 判定，verdict 仅接受 correct/partial/wrong；
-    - 仅 wrong 写 StudyRecord(mistake_type='pos')；partial 不加风险；
-    - 判定失败（无模型/非 JSON/越界输出）整次失败，不写任何数据。"""
+    - 开放题（open）调用 AI 判定（8 秒短超时），verdict 仅接受 correct/partial/wrong；
+    - AI 不可用/超时/输出非法时落「待复核」，不判错、不写任何学习数据；
+    - 仅**最终确认**的 wrong 写 StudyRecord(mistake_type='pos')；partial 不加风险。"""
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:
@@ -9328,6 +9888,7 @@ def api_pos_grade(request):
     answer = str(data.get('answer') or '')
 
     attempt = None
+    reason_code = ''
     if data.get('attempt_id'):
         attempt = PosLearningAttempt.objects.filter(id=data['attempt_id']).first()
         if attempt is None:
@@ -9335,7 +9896,8 @@ def api_pos_grade(request):
         if attempt.result:
             return JsonResponse({
                 'success': True, 'result': attempt.result, 'judged_by': attempt.judged_by,
-                'feedback': attempt.feedback, 'idempotent': True})
+                'feedback': attempt.feedback, 'reason_code': attempt.reason_code,
+                'idempotent': True})
         word = attempt.word
         question = attempt.question or question
         qtype = attempt.question_type
@@ -9348,22 +9910,38 @@ def api_pos_grade(request):
         if not answer.strip():
             return JsonResponse({'error': '答案为空'}, status=400)
         model_pk = _resolve_pos_learning_model_id(data)
+        result = 'pending_review'
+        judged_by = 'pending'
+        feedback = '已保存，待 AI 可用后复核'
         if not model_pk:
-            return JsonResponse({'error': '开放题判定需要配置可用 AI 模型；本次未写入任何数据'}, status=400)
-        prompt = pos_open_grade_prompt(
-            word.word, question.get('target_pos', ''),
-            question.get('prompt', ''), question.get('reference', ''), answer)
-        content, err = builtin_ai_exam_call(
-            prompt, temperature=0.1, data={'model_id': model_pk}, action='pos_grade')
-        if err:
-            return JsonResponse({'error': f'AI 判定失败：{err}；本次未写入任何数据'}, status=502)
-        payload = _extract_json_obj(content)
-        verdict = (payload or {}).get('verdict')
-        if verdict not in ('correct', 'partial', 'wrong'):
-            return JsonResponse({'error': 'AI 判定输出不合法；本次未写入任何数据'}, status=502)
-        result = verdict
-        judged_by = 'ai'
-        feedback = str(payload.get('feedback') or '')[:200]
+            # 无可用模型：落待复核，不再整次失败
+            reason_code = 'ai_no_model'
+        else:
+            prompt = pos_open_grade_prompt(
+                word.word, question.get('target_pos', ''),
+                question.get('prompt', ''), question.get('reference', ''), answer)
+            content, err = None, ''
+            try:
+                cfg = resolve_ai_model({'model_id': model_pk})
+                import time as _time
+                t0 = _time.monotonic()
+                content, err, reason = _ai_judge_call(
+                    cfg, prompt, max_tokens=600, temperature=0.1)
+                _log_ai_call('pos_grade', None, cfg.get('model_id') or '', bool(content),
+                             err or '', prompt, t0,
+                             int((_time.monotonic() - t0) * 1000), response=content or '')
+            except ValueError:
+                reason = 'ai_no_model'
+            if not content:
+                reason_code = reason or 'ai_unavailable'
+            else:
+                payload = _extract_json_obj(content)
+                verdict = (payload or {}).get('verdict')
+                if verdict not in ('correct', 'partial', 'wrong'):
+                    reason_code = 'ai_invalid_output'
+                else:
+                    result, judged_by, reason_code = verdict, 'ai', ''
+                    feedback = str(payload.get('feedback') or '')[:200]
     else:
         correct_ans = question.get('answer')
         if correct_ans is None:
@@ -9372,20 +9950,43 @@ def api_pos_grade(request):
         judged_by = 'local'
         feedback = ''
 
+    is_pending = result == 'pending_review'
+
     # 保存/更新作答记录
     if attempt is None:
         attempt = PosLearningAttempt.objects.create(
             word=word, target_pos=str(question.get('target_pos') or '')[:20],
             question_type=qtype, question=question,
-            user_answer=answer, result=result, judged_by=judged_by, feedback=feedback)
+            user_answer=answer, result=result, judged_by=judged_by, feedback=feedback,
+            pending_review=is_pending, reason_code=reason_code if is_pending else '')
     else:
         attempt.user_answer = answer
         attempt.result = result
         attempt.judged_by = judged_by
         attempt.feedback = feedback
-        attempt.save(update_fields=['user_answer', 'result', 'judged_by', 'feedback'])
+        attempt.pending_review = is_pending
+        attempt.reason_code = reason_code if is_pending else ''
+        attempt.save(update_fields=['user_answer', 'result', 'judged_by', 'feedback',
+                                    'pending_review', 'reason_code'])
 
-    # 仅 wrong 写错误事件（服务端唯一写入点），并走与背诵/考试错题一致的进度更新路径
+    if is_pending:
+        # 待复核：只保存作答与题面供后续补判/人工改判，绝不写错误事件与进度
+        pending = _get_or_create_pending_judgment(
+            word, 'pos_open', answer,
+            question={'type': qtype,
+                      'target_pos': str(question.get('target_pos') or '')[:20],
+                      'prompt': str(question.get('prompt') or '')[:300],
+                      'reference': str(question.get('reference') or '')[:300]},
+            mode='pos_open', source='pos', reason_code=reason_code, attempt=attempt,
+            dedupe_key=_pending_dedupe_key(
+                'pos_open', 'pos', 'pos_open', word.id, _ensure_session_key(request)))
+        return JsonResponse({
+            'success': True, 'attempt_id': attempt.id, 'result': 'pending_review',
+            'judged_by': judged_by, 'feedback': feedback,
+            'reason_code': reason_code, 'pending_id': pending.id,
+        })
+
+    # 仅最终确认的 wrong 写错误事件（服务端唯一写入点），与背诵/考试错题同口径
     if result == 'wrong':
         _apply_wrong_progress(word)
         _record_study(
@@ -9403,6 +10004,167 @@ def api_pos_grade(request):
         'success': True, 'attempt_id': attempt.id, 'result': result,
         'judged_by': judged_by, 'feedback': feedback,
     })
+
+
+# ─── 待复核队列（HANDOVER 第八节相位 3）───────────────────────
+PENDING_REASON_LABELS = {
+    'ai_timeout': 'AI 判定超时',
+    'ai_network_error': '网络不通',
+    'ai_rate_limited': '请求过于频繁',
+    'ai_server_error': 'AI 服务端错误',
+    'ai_config_error': 'AI 配置错误（密钥/模型/地址）',
+    'ai_invalid_output': 'AI 输出不合法',
+    'ai_circuit_open': 'AI 暂不可用（熔断冷却中）',
+    'ai_conflict': 'AI 判定冲突',
+    'ai_no_model': '未配置可用 AI 模型',
+    'ai_disabled': '已关闭 AI 判定',
+    'ai_unavailable': 'AI 暂不可用',
+}
+
+
+def _serialize_pending_judgment(pj):
+    """待复核记录 → 前端 JSON（不含任何密钥）。"""
+    return {
+        'id': pj.id,
+        'word_id': pj.word_id,
+        'word': pj.word.word if pj.word else '',
+        'meanings': pj.word.get_meanings() if pj.word else [],
+        'kind': pj.kind,
+        'kind_display': pj.get_kind_display(),
+        'user_answer': pj.user_answer,
+        'reason_code': pj.reason_code,
+        'reason_label': PENDING_REASON_LABELS.get(pj.reason_code, '待复核'),
+        'source': pj.source,
+        'mode': pj.mode,
+        'created_at': pj.created_at.isoformat(),
+    }
+
+
+def pending_reviews_page(request):
+    """待复核列表页：AI 不可用期间暂存的判定，可一键补判或人工改判。"""
+    return render(request, 'pending_reviews.html', {
+        'reason_labels': PENDING_REASON_LABELS,
+    })
+
+
+@require_http_methods(['GET'])
+def api_pending_judgments(request):
+    """未复核的待复核列表（最多 500 条）。"""
+    qs = PendingJudgment.objects.filter(resolved=False).select_related('word')
+    return JsonResponse({
+        'items': [_serialize_pending_judgment(pj) for pj in qs.order_by('-created_at')[:500]],
+        'count': qs.count(),
+    })
+
+
+def _rejudge_pos_open(pj, data):
+    """词性开放题待复核记录重新判定（沿用 8 秒短超时判定通道）。"""
+    q = pj.question or {}
+    model_pk = _resolve_pos_learning_model_id(data)
+    if not model_pk:
+        return _policy_pending('ai_no_model', '已保存，待配置可用 AI 模型后复核')
+    try:
+        cfg = resolve_ai_model({'model_id': model_pk})
+    except ValueError:
+        return _policy_pending('ai_no_model', '已保存，待配置可用 AI 模型后复核')
+    prompt = pos_open_grade_prompt(pj.word.word, q.get('target_pos', ''),
+                                   q.get('prompt', ''), q.get('reference', ''),
+                                   pj.user_answer)
+    content, _err, reason = _ai_judge_call(cfg, prompt, max_tokens=600, temperature=0.1)
+    if not content:
+        return _policy_pending(reason)
+    payload = _extract_json_obj(content) or {}
+    verdict = payload.get('verdict')
+    if verdict not in ('correct', 'partial', 'wrong'):
+        return _policy_pending('ai_invalid_output')
+    return {'verdict': verdict, 'source': 'ai', 'is_final': True, 'reason_code': '',
+            'confidence': 'medium', 'comment': str(payload.get('feedback') or '')[:200]}
+
+
+def _rejudge_pending(pj, data):
+    """按待复核类型选择补判通道。"""
+    if pj.kind == 'pos_open':
+        return _rejudge_pos_open(pj, data)
+    return judge_with_policy(pj.word, pj.user_answer, data)
+
+
+@require_http_methods(['POST'])
+def api_pending_judgment_rejudge(request, pj_id):
+    """单题 AI 补判：连接恢复后重新判定并幂等落库（熔断中保持待复核）。"""
+    pj = PendingJudgment.objects.filter(id=pj_id).select_related('word').first()
+    if pj is None:
+        return JsonResponse({'error': '待复核记录不存在'}, status=404)
+    if pj.resolved:
+        return JsonResponse({'success': True, 'result': pj.final_verdict,
+                             'message': '已复核', 'idempotent': True})
+    try:
+        data = json.loads(request.body or '{}')
+    except Exception:
+        data = {}
+    policy = _rejudge_pending(pj, data)
+    if policy['verdict'] == 'pending_review':
+        if pj.reason_code != policy['reason_code']:
+            pj.reason_code = policy['reason_code']
+            pj.save(update_fields=['reason_code'])
+        return JsonResponse({
+            'success': False, 'result': 'pending_review',
+            'reason_code': policy['reason_code'],
+            'message': policy['comment'] or PENDING_REASON_LABELS.get(
+                policy['reason_code'], '仍待复核')})
+    ok, message = _finalize_pending_judgment(
+        pj, policy['verdict'], policy['comment'], policy['source'], 'ai', data)
+    return JsonResponse({'success': ok, 'result': policy['verdict'],
+                         'message': message, 'comment': policy['comment']})
+
+
+@require_http_methods(['POST'])
+def api_pending_judgment_manual(request, pj_id):
+    """人工改判（优先级最高）：直接给定 correct/partial/wrong，幂等只落库一次。"""
+    pj = PendingJudgment.objects.filter(id=pj_id).select_related('word').first()
+    if pj is None:
+        return JsonResponse({'error': '待复核记录不存在'}, status=404)
+    try:
+        data = json.loads(request.body or '{}')
+    except Exception:
+        return JsonResponse({'error': '请求体不是合法 JSON'}, status=400)
+    verdict = (data.get('verdict') or '').strip()
+    if verdict not in ('correct', 'partial', 'wrong'):
+        return JsonResponse({'error': '请输入 correct / partial / wrong'}, status=400)
+    ok, message = _finalize_pending_judgment(pj, verdict, '人工改判', 'manual', 'manual', data)
+    return JsonResponse({'success': ok, 'result': verdict,
+                         'message': message if message != '已复核' else '已改判'})
+
+
+@require_http_methods(['POST'])
+def api_pending_judgment_rejudge_all(request):
+    """批量补判：逐条重判；熔断中的题保持待复核并立即停止，避免请求风暴。"""
+    try:
+        data = json.loads(request.body or '{}')
+    except Exception:
+        data = {}
+    items = list(PendingJudgment.objects.filter(resolved=False)
+                 .select_related('word').order_by('created_at')[:200])
+    resolved, still_pending, failed = 0, 0, 0
+    for pj in items:
+        policy = _rejudge_pending(pj, data)
+        if policy['verdict'] == 'pending_review':
+            still_pending += 1
+            if pj.reason_code != policy['reason_code']:
+                pj.reason_code = policy['reason_code']
+                pj.save(update_fields=['reason_code'])
+            if policy['reason_code'] == 'ai_circuit_open':
+                break
+            continue
+        ok, _message = _finalize_pending_judgment(
+            pj, policy['verdict'], policy['comment'], policy['source'], 'ai', data)
+        if ok:
+            resolved += 1
+        else:
+            failed += 1
+    return JsonResponse({
+        'success': True, 'resolved': resolved, 'pending': still_pending,
+        'failed': failed,
+        'remaining': PendingJudgment.objects.filter(resolved=False).count()})
 
 
 def _validate_family_candidate(payload):

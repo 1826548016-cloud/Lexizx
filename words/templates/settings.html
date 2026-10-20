@@ -332,7 +332,7 @@
             <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
             <span class="about-stat-title">最后更新</span>
           </div>
-          <div class="stat-value">2026-10-18</div>
+          <div class="stat-value">2026-10-20</div>
         </div>
       </div>
 
@@ -345,7 +345,7 @@
         <div class="about-block-title"><i class="ph ph-user-circle" style="color: var(--c-blue);"></i> 联系作者</div>
         <div class="about-links">
           <a href="mailto:qzx1028918@163.com" class="about-link">
-            <i class="ph ph-envelope-simple"></i> <span>qzx1028918@163.com</span>
+            <i class="ph ph-envelope-simple"></i> <span>zixuanqiu72@gmail.com</span>
           </a>
           <a href="https://github.com/1826548016-cloud/Lexizx" target="_blank" rel="noopener" class="about-link">
             <i class="ph ph-github-logo"></i> <span>GitHub 项目仓库</span>
@@ -363,7 +363,7 @@
           <a href="https://www.codex2api.com/register?aff=VBXRX8FRRMCR" target="_blank" rel="noopener" class="btn btn-secondary btn-xs">
             <i class="ph ph-arrow-square-out"></i> 访问 codex2api 购买调用
           </a>
-          <span class="text-secondary text-sm" style="opacity: .8;">（deepseek 模型约 10 元 / 月）</span>
+          <span class="text-secondary text-sm" style="opacity: .8;">（deepseek 模型约 5 元 / 月）</span>
         </div>
         <div class="flex items-center gap-2" style="flex-wrap: wrap;">
           <span class="text-secondary text-sm">如果觉得本软件对你有帮助：</span>
@@ -950,6 +950,39 @@ function saveMeaningCheckMode(val) {
   }).catch(function () { showToast('请求失败', 'error'); });
 }
 
+function healthBadgeHtml(h) {
+  h = h || { state: 'unknown', label: '未检测' };
+  var icons = { available: 'ph-check-circle', config_error: 'ph-x-circle', cooling: 'ph-clock', output_error: 'ph-warning-circle', unknown: 'ph-question' };
+  return '<i class="ph ' + (icons[h.state] || 'ph-question') + '"></i> ' + escapeHtml(h.label || '未检测');
+}
+
+function modelHealthColor(state) {
+  return { available: 'var(--c-green)', config_error: 'var(--c-red)', cooling: 'var(--c-amber)', output_error: 'var(--c-amber)', unknown: 'var(--c-text-3)' }[state] || 'var(--c-text-3)';
+}
+
+function modelHealthSpan(m) {
+  var h = m.health || { state: 'unknown', label: '未检测' };
+  return '<span class="text-sm" id="modelHealth' + m.id + '" style="color:' + modelHealthColor(h.state) +
+    ';" title="' + escapeHtml(h.last_error || '') + '">' + healthBadgeHtml(h) + '</span>';
+}
+
+// 探活/判定失败后刷新该模型的健康状态（避免整表重绘导致探活提示丢失）
+function refreshModelHealth(id) {
+  return VOCAB_API.get('/api/ai-models/').then(function (res) {
+    if (!res || !res.models) return;
+    var fresh = res.models.find(function (x) { return x.id === id; });
+    if (!fresh || !fresh.health) return;
+    var local = aiModels.find(function (x) { return x.id === id; });
+    if (local) local.health = fresh.health;
+    var span = document.getElementById('modelHealth' + id);
+    if (span) {
+      span.style.color = modelHealthColor(fresh.health.state);
+      span.title = fresh.health.last_error || '';
+      span.innerHTML = healthBadgeHtml(fresh.health);
+    }
+  }).catch(function () {});
+}
+
 function renderModelList() {
   var list = document.getElementById('modelList');
   document.getElementById('modelCount').textContent = aiModels.length;
@@ -966,6 +999,7 @@ function renderModelList() {
           '<div class="text-sm text-secondary" style="margin-top: 2px;">' + escapeHtml(p.name) + ' · ' + escapeHtml(m.model_id) + ' · ' + (m.has_key ? '密钥已保存' : '未设置密钥') + ' · ' + escapeHtml(m.context || '128K') + '</div>' +
         '</div>' +
         '<div class="flex items-center gap-2">' +
+          modelHealthSpan(m) +
           '<span class="text-sm" style="color: ' + (m.enabled ? 'var(--c-green)' : 'var(--c-text-3)') + ';">' + (m.enabled ? '已启用' : '已禁用') + '</span>' +
           '<label class="switch"><input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' onchange="toggleAIModel(' + m.id + ')"><span class="slider"></span></label>' +
           '<button class="btn btn-sm btn-secondary" id="testModelBtn' + m.id + '" onclick="testSavedModel(' + m.id + ')" title="测试该模型的 API 连接"><i class="ph ph-plugs-connected"></i></button>' +
@@ -1060,6 +1094,7 @@ async function testSavedModel(id) {
     status.textContent = '请求失败，请检查网络';
   } finally {
     btn.disabled = false;
+    refreshModelHealth(id);
   }
 }
 </script>

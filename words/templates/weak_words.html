@@ -12,9 +12,14 @@
     <i class="ph ph-warning-circle" style="color: var(--c-red);"></i> 错误知识库
     <span class="text-sm text-secondary" style="font-weight: 400;">按错误风险从高到低，精选最需巩固的 {{ selected_count }} 个</span>
   </h2>
-  <a href="{% url 'words:learn_start' %}" class="btn btn-primary btn-sm">
-    <i class="ph ph-target"></i> 去背单词
-  </a>
+  <div class="flex" style="gap: 8px; flex-wrap: wrap;">
+    <a href="{% url 'words:pending_reviews' %}" class="btn btn-secondary btn-sm">
+      <i class="ph ph-clock-counter-clockwise"></i> 待复核
+    </a>
+    <a href="{% url 'words:learn_start' %}" class="btn btn-primary btn-sm">
+      <i class="ph ph-target"></i> 去背单词
+    </a>
+  </div>
 </div>
 
 <div class="stat-grid" style="margin-bottom: 20px;">

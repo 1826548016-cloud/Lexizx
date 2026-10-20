@@ -22,6 +22,12 @@ urlpatterns = [
     path('settings/', views.settings_page, name='settings_page'),
     path('favorites/', views.favorites_list, name='favorites_list'),
     path('weak-words/', views.weak_words, name='weak_words'),
+    # 待复核队列（HANDOVER 第八节相位 3）：AI 不可用期间的判定暂存与补判/人工改判
+    path('pending-reviews/', views.pending_reviews_page, name='pending_reviews'),
+    path('api/pending-judgments/', views.api_pending_judgments, name='api_pending_judgments'),
+    path('api/pending-judgments/rejudge-all/', views.api_pending_judgment_rejudge_all, name='api_pending_judgment_rejudge_all'),
+    path('api/pending-judgments/<int:pj_id>/rejudge/', views.api_pending_judgment_rejudge, name='api_pending_judgment_rejudge'),
+    path('api/pending-judgments/<int:pj_id>/manual/', views.api_pending_judgment_manual, name='api_pending_judgment_manual'),
     path('exam/', views.exam, name='exam'),
     path('ai-chat/', views.ai_chat_page, name='ai_chat_page'),
     path('workshop/', views.exam_workshop, name='exam_workshop'),

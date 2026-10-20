@@ -817,15 +817,24 @@
         extra = highlightDiff(els.checkInput.value, currentWord.word);
       }
     } else {
-      if (res.verdict === 'correct' || res.verdict === 'partial') {
+      if (res.verdict === 'pending_review') {
+        // 待复核：AI 暂不可用，本地无法确认 → 中性展示，绝不显示成「错误」
+        cls = 'result-pending';
+        title = '已保存，待 AI 可用后复核';
+        extra = (res.comment ? '<div class="check-comment">' + escapeHtml(res.comment) + '</div>' : '') +
+          '<div><span class="check-flag">待复核</span></div>' +
+          '<div style="margin-top:6px;"><a href="/pending-reviews/">去待复核列表 →</a></div>';
+      } else if (res.verdict === 'correct' || res.verdict === 'partial') {
         cls = 'result-correct';
         title = res.verdict === 'partial' ? '释义大致正确 ✓ 已标为「会」' : '释义正确 ✓ 已标为「会」';
+        if (res.comment) extra = '<div class="check-comment">' + escapeHtml(res.comment) + '</div>';
+        if (!res.used_ai) extra += '<div><span class="check-flag">本地判定</span></div>';
       } else {
         cls = 'result-wrong';
         title = '释义不正确，已标为「不会」';
+        if (res.comment) extra = '<div class="check-comment">' + escapeHtml(res.comment) + '</div>';
+        if (!res.used_ai) extra += '<div><span class="check-flag">本地判定</span></div>';
       }
-      if (res.comment) extra = '<div class="check-comment">' + escapeHtml(res.comment) + '</div>';
-      if (!res.used_ai) extra += '<div><span class="check-flag">本地判定</span></div>';
     }
     els.checkResult.className = 'check-result ' + cls;
     els.checkResult.innerHTML = '<div class="check-result-title">' + title + '</div>' + extra;
@@ -858,13 +867,20 @@
         return;
       }
       checked = true;
-      var ok = checkMode === 'spelling' ? res.correct : (res.verdict === 'correct' || res.verdict === 'partial');
-      counts[ok ? 'mastered' : 'unknown'] = (counts[ok ? 'mastered' : 'unknown'] || 0) + 1;
-      sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
+      var isPending = res.verdict === 'pending_review';
+      if (!isPending) {
+        // 待复核不判对也不判错：不计入会/不会，避免污染本次学习统计
+        var ok = checkMode === 'spelling' ? res.correct : (res.verdict === 'correct' || res.verdict === 'partial');
+        counts[ok ? 'mastered' : 'unknown'] = (counts[ok ? 'mastered' : 'unknown'] || 0) + 1;
+        sessionStorage.setItem('vocab-learn-counts', JSON.stringify(counts));
+      }
     persistResume();
       renderCheckResult(res);
       setMarkButtonsEnabled(false);
       els.checkSubmitBtn.textContent = '下一词';
+      if (isPending) {
+        if (typeof showToast === 'function') showToast('已保存，待 AI 可用后复核', 'success');
+      }
       if (res.auto_checked && typeof showToast === 'function') showToast('今日已背诵 30 词，自动打卡成功！', 'success');
       if (res.auto_excluded && typeof showToast === 'function') showToast('连续答对 20 次，已自动标记为「永不忘记」！', 'success');
     }).catch(function () {
@@ -1039,6 +1055,29 @@
       return;
     }
     // 第 3 步：释义默写
+    if (res.verdict === 'pending_review') {
+      // 待复核：不判对也不判错，本词本次不计入会/不会，直接进入下一词
+      var pidP = currentWord.id;
+      gateCountedAs[pidP] = 'pending';
+      gateDoneIds[pidP] = true;
+      sessionStorage.setItem('vocab-learn-gate-ids', JSON.stringify(Object.keys(gateDoneIds)));
+      passedThisAppearance = true;
+      checked = true;
+      setMarkButtonsEnabled(false);
+      els.checkSubmitBtn.textContent = '下一词';
+      var nextBtnP = document.getElementById('nextBtn');
+      if (nextBtnP) nextBtnP.disabled = false;
+      els.checkResult.className = 'check-result result-pending';
+      els.checkResult.innerHTML =
+        '<div class="check-result-title">已保存，待 AI 可用后复核（本词暂不计入会/不会）</div>' +
+        (res.comment ? '<div class="check-comment">' + escapeHtml(res.comment) + '</div>' : '') +
+        '<div style="margin-top:6px;"><a href="/pending-reviews/">去待复核列表 →</a></div>';
+      persistResume();
+      if (typeof showToast === 'function') showToast('已保存，待 AI 可用后复核', 'success');
+      if (gateAutoTimer) clearTimeout(gateAutoTimer);
+      gateAutoTimer = setTimeout(function () { gateAutoTimer = null; advance(); }, 900);
+      return;
+    }
     if (res.verdict === 'correct' || res.verdict === 'partial') {
       gatePass(res);
       return;

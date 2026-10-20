@@ -2,12 +2,15 @@ import json
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from .models import (
+    AICallLog,
     AIModel,
+    AIModelHealth,
     Cet6TranslationPassage,
     Cet6TranslationPractice,
     DailyCheckIn,
@@ -17,6 +20,7 @@ from .models import (
     GeneratedPaper,
     GeneratedQuestion,
     KnowledgeFeedback,
+    PendingJudgment,
     PickRecord,
     PickRecordWord,
     PosLearningAttempt,
@@ -38,6 +42,9 @@ from .views import (
     _get_today_task, _today_practiced_word_ids, _validate_translation_grade_result,
     _batch_error_events, _sort_bucket_with_risk_jitter,
     _build_backup_payload, _resolve_pos_learning_model_id,
+    judge_with_policy, judge_meaning_batch_with_policy, _AIRequestError,
+    AI_HEALTH_FAIL_THRESHOLD,
+    _ai_post_json, _ai_chat_once, builtin_ai_exam_call, _ai_health_status,
     compute_risk_score, RISK_TIER_LOW, RISK_TIER_MEDIUM, RISK_ERROR_ACTIONS,
 )
 
@@ -938,16 +945,38 @@ class RiskEngineTests(TestCase):
         self.assertEqual(rec.error_detail['correct'], self.w1.word)
 
     def test_meaning_check_writes_error_sample(self):
-        res = self.client.post(
-            reverse('words:api_meaning_check', args=[self.w1.id]),
-            data=json.dumps({'answer': '完全不对', 'source': 'learn'}),
-            content_type='application/json',
-        )
+        # 第八节起：只有 AI（或人工）**最终确认**的 wrong 才写错误样本；
+        # AI 不可用时落 pending_review、不判错。此处模拟 AI 确认答错。
+        AIModel.objects.create(provider='test', model_id='m', base_url='https://x/v1',
+                               api_key='k', enabled=True)
+        with patch('words.views._ai_post_json',
+                   return_value='{"verdict": "wrong", "comment": "释义不符"}'):
+            res = self.client.post(
+                reverse('words:api_meaning_check', args=[self.w1.id]),
+                data=json.dumps({'answer': '完全不对', 'source': 'learn'}),
+                content_type='application/json',
+            )
         self.assertEqual(res.status_code, 200)
         rec = StudyRecord.objects.filter(word=self.w1, action='meaning_wrong').first()
         self.assertIsNotNone(rec)
         self.assertEqual(rec.mistake_type, 'meaning')
         self.assertEqual(rec.error_detail['correct'], self.w1.get_meanings())
+
+    def test_meaning_check_pending_without_ai_writes_no_error_sample(self):
+        # AI 不可用（无模型/断网）→ 待复核，不写错误样本、不改掌握状态
+        with patch('words.views._ai_post_json',
+                   side_effect=_AIRequestError('network', '无法连接')):
+            res = self.client.post(
+                reverse('words:api_meaning_check', args=[self.w1.id]),
+                data=json.dumps({'answer': '完全不对', 'source': 'learn'}),
+                content_type='application/json',
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['verdict'], 'pending_review')
+        self.assertFalse(StudyRecord.objects.filter(word=self.w1).exists())
+        p = StudyProgress.objects.get(word=self.w1)
+        self.assertEqual(p.error_count, 0)
+        self.assertEqual(p.status, 'new')
 
     # --- 复习融合：高风险提前 ---
     def test_high_risk_reviewed_early_in_bucket(self):
@@ -1268,10 +1297,10 @@ class PosLearningTests(TestCase):
         self.assertTrue(data['idempotent'])
 
     # --- 8. 开放题 wrong 写 pos 事件 ---
-    @patch('words.views.builtin_ai_exam_call')
+    @patch('words.views._ai_judge_call')
     def test_open_grade_wrong_writes_pos_event(self, mock_call):
         mock_call.return_value = (json.dumps(
-            {'verdict': 'wrong', 'feedback': '词性用错', 'error_type': 'pos'}), None)
+            {'verdict': 'wrong', 'feedback': '词性用错', 'error_type': 'pos'}), '', '')
         q = {'type': 'open', 'target_pos': 'v.', 'prompt': '造句', 'reference': ''}
         res = self._post('words:api_pos_grade',
                          {'word_id': self.word.id, 'question': q,
@@ -1285,10 +1314,10 @@ class PosLearningTests(TestCase):
         self.assertEqual(attempt.result, 'wrong')
 
     # --- 9. 开放题 partial 不加风险 ---
-    @patch('words.views.builtin_ai_exam_call')
+    @patch('words.views._ai_judge_call')
     def test_open_grade_partial_no_event(self, mock_call):
         mock_call.return_value = (json.dumps(
-            {'verdict': 'partial', 'feedback': '基本可以'}), None)
+            {'verdict': 'partial', 'feedback': '基本可以'}), '', '')
         q = {'type': 'open', 'target_pos': 'n.', 'prompt': '造句', 'reference': ''}
         res = self._post('words:api_pos_grade',
                          {'word_id': self.word.id, 'question': q,
@@ -1296,25 +1325,39 @@ class PosLearningTests(TestCase):
         self.assertEqual(res.json()['result'], 'partial')
         self.assertFalse(StudyRecord.objects.filter(mistake_type='pos').exists())
 
-    # --- 10. 开放题 AI 越界输出 / 失败 → 整次失败零写入 ---
-    @patch('words.views.builtin_ai_exam_call')
-    def test_open_grade_invalid_verdict_zero_write(self, mock_call):
-        mock_call.return_value = (json.dumps({'verdict': 'great'}), None)
+    # --- 10. 开放题 AI 越界输出 / 失败 → 落待复核（不判错、零错误事件） ---
+    @patch('words.views._ai_judge_call')
+    def test_open_grade_invalid_verdict_pending_review(self, mock_call):
+        mock_call.return_value = (json.dumps({'verdict': 'great'}), '', '')
         q = {'type': 'open', 'target_pos': 'v.', 'prompt': '造句', 'reference': ''}
         res = self._post('words:api_pos_grade',
                          {'word_id': self.word.id, 'question': q, 'answer': 'x'})
-        self.assertEqual(res.status_code, 502)
-        self.assertFalse(PosLearningAttempt.objects.exists())
+        data = res.json()
+        self.assertTrue(data['success'])
+        self.assertEqual(data['result'], 'pending_review')
+        self.assertEqual(data['reason_code'], 'ai_invalid_output')
+        attempt = PosLearningAttempt.objects.get(word=self.word)
+        self.assertEqual(attempt.result, 'pending_review')
+        self.assertTrue(attempt.pending_review)
         self.assertFalse(StudyRecord.objects.filter(mistake_type='pos').exists())
+        self.assertFalse(StudyProgress.objects.filter(
+            word=self.word, error_count__gt=0).exists())
+        self.assertTrue(PendingJudgment.objects.filter(
+            word=self.word, kind='pos_open', resolved=False).exists())
 
-    @patch('words.views.builtin_ai_exam_call')
-    def test_open_grade_network_error_zero_write(self, mock_call):
-        mock_call.return_value = (None, '网络断开')
+    @patch('words.views._ai_judge_call')
+    def test_open_grade_network_error_pending_review(self, mock_call):
+        mock_call.return_value = (None, '网络断开', 'ai_network_error')
         q = {'type': 'open', 'target_pos': 'v.', 'prompt': '造句', 'reference': ''}
         res = self._post('words:api_pos_grade',
                          {'word_id': self.word.id, 'question': q, 'answer': 'x'})
-        self.assertEqual(res.status_code, 502)
-        self.assertFalse(PosLearningAttempt.objects.exists())
+        data = res.json()
+        self.assertTrue(data['success'])
+        self.assertEqual(data['result'], 'pending_review')
+        self.assertEqual(data['reason_code'], 'ai_network_error')
+        attempt = PosLearningAttempt.objects.get(word=self.word)
+        self.assertTrue(attempt.pending_review)
+        self.assertFalse(StudyRecord.objects.filter(mistake_type='pos').exists())
 
     # --- 11. 词族候选生成：词库外词标记 outside_word，未确认状态 ---
     @patch('words.views.builtin_ai_exam_call')
@@ -1494,10 +1537,10 @@ class PosLearningTests(TestCase):
         self.assertIsNotNone(prog.next_review)
 
     # --- 17. partial 不增加错误风险（不创建/改动 StudyProgress） ---
-    @patch('words.views.builtin_ai_exam_call')
+    @patch('words.views._ai_judge_call')
     def test_partial_does_not_touch_progress(self, mock_call):
         mock_call.return_value = (json.dumps(
-            {'verdict': 'partial', 'feedback': 'ok'}), None)
+            {'verdict': 'partial', 'feedback': 'ok'}), '', '')
         q = {'type': 'open', 'target_pos': 'n.', 'prompt': '造句', 'reference': ''}
         self._post('words:api_pos_grade',
                    {'word_id': self.word.id, 'question': q, 'answer': 'x'})
@@ -1862,3 +1905,563 @@ class PosExpandTests(TestCase):
         self.assertEqual(data['failed'], 1)
         self.word.refresh_from_db()
         self.assertEqual(self.word.get_meanings_by_pos(), {})
+
+
+class AIJudgePolicyTests(TestCase):
+    """HANDOVER 第八节：统一判定策略（本地确定层 → AI 仲裁 → 安全回退 pending_review）。
+
+    覆盖：断网/DNS、8 秒超时、401/403/404、429、5xx、非法 JSON、verdict 越界、
+    连续 3 次熔断 + 冷却后半开探测成功。断言 pending_review 绝不增 error_count、
+    不写错误知识库、不降级掌握状态。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.word = Word.objects.create(
+            word='abandon', category='required', unit=self.unit, list_number=1,
+            meanings='["放弃；抛弃"]')
+        self.model = AIModel.objects.create(
+            provider='deepseek', model_id='deepseek-chat',
+            base_url='https://api.deepseek.com/v1', api_key='sk-test', enabled=True)
+
+    def _data(self):
+        return {'model_id': self.model.id}
+
+    def _raising(self, category, message='失败'):
+        def _fake(cfg, payload, timeout):
+            raise _AIRequestError(category, message)
+        return patch('words.views._ai_post_json', side_effect=_fake)
+
+    def _assert_pending(self, policy, reason_code):
+        self.assertEqual(policy['verdict'], 'pending_review')
+        self.assertFalse(policy['is_final'])
+        self.assertEqual(policy['source'], 'pending')
+        self.assertEqual(policy['reason_code'], reason_code)
+
+    def _assert_no_error_side_effects(self):
+        self.assertFalse(StudyRecord.objects.filter(word=self.word).exists())
+        self.assertFalse(KnowledgeFeedback.objects.exists())
+        progress = StudyProgress.objects.filter(word=self.word).first()
+        self.assertTrue(progress is None or progress.error_count == 0)
+
+    # --- 1. 空答：确定性题本地立即判定，不出网 ---
+    def test_blank_answer_local_deterministic(self):
+        with patch('words.views._ai_post_json', side_effect=AssertionError('不应出网')):
+            policy = judge_with_policy(self.word, '   ', self._data())
+        self.assertEqual(policy['verdict'], 'wrong')
+        self.assertEqual(policy['source'], 'local_exact')
+        self.assertTrue(policy['is_final'])
+
+    # --- 2. 断网 / DNS 失败 → pending_review，无错误副作用 ---
+    def test_network_failure_pending_no_side_effects(self):
+        with self._raising('network', '无法连接 AI 服务'):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self._assert_pending(policy, 'ai_network_error')
+        self._assert_no_error_side_effects()
+
+    # --- 3. 8 秒超时 → pending_review + ai_timeout ---
+    def test_timeout_pending(self):
+        with self._raising('timeout', 'AI 请求超时'):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self._assert_pending(policy, 'ai_timeout')
+
+    # --- 4. 401/403/404 配置错误：不重试，直接 pending ---
+    def test_config_error_no_retry(self):
+        calls = []
+
+        def _fake(cfg, payload, timeout):
+            calls.append(timeout)
+            raise _AIRequestError('config', '密钥或权限无效 (HTTP 401)')
+
+        with patch('words.views._ai_post_json', side_effect=_fake):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self._assert_pending(policy, 'ai_config_error')
+        self.assertEqual(len(calls), 1)  # 配置错误不重试
+        self.assertEqual(calls[0], 8)    # 判定专用 8 秒短超时
+
+    # --- 5. 429/5xx 可用性失败：最多快速重试一次 ---
+    def test_server_error_retries_once(self):
+        calls = []
+
+        def _fake(cfg, payload, timeout):
+            calls.append(1)
+            raise _AIRequestError('server', '服务端错误 (HTTP 500)')
+
+        with patch('words.views._ai_post_json', side_effect=_fake):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self._assert_pending(policy, 'ai_server_error')
+        self.assertEqual(len(calls), 2)
+
+    # --- 6. 返回非 JSON / verdict 越界 → ai_invalid_output ---
+    def test_invalid_output_pending(self):
+        with patch('words.views._ai_post_json', return_value='这不是 JSON'):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self._assert_pending(policy, 'ai_invalid_output')
+
+        with patch('words.views._ai_post_json',
+                   return_value='{"verdict": "great", "comment": "x"}'):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self._assert_pending(policy, 'ai_invalid_output')
+
+    # --- 7. 连续 3 次可用性失败 → 熔断；熔断期不出网 ---
+    def test_circuit_opens_after_three_failures(self):
+        with self._raising('network'):
+            for _ in range(AI_HEALTH_FAIL_THRESHOLD):
+                judge_with_policy(self.word, '坚持', self._data())
+        health = AIModelHealth.objects.get(model=self.model)
+        self.assertIsNotNone(health.circuit_open_until)
+        self.assertGreaterEqual(health.fail_streak, AI_HEALTH_FAIL_THRESHOLD)
+
+        with patch('words.views._ai_post_json', side_effect=AssertionError('熔断期不应出网')):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self._assert_pending(policy, 'ai_circuit_open')
+
+    # --- 8. 冷却结束后的半开探测成功 → 熔断关闭、计数清零 ---
+    def test_half_open_probe_success_closes_circuit(self):
+        with self._raising('network'):
+            for _ in range(AI_HEALTH_FAIL_THRESHOLD):
+                judge_with_policy(self.word, '坚持', self._data())
+        health = AIModelHealth.objects.get(model=self.model)
+        health.circuit_open_until = timezone.now() - timedelta(seconds=1)
+        health.save()
+
+        with patch('words.views._ai_post_json',
+                   return_value='{"verdict": "wrong", "comment": "释义不符"}'):
+            policy = judge_with_policy(self.word, '坚持', self._data())
+        self.assertEqual(policy['verdict'], 'wrong')
+        self.assertEqual(policy['source'], 'ai')
+        health.refresh_from_db()
+        self.assertIsNone(health.circuit_open_until)
+        self.assertEqual(health.fail_streak, 0)
+
+
+class PendingJudgmentTests(TestCase):
+    """HANDOVER 第八节相位 3：待复核队列、人工改判、幂等补判、备份往返。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.word = Word.objects.create(
+            word='abandon', category='required', unit=self.unit, list_number=1,
+            meanings='["放弃；抛弃"]')
+        self.model = AIModel.objects.create(
+            provider='deepseek', model_id='deepseek-chat',
+            base_url='https://api.deepseek.com/v1', api_key='sk-test', enabled=True)
+
+    def _raising(self, category='network'):
+        def _fake(cfg, payload, timeout):
+            raise _AIRequestError(category, '失败')
+        return patch('words.views._ai_post_json', side_effect=_fake)
+
+    def _make_pending(self, answer='坚持'):
+        """走真实接口造一条待复核记录（AI 不可用）。"""
+        with self._raising():
+            return self.client.post(
+                reverse('words:api_meaning_check', args=[self.word.id]),
+                data=json.dumps({'answer': answer, 'source': 'learn'}),
+                content_type='application/json')
+
+    def _post(self, url_name, body, **kwargs):
+        return self.client.post(
+            reverse(url_name, kwargs=kwargs or None),
+            data=json.dumps(body), content_type='application/json')
+
+    # --- 1. 释义默写 pending：不判错、不改掌握状态、今日不记错 ---
+    def test_meaning_check_pending_no_wrong(self):
+        res = self._make_pending()
+        body = res.json()
+        self.assertTrue(body['success'])
+        self.assertEqual(body['verdict'], 'pending_review')
+        self.assertEqual(body['reason_code'], 'ai_network_error')
+        progress = StudyProgress.objects.get(word=self.word)
+        self.assertEqual(progress.error_count, 0)
+        self.assertEqual(progress.status, 'new')
+        self.assertFalse(StudyRecord.objects.exists())
+        self.assertEqual(PendingJudgment.objects.filter(
+            word=self.word, kind='meaning', resolved=False).count(), 1)
+        checkin = DailyCheckIn.objects.get(date=timezone.localdate())
+        self.assertEqual(checkin.today_wrong, 0)
+        self.assertEqual(checkin.today_correct, 0)
+
+    # --- 2. 页面重复提交同一 pending 题：不产生重复记录 ---
+    def test_duplicate_submit_single_pending_record(self):
+        self._make_pending()
+        self._make_pending()
+        self.assertEqual(PendingJudgment.objects.filter(
+            word=self.word, kind='meaning').count(), 1)
+
+    # --- 3. 人工改判（优先级最高）：立即生效且只写一次 ---
+    def test_manual_verdict_writes_once(self):
+        self._make_pending()
+        pj = PendingJudgment.objects.get(word=self.word)
+        first = self._post('words:api_pending_judgment_manual',
+                           {'verdict': 'wrong'}, pj_id=pj.id)
+        self.assertTrue(first.json()['success'])
+        second = self._post('words:api_pending_judgment_manual',
+                            {'verdict': 'wrong'}, pj_id=pj.id)
+        self.assertTrue(second.json()['success'])
+        progress = StudyProgress.objects.get(word=self.word)
+        self.assertEqual(progress.error_count, 1)
+        self.assertEqual(StudyRecord.objects.filter(
+            word=self.word, action='meaning_wrong').count(), 1)
+        pj.refresh_from_db()
+        self.assertTrue(pj.resolved)
+        self.assertTrue(pj.applied)
+        self.assertEqual(pj.final_verdict, 'wrong')
+        self.assertEqual(pj.resolved_by, 'manual')
+
+    # --- 4. 连接恢复后补判：幂等只落库一次 ---
+    def test_rejudge_idempotent(self):
+        self._make_pending()
+        pj = PendingJudgment.objects.get(word=self.word)
+        with patch('words.views._ai_post_json',
+                   return_value='{"verdict": "correct", "comment": "与标准释义一致"}'):
+            res = self._post('words:api_pending_judgment_rejudge', {}, pj_id=pj.id)
+            self.assertTrue(res.json()['success'])
+            self.assertEqual(res.json()['result'], 'correct')
+            # 再次补判：已复核，直接返回，不重复写学习记录
+            res2 = self._post('words:api_pending_judgment_rejudge', {}, pj_id=pj.id)
+        self.assertTrue(res2.json().get('idempotent'))
+        progress = StudyProgress.objects.get(word=self.word)
+        self.assertEqual(progress.status, 'mastered')
+        self.assertEqual(progress.meaning_correct, 1)
+        self.assertEqual(StudyRecord.objects.filter(
+            word=self.word, action='meaning_ok').count(), 1)
+        self.assertEqual(PendingJudgment.objects.filter(resolved=False).count(), 0)
+
+    # --- 5. 熔断期间补判：保持待复核，不误判错 ---
+    def test_rejudge_stays_pending_when_circuit_open(self):
+        self._make_pending()
+        pj = PendingJudgment.objects.get(word=self.word)
+        with patch('words.views._ai_judge_call',
+                   return_value=(None, '', 'ai_circuit_open')):
+            res = self._post('words:api_pending_judgment_rejudge', {}, pj_id=pj.id)
+        body = res.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body['result'], 'pending_review')
+        self.assertEqual(body['reason_code'], 'ai_circuit_open')
+        self.assertFalse(StudyRecord.objects.exists())
+
+    # --- 6. 列表接口 + 批量补判 ---
+    def test_list_and_rejudge_all(self):
+        self._make_pending()
+        listing = self.client.get(reverse('words:api_pending_judgments')).json()
+        self.assertEqual(listing['count'], 1)
+        self.assertEqual(listing['items'][0]['kind'], 'meaning')
+        self.assertNotIn('api_key', json.dumps(listing))
+
+        with patch('words.views._ai_post_json',
+                   return_value='{"verdict": "wrong", "comment": "释义不符"}'):
+            res = self._post('words:api_pending_judgment_rejudge_all', {})
+        body = res.json()
+        self.assertEqual(body['resolved'], 1)
+        self.assertEqual(body['remaining'], 0)
+        self.assertEqual(StudyRecord.objects.filter(
+            word=self.word, action='meaning_wrong').count(), 1)
+
+    # --- 7. 备份往返：待复核导出/恢复；健康状态不导出 ---
+    def test_backup_roundtrip_pending_without_health(self):
+        self._make_pending()
+        AIModelHealth.objects.get_or_create(model=self.model)
+        payload = _build_backup_payload(UserSettings.get_settings())
+        self.assertIn('pending_judgments', payload)
+        self.assertEqual(len(payload['pending_judgments']), 1)
+        self.assertEqual(payload['pending_judgments'][0]['word'], self.word.word)
+        # 健康状态是运行时数据，刻意不随备份导出
+        self.assertEqual([k for k in payload if 'health' in k.lower()], [])
+
+        PendingJudgment.objects.all().delete()
+        res = self.client.post(reverse('words:api_restore'),
+                               data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(res.status_code, 200)
+        restored = PendingJudgment.objects.get()
+        self.assertEqual(restored.word, self.word)
+        self.assertEqual(restored.kind, 'meaning')
+        self.assertEqual(restored.reason_code, 'ai_network_error')
+        self.assertFalse(restored.resolved)
+
+
+class ExamPendingReviewTests(TestCase):
+    """HANDOVER 第八节：模拟考中的待复核题不计对错、不写进度，交卷后进待复核队列。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.word = Word.objects.create(
+            word='abandon', category='required', unit=self.unit, list_number=1,
+            meanings='["放弃；抛弃"]')
+        AIModel.objects.create(provider='deepseek', model_id='deepseek-chat',
+                               base_url='https://api.deepseek.com/v1',
+                               api_key='sk-test', enabled=True)
+
+    def test_exam_pending_not_counted_wrong(self):
+        session = self.client.session
+        session['exam_questions'] = [{'id': self.word.id, 'type': 'meaning'}]
+        session['exam_judgments'] = {str(self.word.id): {
+            'answer': '坚持', 'verdict': 'pending_review',
+            'comment': '已保存，待 AI 可用后复核', 'source': 'pending',
+            'reason_code': 'ai_circuit_open', 'is_final': False}}
+        session['exam_direction'] = 'meaning'
+        session.save()
+
+        res = self.client.post(
+            reverse('words:api_exam_submit'),
+            data=json.dumps({'answers': [{'word_id': self.word.id, 'answer': '坚持'}]}),
+            content_type='application/json')
+        body = res.json()
+        self.assertTrue(body['success'])
+        self.assertEqual(body['pending_count'], 1)
+        self.assertEqual(body['correct_count'], 0)
+        self.assertEqual(body['wrong_count'], 0)
+        self.assertEqual(body['correct_rate'], 0)
+        self.assertEqual(body['meaning_judge_stats']['pending'], 1)
+        self.assertTrue(body['results'][0]['pending'])
+        self.assertFalse(body['results'][0]['correct'])
+        # 不写进度、不写学习记录、今日不计错
+        self.assertFalse(StudyProgress.objects.filter(word=self.word).exists())
+        self.assertFalse(StudyRecord.objects.exists())
+        checkin = DailyCheckIn.objects.get(date=timezone.localdate())
+        self.assertEqual(checkin.today_wrong, 0)
+        self.assertEqual(checkin.today_correct, 0)
+        self.assertEqual(PendingJudgment.objects.filter(
+            word=self.word, kind='exam_meaning', resolved=False).count(), 1)
+
+
+class _FakeHTTPResponse:
+    """urlopen 返回值替身：注入任意响应体，用于验证畸形 2xx 的分类。"""
+
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class AIApiCallReviewTests(TestCase):
+    """HANDOVER 第十一节：AI API 调用审查修复验收。
+
+    P1-1 畸形 2xx 响应收口为 invalid（判定降级 pending_review、探活可读 502、生成记失败）；
+    P1-2 生成调用同样走熔断门禁，手动探活可显式绕过并清除熔断；
+    P1-3 待复核去重有数据库部分唯一约束，并发 / 重发只留一条未复核；
+    P2-1 invalid 不计入可用性失败，不误触发熔断。"""
+
+    def setUp(self):
+        self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
+        self.word = Word.objects.create(
+            word='abandon', category='required', unit=self.unit, list_number=1,
+            meanings='["放弃；抛弃"]')
+        self.model = AIModel.objects.create(
+            provider='deepseek', model_id='deepseek-chat',
+            base_url='https://api.deepseek.com/v1', api_key='sk-test', enabled=True)
+
+    def _cfg(self):
+        return {'id': self.model.id, 'model_id': self.model.model_id,
+                'base_url': self.model.base_url, 'endpoint': '', 'api_key': 'sk-test'}
+
+    def _post(self, url_name, body, **kwargs):
+        return self.client.post(
+            reverse(url_name, kwargs=kwargs or None),
+            data=json.dumps(body), content_type='application/json')
+
+    def _ok_body(self, content):
+        return json.dumps({'choices': [{'message': {'content': content}}]}).encode('utf-8')
+
+    def _health_status(self):
+        """按主键重新取模型再取健康状态：避免实例上的 related 对象缓存读到旧值。"""
+        return _ai_health_status(AIModel.objects.get(pk=self.model.pk))
+
+    # --- P1-1：畸形 2xx 不得冲出判定策略，也不得 500 ---
+    def test_malformed_2xx_body_classified_invalid_without_500(self):
+        bad_bodies = [
+            ('html', b'<html><body>502 Bad Gateway</body></html>'),
+            ('not_object', b'[]'),
+            ('no_choices', b'{}'),
+            ('empty_choices', b'{"choices": []}'),
+            ('null_choices', b'{"choices": null}'),
+            ('null_first', b'{"choices": [null]}'),
+            ('no_message', b'{"choices": [{}]}'),
+            ('no_content', b'{"choices": [{"message": {}}]}'),
+            ('empty_content', b'{"choices": [{"message": {"content": "   "}}]}'),
+        ]
+        for name, body in bad_bodies:
+            with self.subTest(name=name):
+                with patch('words.views.urllib.request.urlopen',
+                           return_value=_FakeHTTPResponse(body)):
+                    policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
+                self.assertEqual(policy['verdict'], 'pending_review')
+                self.assertEqual(policy['reason_code'], 'ai_invalid_output')
+                self.assertFalse(policy['is_final'])
+        self.assertFalse(StudyRecord.objects.exists())
+        self.assertFalse(StudyProgress.objects.filter(error_count__gt=0).exists())
+
+    def test_malformed_2xx_body_raises_invalid_category(self):
+        for body in (b'<html>', b'{}', b'{"choices": null}'):
+            with self.subTest(body=body):
+                with patch('words.views.urllib.request.urlopen',
+                           return_value=_FakeHTTPResponse(body)):
+                    with self.assertRaises(_AIRequestError) as ctx:
+                        _ai_post_json(self._cfg(), {'model': 'm'}, 8)
+                self.assertEqual(ctx.exception.category, 'invalid')
+
+    def test_exam_judge_malformed_returns_pending_not_500(self):
+        session = self.client.session
+        session['exam_questions'] = [{'id': self.word.id, 'type': 'meaning'}]
+        session.save()
+        with patch('words.views.urllib.request.urlopen',
+                   return_value=_FakeHTTPResponse(b'<html>502</html>')):
+            res = self._post('words:api_exam_judge_meaning',
+                             {'word_id': self.word.id, 'answer': '坚持'})
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body['success'])
+        self.assertEqual(body['verdict'], 'pending_review')
+        self.assertEqual(body['reason_code'], 'ai_invalid_output')
+
+    # --- P1-1：探活畸形响应返回可读 502（不是 500） ---
+    def test_ai_test_malformed_response_returns_502(self):
+        with patch('words.views.urllib.request.urlopen',
+                   return_value=_FakeHTTPResponse(b'not json at all')):
+            res = self._post('words:api_ai_test', {'model_id': self.model.id})
+        self.assertEqual(res.status_code, 502)
+        self.assertIn('接口响应异常', res.json()['error'])
+        health = AIModelHealth.objects.get(model=self.model)
+        self.assertEqual(health.last_failure_category, 'invalid')
+        self.assertIsNone(health.circuit_open_until)
+
+    def test_ai_test_allows_structural_ok_empty_content_ping(self):
+        # max_tokens=1 的探活允许 content 为空，只要响应结构合法
+        body = json.dumps({'choices': [{'message': {'content': ''}}]}).encode('utf-8')
+        with patch('words.views.urllib.request.urlopen',
+                   return_value=_FakeHTTPResponse(body)):
+            res = self._post('words:api_ai_test', {'model_id': self.model.id})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()['success'])
+
+    # --- P1-1：生成调用空内容 / 非法响应必须记失败 ---
+    def test_generation_malformed_or_empty_records_failure(self):
+        for body in (b'<html>', b'{}', b'{"choices": [{"message": {"content": "  "}}]}'):
+            with self.subTest(body=body):
+                with patch('words.views.urllib.request.urlopen',
+                           return_value=_FakeHTTPResponse(body)):
+                    content, err = builtin_ai_exam_call('提示词', data={'model_id': self.model.id})
+                self.assertIsNone(content)
+                self.assertTrue(err)
+        self.assertFalse(AICallLog.objects.filter(success=True).exists())
+        self.assertGreaterEqual(AICallLog.objects.filter(success=False).count(), 3)
+
+    # --- P1-2：生成调用走熔断门禁；手动探活可绕过并清除熔断 ---
+    def test_circuit_blocks_generation_and_manual_probe_clears_it(self):
+        for _ in range(AI_HEALTH_FAIL_THRESHOLD):
+            with patch('words.views._ai_post_json',
+                       side_effect=_AIRequestError('network', '断网')):
+                judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
+        self.assertIsNotNone(AIModelHealth.objects.get(model=self.model).circuit_open_until)
+
+        # 生成调用 / 后台生成调用都不再出网，快速返回可读冷却错误
+        with patch('words.views.urllib.request.urlopen',
+                   side_effect=AssertionError('熔断期不应出网')):
+            content, err = builtin_ai_exam_call('提示词', data={'model_id': self.model.id})
+            self.assertIsNone(content)
+            self.assertIn('ai_circuit_open', err)
+            with self.assertRaises(_AIRequestError) as ctx:
+                _ai_chat_once(self._cfg(), '提示词')
+            self.assertEqual(ctx.exception.category, 'circuit')
+
+        # 手动探活是显式连接测试：绕过门禁，成功即清除熔断
+        with patch('words.views.urllib.request.urlopen',
+                   return_value=_FakeHTTPResponse(self._ok_body('pong'))):
+            res = self._post('words:api_ai_test', {'model_id': self.model.id})
+        self.assertEqual(res.status_code, 200)
+        health = AIModelHealth.objects.get(model=self.model)
+        self.assertIsNone(health.circuit_open_until)
+        self.assertEqual(health.fail_streak, 0)
+
+        # 熔断清除后生成调用恢复出网
+        with patch('words.views.urllib.request.urlopen',
+                   return_value=_FakeHTTPResponse(self._ok_body('恢复可用'))):
+            content2, err2 = builtin_ai_exam_call('提示词', data={'model_id': self.model.id})
+        self.assertEqual(content2, '恢复可用')
+        self.assertIsNone(err2)
+
+    # --- P2-1：invalid 只记输出质量问题，不误触发熔断 ---
+    def test_repeated_invalid_output_does_not_open_circuit(self):
+        for _ in range(AI_HEALTH_FAIL_THRESHOLD + 2):
+            with patch('words.views.urllib.request.urlopen',
+                       return_value=_FakeHTTPResponse(b'not json')):
+                policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
+            self.assertEqual(policy['reason_code'], 'ai_invalid_output')
+        health = AIModelHealth.objects.get(model=self.model)
+        self.assertIsNone(health.circuit_open_until)
+        self.assertEqual(health.fail_streak, 0)
+        self.assertEqual(health.last_failure_category, 'invalid')
+        self.assertEqual(self._health_status()['state'], 'output_error')
+        self.assertEqual(self._health_status()['label'], '输出异常')
+
+        # 连接其实可用：随后一次合法响应即可正常判定（未被熔断挡住）
+        with patch('words.views.urllib.request.urlopen',
+                   return_value=_FakeHTTPResponse(
+                       self._ok_body('{"verdict": "wrong", "comment": "释义不符"}'))):
+            policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
+        self.assertEqual(policy['verdict'], 'wrong')
+        self.assertEqual(self._health_status()['state'], 'available')
+
+    def test_network_failures_still_open_circuit(self):
+        for _ in range(AI_HEALTH_FAIL_THRESHOLD):
+            with patch('words.views._ai_post_json',
+                       side_effect=_AIRequestError('timeout', '超时')):
+                judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
+        health = AIModelHealth.objects.get(model=self.model)
+        self.assertIsNotNone(health.circuit_open_until)
+        self.assertGreaterEqual(health.fail_streak, AI_HEALTH_FAIL_THRESHOLD)
+        self.assertEqual(self._health_status()['state'], 'cooling')
+
+    # --- P1-3：待复核去重的数据库部分唯一约束 ---
+    def test_open_pending_rows_are_unique_per_key(self):
+        key = 'meaning:learn:meaning:%d:abcdef0123456789' % self.word.id
+        PendingJudgment.objects.create(
+            word=self.word, kind='meaning', dedupe_key=key, user_answer='第一次')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                PendingJudgment.objects.create(
+                    word=self.word, kind='meaning', dedupe_key=key, user_answer='第二次')
+        self.assertEqual(PendingJudgment.objects.filter(resolved=False).count(), 1)
+
+    def test_resolved_row_frees_dedupe_key(self):
+        payload = {'answer': '坚持', 'source': 'learn', 'mode': 'meaning'}
+        with patch('words.views._ai_post_json',
+                   side_effect=_AIRequestError('network', '断网')):
+            first = self._post('words:api_meaning_check', payload, word_id=self.word.id)
+        self.assertEqual(first.json()['verdict'], 'pending_review')
+        pj = PendingJudgment.objects.get()
+        self.assertTrue(pj.dedupe_key)  # 会落到稳定去重键（非答案文本）
+
+        # 人工改判 → 该记录关闭；再次不可用时允许新建一条独立审计记录
+        manual = self._post('words:api_pending_judgment_manual',
+                            {'verdict': 'wrong'}, pj_id=pj.id)
+        self.assertTrue(manual.json()['success'])
+        pj.refresh_from_db()
+        self.assertTrue(pj.resolved)
+
+        with patch('words.views._ai_post_json',
+                   side_effect=_AIRequestError('network', '断网')):
+            second = self._post('words:api_meaning_check', payload, word_id=self.word.id)
+        self.assertEqual(second.json()['verdict'], 'pending_review')
+        self.assertEqual(PendingJudgment.objects.filter(resolved=False).count(), 1)
+        self.assertEqual(PendingJudgment.objects.count(), 2)
+
+    def test_duplicate_resend_reuses_same_open_record(self):
+        payload = {'answer': '坚持', 'source': 'learn', 'mode': 'meaning'}
+        with patch('words.views._ai_post_json',
+                   side_effect=_AIRequestError('network', '断网')):
+            first = self._post('words:api_meaning_check', payload, word_id=self.word.id)
+            second = self._post('words:api_meaning_check', payload, word_id=self.word.id)
+        self.assertEqual(first.json()['pending_id'], second.json()['pending_id'])
+        self.assertEqual(PendingJudgment.objects.count(), 1)
+        # 最终只写一次学习记录
+        pj = PendingJudgment.objects.get()
+        self._post('words:api_pending_judgment_manual', {'verdict': 'wrong'}, pj_id=pj.id)
+        self._post('words:api_pending_judgment_manual', {'verdict': 'wrong'}, pj_id=pj.id)
+        self.assertEqual(StudyRecord.objects.filter(action='meaning_wrong').count(), 1)

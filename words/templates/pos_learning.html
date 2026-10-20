@@ -351,6 +351,13 @@ async function submitOpen() {
     resultBox.textContent = data.error || '判定失败';
     return;
   }
+  if (data.result === 'pending_review') {
+    // AI 暂不可用：本题落待复核，不计对错、不影响掌握状态
+    resultBox.style.color = 'var(--c-blue)';
+    resultBox.innerHTML = '⏳ 已保存，待 AI 可用后复核（本题不计对错）' +
+      '<div style="margin-top:4px;"><a href="/pending-reviews/">去待复核列表 →</a></div>';
+    return;
+  }
   const label = data.result === 'correct' ? '✓ 正确' : data.result === 'partial' ? '△ 部分正确' : '✗ 错误';
   resultBox.style.color = data.result === 'correct' ? 'var(--c-green)' : data.result === 'partial' ? 'var(--c-amber, #d97706)' : 'var(--c-red)';
   resultBox.textContent = label + (data.feedback ? '：' + data.feedback : '');

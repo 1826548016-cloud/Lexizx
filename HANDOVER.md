@@ -1,7 +1,7 @@
 # Lexizx 交接文档
 
 > 面向接手开发的技术人员与 Agent。读完本文件（约 5 分钟）即可动工。
-> 更新日期：2026-10-18 ｜ 仓库：https://github.com/1826548016-cloud/Lexizx
+> 更新日期：2026-10-20｜仓库：https://github.com/1826548016-cloud/Lexizx
 
 ## 一、这是什么
 
@@ -18,7 +18,7 @@ python manage.py runserver          # http://127.0.0.1:8000/
 测试（内存库，不碰开发库）：
 
 ```powershell
-python manage.py test words.tests --settings=vocab_project.test_settings   # 当前 109 项通过
+python manage.py test words.tests --settings=vocab_project.test_settings   # 当前 138 项通过
 python manage.py check
 python manage.py makemigrations --check --dry-run
 ```
@@ -40,7 +40,7 @@ python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath pro
 | `words/views.py` | 页面/API 视图与大部分业务逻辑（文件很大，先定位专题再改，勿无关重构） |
 | `words/ai_prompts.py`、`words/ai_exam_prompts.py` | AI 提示词 |
 | `words/templates/`、`words/static/` | 模板与前端资源（静态引用带 `?v=` 版本戳防缓存） |
-| `words/migrations/` | 迁移，当前最新 `0057_wordfamilymember_meaning` |
+| `words/migrations/` | 迁移，当前最新 `0059_pendingjudgment_dedupe_key_and_more` |
 | `product/launch.py`、`product/word.spec` | 桌面版入口与 PyInstaller 配置 |
 | `docs/USER_GUIDE.md` | 用户使用说明 |
 
@@ -74,67 +74,3 @@ python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath pro
 3. 清理可再生文件：`product/build/`、根目录 `build/`、`dist/`、各级 `__pycache__/`、`*.pyc`；保留 `product/dist/word.exe`。
 4. commit / push / 打包 / 发 Release 均需维护者明确指令，不擅自执行。
 5. 多 Agent 协作：动工前先读状态登记最新一条 + 核对代码真实现状（文档可能滞后）；接口即契约，不擅自扩大范围；确需偏离先在登记区写明理由。
-
-## 六、当前状态（2026-10-18）
-
-- **最新提交**：`a354402`「优化了一些有用的功能」（已推送 origin/main；工作区干净）。
-- **最新迁移**：`0057_wordfamilymember_meaning`（0053~0057 需 `migrate` 后生效）。
-- **最新产物**：`product/dist/word.exe`（2026-10-18 18:12、61,561,178 字节），含全部最新修复；**GitHub Release 上的 v3.4.1 是旧包**（有备份导入 2.5MB 上限 + 恢复时间戳丢失两个问题），待维护者确认版本号后发布新版替换。
-- **测试**：109 项全部通过。
-- **待开发**：个人「下一错误」预测器与词性能力升级（方案曾在旧版交接文档第十三节，需要时从 git 历史 `2707e8d^` 之前的 HANDOVER.md 取回原文）。
-- **功能专题状态**：错误知识库/风险评分 ✅、AI 词性与词族教学 ✅、今日自选（AI 扩展词性、选词记录快照）✅、复习自选 ✅、去批次化 ✅、词族变式展示（背诵页+详情页，生成即入库）✅、备份恢复时间戳与体积上限 ✅。
-
-## 七、状态登记
-
-> 新记录追加在**本区最上方**（最新在前）。格式见第五节。保留最近约 10 条，更早的并入归档摘要。
-
-#### 2026-10-18 ｜ 交接文档重构为快速上手版 + 提交推送
-
-`文档` · Agent
-
-按用户要求将 824 行的交接文档重构为面向技术人员/Agent 的快速上手版（概况/快速开始/架构地图/红线约束/协作规范/当前状态），历史方案细节收敛（可从 git 历史取回）；README 新增「关于本项目」（前期手搓框架、后期 AI 工具协作、欢迎二创）；HANDOVER.md 移出 .gitignore 随仓库公开。提交 `a354402` 已推送。数据库 `db.sqlite3`、`backups/`、`media/` 保持 gitignore 不上传。
-
-#### 2026-10-18 ｜ 修复「备份无法导入」：请求体超 Django 默认 2.5MB 上限
-
-`修改 + 打包` · Agent
-
-根因：前端以 JSON 请求体提交整份备份到 `/api/restore/`，Django 默认 `DATA_UPLOAD_MAX_MEMORY_SIZE`=2.5MB，当前备份已达 2.96MB（1941 词/7113 明细），超限抛 `RequestDataTooBig` 导致恢复 400。修复：`settings.py` 设 `DATA_UPLOAD_MAX_MEMORY_SIZE = 200MB`；新增 `RestoreUploadLimitTests` 回归（3MB 请求体断言 200）。全量 109 项测试通过。打包 `word.exe`（18:12、61,561,178 字节）。旧格式（v1.0/v2.0）备份兼容行为不变（缺 `words` 词库本体时按原提示跳过）。
-
-#### 2026-10-18 ｜ 排查「空库恢复旧备份后今日背诵显示全部历史单词」
-
-`排查 + 测试` · Agent
-
-结论：当前代码已修复，无需改产品代码。根因：v3.4.0/v3.4.1 恢复备份时 `StudyRecord` 不写回 `created_at`（全部记为恢复当天），「今日已背」集合（`_today_practiced_word_ids`）按该时间取词导致历史词误计。修复于 10-16 `e7a96c7` 进入代码（逐条写回原始时间，缺时间戳跳过并提示）。真实备份空库往返验证：今日新学 0、复习 3、明细 4（均为本就属于今天的数据）；日期回退 4 天模拟旧备份后今日三项均为 0。新增 `RestoreBackupTimestampTests` 2 条回归。注意：从已被旧版污染过的库导出的备份时间已定型，无法还原。
-
-#### 2026-10-18 ｜ 当日开发汇总（Bugbot 修复 + 快捷键/自选状态 + 词族变式）
-
-`修改` · Agent
-
-1. 第十九节 Bugbot P1/P2 全完成：词性答错接入错误知识库（`_apply_wrong_progress`，与考试错题同口径）；`pos_learning_model`、`PickRecord`、`KnowledgeFeedback` 稳定引用纳入备份；词族候选 key 规范化 + 并发冲突转可读响应；载入选词记录前先 rollover；复习自选排序改 `unit__number + list_number`。
-2. 默写模式 ← → 翻词修复（箭头键处理提到输入框焦点守卫之前）；今日自选开始背诵可选状态（全部/不会/已掌握，`scope=daily` 时 `state` 过滤）。
-3. 「词性」按钮恒可点击；背诵页/详情页新增词族变式展示（GET `api_word_family_get`）。
-4. 词族变式带汉语释义 + 生成即入库：`WordFamilyMember.meaning`（迁移 0057），AI 输出中文释义并落库，生成时 `confirm=1` 直接当正式数据（不再走人工确认队列）。
-
-验证：106 项测试通过；浏览器实测 ← → 翻词与词族变式（含释义）正常。迁移 0057 已应用开发库。
-
-### 归档：更早的状态登记（摘要）
-
-| 日期 | 内容 | 结论 |
-| --- | --- | --- |
-| 10-17 | 第十四～十八节打包 | `word.exe`（10-17 13:40），已被 10-18 产物取代 |
-| 10-17 | 第十八节 选词记录快照 CRUD | 完成（90 项测试），迁移 0056 |
-| 10-17 | 审查第十四～十七节 + 修回归 | 完成（83 项测试） |
-| 10-17 | 第十七节 今日自选独立一级入口 | 完成 |
-| 10-17 | 第十六节 复习自选（升级今日已背页） | 完成 |
-| 10-17 | 第十五节 彻底去批次化 | 完成，含 test_settings 修复 |
-| 10-17 | 第十四节 今日自选 AI 扩展词性 | 完成 |
-| 10-17 | 第十二节 AI 词性/词族/构词法教学 | 完成，迁移 0055 |
-| 10-16 | 错误知识库第 1+2 期（风险引擎/手动覆盖） | 完成，迁移 0053/0054 |
-| 10-16 | 第十三节「下一错误」预测器方案 | **待开发** |
-| 10-15 | 恢复备份保留 `StudyRecord.created_at` | 完成（35 项测试） |
-| 10-15 | 打包产物移入 `product/` | 完成 |
-| 10-13 | 删除 API 密钥加密，本机明文存储 | 完成 |
-| 10-12 | 统一今日计划与复习计划规则 | 完成 |
-| 10-12 | 今日已背重复练习 | 完成 |
-
-<!-- 新记录请插到「七、状态登记」区最上方；更早记录并入上表 -->
