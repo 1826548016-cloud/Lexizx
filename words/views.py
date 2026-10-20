@@ -1017,6 +1017,7 @@ def settings_page(request):
         'settings': settings_obj,
         'ai_models': ai_models,
         'app_version': 'v' + settings.APP_VERSION,
+        'app_version_note': getattr(settings, 'APP_VERSION_NOTE', ''),
     })
 
 

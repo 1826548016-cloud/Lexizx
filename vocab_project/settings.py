@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 
 # 应用版本号（检查更新、关于页展示统一引用此处）
-APP_VERSION = '3.4.1'
+APP_VERSION = '3.4.5'
+
+# 本版更新说明（关于页「版本」卡片下方展示；发布 Release 时同步写入说明）
+APP_VERSION_NOTE = '解决了些bug优化了一些功能'
 
 # 软件使用、隐私、知识产权及二次创作声明版本（用发布日期标识）：首次使用需同意，声明修订后老用户需重新确认
 PRIVACY_VERSION = '2026-10-04'
