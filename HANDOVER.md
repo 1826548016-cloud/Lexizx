@@ -7,7 +7,7 @@
 
 考研英语学习 Windows 桌面应用（Django + SQLite + pywebview，PyInstaller 打包单文件 exe）。本机单用户、无注册、数据全在本机。核心功能：词汇背诵/复习（掌握状态机 + 间隔复习）、真题模拟考、英语一长难句翻译、六级汉译英、AI 组卷与 AI 学习助手（用户自配 OpenAI 兼容接口的模型，18 家预设）。
 
-## 二、快速开始
+## 二、快速开始。
 
 ```powershell
 pip install -r requirements.txt
