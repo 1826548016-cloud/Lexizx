@@ -13,7 +13,9 @@ import urllib.error
 import base64
 import math
 import socket
+import xml.etree.ElementTree as ET
 from datetime import date, timedelta, datetime
+from html import unescape
 from io import BytesIO
 
 from django.conf import settings
@@ -3062,6 +3064,11 @@ GITHUB_LATEST_RELEASE_API = (
     'https://api.github.com/repos/'
     '1826548016-cloud/Lexizx/releases/latest'
 )
+# 主站 Atom 订阅源：走 github.com 而非 api.github.com，不受未授权 API
+# 配额（60 次/小时，出口 IP 共享时常被占满 → 403）限制，国内也更稳。
+GITHUB_RELEASES_ATOM = (
+    'https://github.com/1826548016-cloud/Lexizx/releases.atom'
+)
 RELEASE_PAGE = ('https://github.com/1826548016-cloud/'
                 'Lexizx/releases/latest')
 
@@ -3084,20 +3091,75 @@ def _http_get_json(url, timeout=6):
         return json.loads(resp.read().decode('utf-8'))
 
 
+def _http_get_text(url, timeout=8):
+    req = urllib.request.Request(
+        url,
+        headers={
+            'Accept': 'application/atom+xml, text/html;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (compatible; '
+                          'Postgraduate-Vocabulary-App)',
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode('utf-8', 'ignore')
+
+
+def _release_html_to_text(raw):
+    """Release 说明的 HTML 片段 -> 弹窗 <pre> 可读的纯文本"""
+    text = re.sub(r'<\s*br\s*/?\s*>', '\n', raw, flags=re.I)
+    text = re.sub(r'<\s*li[^>]*>', '· ', text, flags=re.I)
+    text = re.sub(r'</\s*(p|li|h[1-6]|div)\s*>', '\n', text, flags=re.I)
+    text = re.sub(r'<[^>]+>', '', text)
+    return re.sub(r'\n{3,}', '\n\n', unescape(text)).strip()
+
+
+def _latest_release_from_atom(attempts=(3, 4, 5)):
+    """从 github.com 的 Releases Atom 订阅源解析最新 Release。
+    该通道走 github.com 主站（不受 API 配额限制），但本机到 github.com
+    偶发连接被重置（SSL UNEXPECTED_EOF），故做多次快速重试；全失败返回 None"""
+    ns = '{http://www.w3.org/2005/Atom}'
+    for timeout in attempts:
+        try:
+            root = ET.fromstring(_http_get_text(GITHUB_RELEASES_ATOM, timeout=timeout))
+            entry = root.find(ns + 'entry')
+            if entry is None:
+                continue
+            link = entry.find(ns + 'link')
+            html_url = (link.get('href') or '') if link is not None else ''
+            title = (entry.findtext(ns + 'title') or '').strip()
+            tag = html_url.rsplit('/tag/', 1)[-1] if '/tag/' in html_url else ''
+            return {
+                'tag_name': tag or title,
+                'name': title,
+                'body': _release_html_to_text(entry.findtext(ns + 'content') or ''),
+                'html_url': html_url or RELEASE_PAGE,
+                'published_at': (entry.findtext(ns + 'updated') or '')[:10],
+            }
+        except Exception:
+            continue
+    return None
+
+
 def api_check_update(request):
-    """检查是否有新版本：读取 GitHub 最新 Release 信息。
-    不可达时友好返回，不抛错。"""
+    """检查是否有新版本：优先读 github.com 的 Releases Atom 订阅源，
+    失败时回退官方 Release API。两者都不可达时友好返回，不抛错。"""
     current = settings.APP_VERSION
     cur_tuple = _parse_version(current)
 
-    # GitHub API 国内访问偶发被重置，失败时重试最多 3 次再报错
-    data = None
-    for timeout in (7, 10, 15):
-        try:
-            data = _http_get_json(GITHUB_LATEST_RELEASE_API, timeout=timeout)
-            break
-        except Exception:
-            data = None
+    data = _latest_release_from_atom()
+    if not data:
+        # 回退官方 Release API（国内偶发被重置，失败时递增超时重试）
+        for timeout in (6, 8):
+            try:
+                data = _http_get_json(GITHUB_LATEST_RELEASE_API, timeout=timeout)
+                break
+            except urllib.error.HTTPError as e:
+                # 403 = 未授权配额耗尽，重试无意义，立即放弃
+                if e.code == 403:
+                    break
+                data = None
+            except Exception:
+                data = None
     if not data:
         return JsonResponse({
             'success': False,
