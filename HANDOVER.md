@@ -214,7 +214,7 @@ python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath pro
 
 ### 8.3 更新器流程（复用当前 exe 隐藏模式）
 
-1. 前端下载完成 → `pywebview.api.install_update(path, tag)` → 主程序把自身 exe 复制到 `data/update/updater_<pid>.exe` 并以 `--apply-update` 独立启动。
+1. 前端点一次「立即更新」→ 自动下载 → 校验通过后**无需第二次点击**，1 秒后自动调用 `pywebview.api.install_update(path, tag)`（3.4.7 起）→ 主程序把自身 exe 复制到 `data/update/updater_<pid>.exe` 并以 `--apply-update` 独立启动。
 2. 前端调用 `exit_app()` 退出主进程。
 3. 更新器按传入 PID 等待退出（轮询，不用固定 sleep）→ 备份旧 exe 到 `data/update/word.exe.bak` → `os.replace` 替换（20 次重试）→ 启动新版。
 4. 新版服务就绪后写 `data/update/boot_ok.json`；更新器或新版自身把 `last_update.json` 升级为 `done`。**未收到启动确认前只显示 `installed`，不宣称更新成功。**
@@ -252,6 +252,12 @@ python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath pro
 4. 杀毒软件可能拦截「复制自身 + 独立进程替换 exe」的行为，需用户放行。
 
 ## 九、状态登记
+
+#### 2026-10-23 ｜ v3.4.7：更新改为一步到位（点击后全自动）
+
+`代码` · Trae
+
+正文：应维护者要求，把更新流程从「下载并安装 → 等下载 → 立即安装并重启」两次点击合并为一次：检测到新版本后点「立即更新」即自动下载 → SHA-256 校验 → 自动启动更新器 → 退出主进程 → 替换 → 重启，全程无需二次确认；「未提供校验文件」时仍要求人工确认（安全底线）。改动仅 `words/templates/settings.html`（按钮文案、ready 状态自动安装、失败重试按钮），版本升至 3.4.7 并同步 README。测试 155/155 通过；重新打包 58.8 MB，生成 `word.exe.sha256`（33352df8…503379）；冻结包冒烟测试通过。已知限制：`≤3.4.5` 的旧版本内不含更新器代码，**必须手动安装一次 3.4.6/3.4.7**，之后才能享受一键更新；`3.4.6` 起已具备一键更新（3.4.6 需两次点击，3.4.7 为一次点击）。
 
 #### 2026-10-23 ｜ 自动更新与数据库兼容改造（阶段 B+C+D）
 
