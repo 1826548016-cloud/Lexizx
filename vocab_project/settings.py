@@ -10,7 +10,7 @@ from pathlib import Path
 APP_VERSION = '3.4.7'
 
 # 本版更新说明（关于页「版本」卡片下方展示；发布 Release 时同步写入说明）
-APP_VERSION_NOTE = '更新改为一步到位：点击「立即更新」后自动下载、校验、替换并重启，像手机 App 一样无需二次确认；更新失败仍会自动回滚'
+APP_VERSION_NOTE = '优化更新步骤'
 
 # 软件使用、隐私、知识产权及二次创作声明版本（用发布日期标识）：首次使用需同意，声明修订后老用户需重新确认
 PRIVACY_VERSION = '2026-10-04'
@@ -100,9 +100,6 @@ STATICFILES_DIRS = [
 
 BACKUP_DIR = DATA_DIR / 'backups'
 
-# 数据恢复：前端把整份备份（含词库本体）作为 JSON 请求体提交，
-# 学习数据增长后会超过 Django 默认 2.5MB 上限，触发 RequestDataTooBig
-# 导致「恢复失败 / 备份无法导入」。本机单用户、仅监听 127.0.0.1，放宽到 200MB。
 DATA_UPLOAD_MAX_MEMORY_SIZE = 200 * 1024 * 1024
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
