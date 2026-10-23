@@ -151,10 +151,8 @@ def verify_sha256(path, expected):
     return sha256_file(path) == expected
 
 
-# ===== 状态文件 =====
 
 def write_status(path, payload):
-    """原子写入更新状态（供下次启动展示更新结果）"""
     if not path:
         return
     path = Path(path)
@@ -185,8 +183,6 @@ def log_line(path, message):
     except Exception:
         pass
 
-
-# ===== 启动确认（"只有实际验证新版启动成功才算更新成功"）=====
 
 def boot_marker_path(update_dir):
     return Path(update_dir) / 'boot_ok.json'
