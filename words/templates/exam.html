@@ -620,14 +620,17 @@ function renderResult(res) {
   document.getElementById('examWrongCount').textContent = res.wrong_count;
   document.getElementById('examTimeUsed').textContent = formatTime(res.duration);
 
-  // 释义判定来源统计（AI 逐题/批量判定、本地精确匹配、未作答、待复核）
+  // 释义判定来源统计（AI 逐题/批量判定、本地精确匹配、本地兜底、未作答、待复核）
   const statsEl = document.getElementById('examJudgeStats');
   if (statsEl) {
     const st = res.meaning_judge_stats;
     if (st && st.total > 0) {
       let html = '<div style="color: var(--c-text-3);">释义判定：AI 判定 <strong style="color: var(--c-green);">' + st.ai + '</strong> 题' +
-        ' · 本地精确匹配 <strong>' + st.local_exact + '</strong> 题' +
-        (st.blank ? ' · 未作答 <strong>' + st.blank + '</strong> 题' : '') + '</div>';
+        ' · 本地精确匹配 <strong>' + st.local_exact + '</strong> 题';
+      if (st.local_fallback) {
+        html += ' · <strong style="color: var(--c-orange, #b5722a);">本地兜底 ' + st.local_fallback + '</strong> 题（AI 暂不可用，判定偏严）';
+      }
+      html += (st.blank ? ' · 未作答 <strong>' + st.blank + '</strong> 题' : '') + '</div>';
       if (st.pending > 0) {
         html += '<div style="color: var(--c-blue); margin-top:4px;"><i class="ph ph-clock"></i> ' +
           st.pending + ' 题因 AI 暂不可用进入待复核（<strong>不计对错、未影响掌握状态</strong>），可在 ' +

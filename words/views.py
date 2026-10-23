@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from datetime import date, timedelta, datetime
 from html import unescape
 from io import BytesIO
+from pathlib import Path
 
 from django.conf import settings
 from django.core.paginator import Paginator
@@ -1730,12 +1731,12 @@ def _policy_pending(reason_code, comment=None):
 
 
 def judge_with_policy(word, answer, data, kind='meaning'):
-    """统一判定服务（HANDOVER 第八节）：
+    """统一判定服务：
     空答/拼写等确定性题 → 本地立即判定；释义等语义题 → 本地高置信规则先筛，
-    其余交 AI 仲裁；AI 超时/失败/输出非法时**绝不默认判错**，一律 pending_review。
+    其余交 AI 仲裁；AI 超时/失败/输出非法时**本地兜底判错**（恢复先本地后AI的旧逻辑）。
     只判定、不写库。返回 policy dict：
-    verdict ∈ correct/partial/wrong/pending_review；
-    source ∈ local_exact/local_confident/ai/ai_consensus/manual/pending。"""
+    verdict ∈ correct/partial/wrong；
+    source ∈ local_exact/local_confident/ai/ai_consensus/manual/local_fallback。"""
     answer = (answer or '').strip()
     if not answer:
         return _policy_local('wrong', '未作答')
@@ -1746,9 +1747,10 @@ def judge_with_policy(word, answer, data, kind='meaning'):
     if hit:
         return _policy_local('correct', '本地判定：与标准释义一致')
 
-    # 未开启 AI 判定：本地不能确认，交给待复核而不是默认判错
+    # 未开启 AI 判定：本地兜底判错
     if not settings_obj.use_ai_meaning_check:
-        return _policy_pending('ai_disabled')
+        return _policy_local('wrong', '本地兜底判定：与标准释义不一致',
+                             source='local_fallback', confidence='low')
 
     if settings_obj.meaning_check_model and not data.get('model_id'):
         data['model_id'] = settings_obj.meaning_check_model_id
@@ -1756,17 +1758,22 @@ def judge_with_policy(word, answer, data, kind='meaning'):
     try:
         cfg = resolve_ai_model(data)
     except ValueError:
-        return _policy_pending('ai_no_model', '已保存，待配置可用 AI 模型后复核')
+        return _policy_local('wrong', '本地兜底判定：AI 模型未配置，与标准释义不一致',
+                             source='local_fallback', confidence='low')
 
     prompt = MEANING_JUDGE_PROMPT.format(
         word=word.word, meanings='；'.join(meaning_parts), answer=answer)
     content, _error, reason = _ai_judge_call(cfg, prompt, max_tokens=500, temperature=0.1)
     if not content:
-        return _policy_pending(reason)
+        # AI 不可用：本地兜底判错
+        return _policy_local('wrong', '本地兜底判定：AI 判定失败，与标准释义不一致',
+                             source='local_fallback', confidence='low')
     parsed = _extract_json_object(content) or {}
     v = parsed.get('verdict')
     if v not in ('correct', 'partial', 'wrong'):
-        return _policy_pending('ai_invalid_output')
+        # AI 输出非法：本地兜底判错
+        return _policy_local('wrong', '本地兜底判定：AI 输出异常，与标准释义不一致',
+                             source='local_fallback', confidence='low')
     return {'verdict': v, 'source': 'ai', 'is_final': True,
             'reason_code': '', 'confidence': 'medium',
             'comment': (parsed.get('comment') or '').strip()}
@@ -1786,7 +1793,7 @@ def judge_meaning_batch_with_policy(pairs, data, chunk_size=10):
     """批量释义判定，pairs=[(word, answer), ...]；返回 {word_id: policy dict}。
     本地确定层先筛 → 其余按 chunk_size 分组，每组一次 AI 调用统一标准。
     整组失败 / 缺项 / 组内同一 id 出现互相冲突的 verdict → 该组所有未定论题
-    一律 pending_review（不再逐题兜底判错）。"""
+    一律本地兜底判错（恢复先本地后AI的旧逻辑）。"""
     results = {}
     pending = []
     for word, answer in pairs:
@@ -1856,7 +1863,10 @@ def judge_meaning_batch_with_policy(pairs, data, chunk_size=10):
                     'reason_code': '', 'confidence': 'medium',
                     'comment': got[w.id][1]}
             else:
-                results[w.id] = _policy_pending(reason or 'ai_unavailable')
+                # AI 失败/缺项/冲突：本地兜底判错
+                results[w.id] = _policy_local(
+                    'wrong', '本地兜底判定：AI 判定失败，与标准释义不一致',
+                    source='local_fallback', confidence='low')
     return results
 
 
@@ -3191,6 +3201,178 @@ def api_check_update(request):
         'has_update': bool(new_tuple and cur_tuple and new_tuple > cur_tuple),
     })
     return JsonResponse(payload)
+
+
+# ===== 自动更新：下载 / 校验 / 安装状态 =====
+# 只用模块级 dict + 锁管理单个下载任务（本机单用户，无需数据库或额外服务）。
+_UPDATE_LOCK = threading.Lock()
+_UPDATE_CANCEL = threading.Event()
+_UPDATE_STATE = {
+    'state': 'idle',          # idle/starting/downloading/verifying/ready/ready_unverified/cancelled/error
+    'tag': '',
+    'downloaded': 0,
+    'total': 0,
+    'percent': 0,
+    'message': '',
+    'error': '',
+    'path': '',
+    'sha_expected': None,
+    'sha_ok': None,
+}
+
+
+def _update_dir():
+    d = Path(settings.DATA_DIR) / 'update'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _update_status_path():
+    return Path(settings.DATA_DIR) / 'update' / 'last_update.json'
+
+
+def _set_update_state(**kwargs):
+    with _UPDATE_LOCK:
+        _UPDATE_STATE.update(kwargs)
+
+
+def _update_snapshot():
+    with _UPDATE_LOCK:
+        data = dict(_UPDATE_STATE)
+    data['desktop'] = bool(getattr(settings, 'FROZEN', False))
+    return data
+
+
+def _download_update_worker(tag):
+    """后台下载 + 校验；状态只写内存，下载完成后写一次最终状态"""
+    import updater as updater_core
+
+    dest = _update_dir() / f'word-{tag}.exe'
+    last_tick = [0.0]
+
+    def progress(done, total):
+        now = time.time()
+        if total and done < total and now - last_tick[0] < 0.3:
+            return
+        last_tick[0] = now
+        _set_update_state(downloaded=done, total=total,
+                          percent=int(done * 100 / total) if total else 0)
+
+    try:
+        exe_url, _ = updater_core.asset_urls(tag)
+        _set_update_state(state='downloading', message='正在下载新版本…',
+                          downloaded=0, total=0, percent=0, error='', path='',
+                          sha_expected=None, sha_ok=None)
+        size = updater_core.download_file(
+            exe_url, dest, progress=progress, cancel=_UPDATE_CANCEL)
+        _set_update_state(state='verifying', message='正在校验文件…',
+                          downloaded=size, total=size, percent=100)
+
+        expected = None
+        try:
+            expected = updater_core.fetch_expected_sha(tag)
+        except Exception:
+            expected = None
+        if expected:
+            if not updater_core.verify_sha256(dest, expected):
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+                raise updater_core.UpdateError('SHA-256 校验未通过，已拒绝安装')
+            _set_update_state(state='ready', message='校验通过，可以安装',
+                              path=str(dest), sha_expected=expected, sha_ok=True)
+        else:
+            _set_update_state(state='ready_unverified',
+                              message='该版本未提供校验文件，无法自动校验',
+                              path=str(dest), sha_ok=None)
+    except updater_core.UpdateCancelled:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        _set_update_state(state='cancelled', message='已取消下载', path='')
+    except urllib.error.HTTPError as e:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        if e.code == 404:
+            hint = '该版本尚未发布安装包（Release 缺少 word.exe），请前往 Release 页面确认'
+        elif e.code == 403:
+            hint = '下载被 GitHub 限流（HTTP 403），请稍后再试'
+        else:
+            hint = f'下载失败（HTTP {e.code}），请稍后重试'
+        _set_update_state(state='error', message='下载失败', error=hint, path='')
+    except Exception as e:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        _set_update_state(state='error', message='下载失败', error=str(e), path='')
+
+
+@require_http_methods(['POST'])
+def api_update_download(request):
+    """开始下载指定版本的新 EXE（POST-only，下载在后台线程）"""
+    import updater as updater_core
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+    except Exception:
+        payload = {}
+    try:
+        tag = updater_core.normalize_tag(payload.get('tag'))
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    with _UPDATE_LOCK:
+        if _UPDATE_STATE['state'] in ('starting', 'downloading', 'verifying'):
+            return JsonResponse({'success': False, 'error': '已有下载任务进行中',
+                                 'state': _UPDATE_STATE['state']}, status=409)
+        _UPDATE_STATE.update(state='starting', tag=tag, downloaded=0, total=0,
+                             percent=0, message='准备下载…', error='', path='',
+                             sha_expected=None, sha_ok=None)
+    _UPDATE_CANCEL.clear()
+    threading.Thread(target=_download_update_worker, args=(tag,), daemon=True).start()
+    return JsonResponse({'success': True, 'state': 'starting', 'tag': tag})
+
+
+@require_http_methods(['GET'])
+def api_update_download_status(request):
+    return JsonResponse(_update_snapshot())
+
+
+@require_http_methods(['POST'])
+def api_update_download_cancel(request):
+    _UPDATE_CANCEL.set()
+    return JsonResponse({'success': True})
+
+
+@require_http_methods(['GET'])
+def api_update_result(request):
+    """上次更新的结果（安装成功 / 已回滚），确认过就不再重复提示"""
+    import updater as updater_core
+    data = updater_core.read_status(_update_status_path())
+    if not data or data.get('state') not in ('done', 'rolled_back', 'failed'):
+        return JsonResponse({'has_result': False})
+    if request.session.get('update_result_seen') == data.get('at'):
+        return JsonResponse({'has_result': False})
+    return JsonResponse({
+        'has_result': True,
+        'state': data.get('state'),
+        'message': data.get('message') or '',
+        'at': data.get('at') or '',
+    })
+
+
+@require_http_methods(['POST'])
+def api_update_result_ack(request):
+    import updater as updater_core
+    data = updater_core.read_status(_update_status_path())
+    if data:
+        request.session['update_result_seen'] = data.get('at')
+    return JsonResponse({'success': True})
+
 
 
 def _knowledge_feedback_ref(fb):
@@ -5046,7 +5228,7 @@ def api_exam_submit(request):
         results = []
         correct_count = 0
         pending_count = 0
-        source_stats = {'ai': 0, 'local_exact': 0, 'local_blank': 0, 'pending': 0}
+        source_stats = {'ai': 0, 'local_exact': 0, 'local_fallback': 0, 'local_blank': 0, 'pending': 0}
         for g in graded:
             sq, ans, word = g['sq'], g['ans'], g['word']
             qid, qtype = sq['id'], sq.get('type', 'choice')
@@ -5059,6 +5241,8 @@ def api_exam_submit(request):
                     source_stats['ai'] += 1
                 elif g['source'] == 'local-blank':
                     source_stats['local_blank'] += 1
+                elif g['source'] == 'local_fallback':
+                    source_stats['local_fallback'] += 1
                 else:
                     source_stats['local_exact'] += 1
 

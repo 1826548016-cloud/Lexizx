@@ -1011,16 +1011,28 @@
     gateAutoTimer = setTimeout(function () { gateAutoTimer = null; advance(); }, 900);
   }
 
-  // 安排穿插重现：在当前词之后随机间隔插入 X 个副本
+  // 安排穿插重现：把 N 个副本真正随机撒进当前词之后的剩余队列
   function scheduleInterleave() {
-    var pos = currentIndex + 2 + Math.floor(Math.random() * 3); // 2~4 个词后首次穿插
+    var start = currentIndex + 1;         // 只能插在当前词之后
+    var rest = wordsData.length - start;  // 剩余可插位置数
+    var slots = [];
     for (var k = 0; k < gateInterleaveTotal; k++) {
+      // 在剩余队列中均匀随机取落点：可能是下一个词，也可能是队尾
+      var slot = Math.floor(Math.random() * (rest + 1));
+      var tries = 0;
+      while (slots.indexOf(slot) !== -1 && tries++ < 10) {
+        slot = Math.floor(Math.random() * (rest + 1));
+      }
+      slots.push(slot);
+    }
+    slots.sort(function (a, b) { return a - b; }); // 副本 1..N 按出现顺序编号
+    for (var i = 0; i < slots.length; i++) {
       var copy = {};
       for (var key in currentWord) copy[key] = currentWord[key];
-      copy.interleave_no = k + 1;
-      pos = Math.min(pos, wordsData.length);
+      copy.interleave_no = i + 1;
+      // i 为已插入的副本数，用于补偿下标偏移
+      var pos = Math.min(start + slots[i] + i, wordsData.length);
       wordsData.splice(pos, 0, copy);
-      pos += 2 + Math.floor(Math.random() * 3); // 每次穿插间隔 2~4 个词
     }
     wordCount = wordsData.length;
     var sliderEl = document.getElementById('progressSlider');

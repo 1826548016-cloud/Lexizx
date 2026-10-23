@@ -34,6 +34,8 @@ hiddenimports += collect_submodules('vocab_project')
 hiddenimports += collect_submodules('django.contrib')
 hiddenimports += collect_submodules('webview')           # webview 的动态子模块
 hiddenimports += ['vocab_project.settings', 'vocab_project.urls', 'vocab_project.wsgi']
+# 自动更新核心模块（项目根下的 updater.py，launch.py 动态 import，必须显式声明）
+hiddenimports += ['updater']
 # words 包关键模块兜底（Django 通过字符串动态 import，必须显式声明）
 hiddenimports += [
     'words', 'words.apps', 'words.urls', 'words.views', 'words.models',

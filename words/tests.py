@@ -46,6 +46,7 @@ from .views import (
     AI_HEALTH_FAIL_THRESHOLD,
     _ai_post_json, _ai_chat_once, builtin_ai_exam_call, _ai_health_status,
     compute_risk_score, RISK_TIER_LOW, RISK_TIER_MEDIUM, RISK_ERROR_ACTIONS,
+    _get_or_create_pending_judgment,
 )
 
 
@@ -962,8 +963,8 @@ class RiskEngineTests(TestCase):
         self.assertEqual(rec.mistake_type, 'meaning')
         self.assertEqual(rec.error_detail['correct'], self.w1.get_meanings())
 
-    def test_meaning_check_pending_without_ai_writes_no_error_sample(self):
-        # AI 不可用（无模型/断网）→ 待复核，不写错误样本、不改掌握状态
+    def test_meaning_check_local_fallback_writes_error_sample(self):
+        # AI 不可用（断网）→ 本地兜底判错，写错误样本、改掌握状态
         with patch('words.views._ai_post_json',
                    side_effect=_AIRequestError('network', '无法连接')):
             res = self.client.post(
@@ -972,11 +973,11 @@ class RiskEngineTests(TestCase):
                 content_type='application/json',
             )
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()['verdict'], 'pending_review')
-        self.assertFalse(StudyRecord.objects.filter(word=self.w1).exists())
+        self.assertEqual(res.json()['verdict'], 'wrong')
+        self.assertTrue(StudyRecord.objects.filter(word=self.w1).exists())
         p = StudyProgress.objects.get(word=self.w1)
-        self.assertEqual(p.error_count, 0)
-        self.assertEqual(p.status, 'new')
+        self.assertEqual(p.error_count, 1)
+        self.assertEqual(p.status, 'learning')
 
     # --- 复习融合：高风险提前 ---
     def test_high_risk_reviewed_early_in_bucket(self):
@@ -1908,11 +1909,10 @@ class PosExpandTests(TestCase):
 
 
 class AIJudgePolicyTests(TestCase):
-    """HANDOVER 第八节：统一判定策略（本地确定层 → AI 仲裁 → 安全回退 pending_review）。
+    """统一判定策略（本地确定层 → AI 仲裁 → 本地兜底判错）。
 
     覆盖：断网/DNS、8 秒超时、401/403/404、429、5xx、非法 JSON、verdict 越界、
-    连续 3 次熔断 + 冷却后半开探测成功。断言 pending_review 绝不增 error_count、
-    不写错误知识库、不降级掌握状态。"""
+    连续 3 次熔断 + 冷却后半开探测成功。AI 失败时一律本地兜底判错。"""
 
     def setUp(self):
         self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
@@ -1931,11 +1931,11 @@ class AIJudgePolicyTests(TestCase):
             raise _AIRequestError(category, message)
         return patch('words.views._ai_post_json', side_effect=_fake)
 
-    def _assert_pending(self, policy, reason_code):
-        self.assertEqual(policy['verdict'], 'pending_review')
-        self.assertFalse(policy['is_final'])
-        self.assertEqual(policy['source'], 'pending')
-        self.assertEqual(policy['reason_code'], reason_code)
+    def _assert_local_fallback(self, policy):
+        self.assertEqual(policy['verdict'], 'wrong')
+        self.assertTrue(policy['is_final'])
+        self.assertEqual(policy['source'], 'local_fallback')
+        self.assertEqual(policy['confidence'], 'low')
 
     def _assert_no_error_side_effects(self):
         self.assertFalse(StudyRecord.objects.filter(word=self.word).exists())
@@ -1951,20 +1951,20 @@ class AIJudgePolicyTests(TestCase):
         self.assertEqual(policy['source'], 'local_exact')
         self.assertTrue(policy['is_final'])
 
-    # --- 2. 断网 / DNS 失败 → pending_review，无错误副作用 ---
-    def test_network_failure_pending_no_side_effects(self):
+    # --- 2. 断网 / DNS 失败 → 本地兜底判错 ---
+    def test_network_failure_local_fallback(self):
         with self._raising('network', '无法连接 AI 服务'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_pending(policy, 'ai_network_error')
+        self._assert_local_fallback(policy)
         self._assert_no_error_side_effects()
 
-    # --- 3. 8 秒超时 → pending_review + ai_timeout ---
-    def test_timeout_pending(self):
+    # --- 3. 8 秒超时 → 本地兜底判错 ---
+    def test_timeout_local_fallback(self):
         with self._raising('timeout', 'AI 请求超时'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_pending(policy, 'ai_timeout')
+        self._assert_local_fallback(policy)
 
-    # --- 4. 401/403/404 配置错误：不重试，直接 pending ---
+    # --- 4. 401/403/404 配置错误：不重试，本地兜底判错 ---
     def test_config_error_no_retry(self):
         calls = []
 
@@ -1974,7 +1974,7 @@ class AIJudgePolicyTests(TestCase):
 
         with patch('words.views._ai_post_json', side_effect=_fake):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_pending(policy, 'ai_config_error')
+        self._assert_local_fallback(policy)
         self.assertEqual(len(calls), 1)  # 配置错误不重试
         self.assertEqual(calls[0], 8)    # 判定专用 8 秒短超时
 
@@ -1988,21 +1988,21 @@ class AIJudgePolicyTests(TestCase):
 
         with patch('words.views._ai_post_json', side_effect=_fake):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_pending(policy, 'ai_server_error')
+        self._assert_local_fallback(policy)
         self.assertEqual(len(calls), 2)
 
-    # --- 6. 返回非 JSON / verdict 越界 → ai_invalid_output ---
-    def test_invalid_output_pending(self):
+    # --- 6. 返回非 JSON / verdict 越界 → 本地兜底判错 ---
+    def test_invalid_output_local_fallback(self):
         with patch('words.views._ai_post_json', return_value='这不是 JSON'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_pending(policy, 'ai_invalid_output')
+        self._assert_local_fallback(policy)
 
         with patch('words.views._ai_post_json',
                    return_value='{"verdict": "great", "comment": "x"}'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_pending(policy, 'ai_invalid_output')
+        self._assert_local_fallback(policy)
 
-    # --- 7. 连续 3 次可用性失败 → 熔断；熔断期不出网 ---
+    # --- 7. 连续 3 次可用性失败 → 熔断；熔断期不出网，本地兜底判错 ---
     def test_circuit_opens_after_three_failures(self):
         with self._raising('network'):
             for _ in range(AI_HEALTH_FAIL_THRESHOLD):
@@ -2013,7 +2013,7 @@ class AIJudgePolicyTests(TestCase):
 
         with patch('words.views._ai_post_json', side_effect=AssertionError('熔断期不应出网')):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_pending(policy, 'ai_circuit_open')
+        self._assert_local_fallback(policy)
 
     # --- 8. 冷却结束后的半开探测成功 → 熔断关闭、计数清零 ---
     def test_half_open_probe_success_closes_circuit(self):
@@ -2052,32 +2052,27 @@ class PendingJudgmentTests(TestCase):
         return patch('words.views._ai_post_json', side_effect=_fake)
 
     def _make_pending(self, answer='坚持'):
-        """走真实接口造一条待复核记录（AI 不可用）。"""
-        with self._raising():
-            return self.client.post(
-                reverse('words:api_meaning_check', args=[self.word.id]),
-                data=json.dumps({'answer': answer, 'source': 'learn'}),
-                content_type='application/json')
+        """直接造一条待复核记录（释义判定已恢复本地兜底，不再自动产生 pending）。"""
+        key = 'meaning:learn:meaning:%d:abcdef0123456789' % self.word.id
+        return _get_or_create_pending_judgment(
+            self.word, 'meaning', answer, mode='meaning', source='learn',
+            reason_code='ai_network_error', dedupe_key=key)
 
     def _post(self, url_name, body, **kwargs):
         return self.client.post(
             reverse(url_name, kwargs=kwargs or None),
             data=json.dumps(body), content_type='application/json')
 
-    # --- 1. 释义默写 pending：不判错、不改掌握状态、今日不记错 ---
+    # --- 1. 待复核记录不判错、不改掌握状态、今日不记错 ---
     def test_meaning_check_pending_no_wrong(self):
-        res = self._make_pending()
-        body = res.json()
-        self.assertTrue(body['success'])
-        self.assertEqual(body['verdict'], 'pending_review')
-        self.assertEqual(body['reason_code'], 'ai_network_error')
-        progress = StudyProgress.objects.get(word=self.word)
-        self.assertEqual(progress.error_count, 0)
-        self.assertEqual(progress.status, 'new')
-        self.assertFalse(StudyRecord.objects.exists())
+        pj = self._make_pending()
+        self.assertIsNotNone(pj)
         self.assertEqual(PendingJudgment.objects.filter(
             word=self.word, kind='meaning', resolved=False).count(), 1)
-        checkin = DailyCheckIn.objects.get(date=timezone.localdate())
+        # 未复核前不写进度、不写学习记录、今日不计错
+        self.assertFalse(StudyProgress.objects.filter(word=self.word).exists())
+        self.assertFalse(StudyRecord.objects.exists())
+        checkin, _ = DailyCheckIn.objects.get_or_create(date=timezone.localdate())
         self.assertEqual(checkin.today_wrong, 0)
         self.assertEqual(checkin.today_correct, 0)
 
@@ -2127,18 +2122,19 @@ class PendingJudgmentTests(TestCase):
             word=self.word, action='meaning_ok').count(), 1)
         self.assertEqual(PendingJudgment.objects.filter(resolved=False).count(), 0)
 
-    # --- 5. 熔断期间补判：保持待复核，不误判错 ---
-    def test_rejudge_stays_pending_when_circuit_open(self):
+    # --- 5. 熔断期间补判：本地兜底判错，不再保持待复核 ---
+    def test_rejudge_local_fallback_when_circuit_open(self):
         self._make_pending()
         pj = PendingJudgment.objects.get(word=self.word)
         with patch('words.views._ai_judge_call',
                    return_value=(None, '', 'ai_circuit_open')):
             res = self._post('words:api_pending_judgment_rejudge', {}, pj_id=pj.id)
         body = res.json()
-        self.assertFalse(body['success'])
-        self.assertEqual(body['result'], 'pending_review')
-        self.assertEqual(body['reason_code'], 'ai_circuit_open')
-        self.assertFalse(StudyRecord.objects.exists())
+        self.assertTrue(body['success'])
+        self.assertEqual(body['result'], 'wrong')
+        pj.refresh_from_db()
+        self.assertTrue(pj.resolved)
+        self.assertEqual(pj.final_verdict, 'wrong')
 
     # --- 6. 列表接口 + 批量补判 ---
     def test_list_and_rejudge_all(self):
@@ -2273,7 +2269,7 @@ class AIApiCallReviewTests(TestCase):
         """按主键重新取模型再取健康状态：避免实例上的 related 对象缓存读到旧值。"""
         return _ai_health_status(AIModel.objects.get(pk=self.model.pk))
 
-    # --- P1-1：畸形 2xx 不得冲出判定策略，也不得 500 ---
+    # --- P1-1：畸形 2xx 不得冲出判定策略，也不得 500（本地兜底判错）---
     def test_malformed_2xx_body_classified_invalid_without_500(self):
         bad_bodies = [
             ('html', b'<html><body>502 Bad Gateway</body></html>'),
@@ -2291,9 +2287,9 @@ class AIApiCallReviewTests(TestCase):
                 with patch('words.views.urllib.request.urlopen',
                            return_value=_FakeHTTPResponse(body)):
                     policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
-                self.assertEqual(policy['verdict'], 'pending_review')
-                self.assertEqual(policy['reason_code'], 'ai_invalid_output')
-                self.assertFalse(policy['is_final'])
+                self.assertEqual(policy['verdict'], 'wrong')
+                self.assertEqual(policy['source'], 'local_fallback')
+                self.assertTrue(policy['is_final'])
         self.assertFalse(StudyRecord.objects.exists())
         self.assertFalse(StudyProgress.objects.filter(error_count__gt=0).exists())
 
@@ -2306,7 +2302,7 @@ class AIApiCallReviewTests(TestCase):
                         _ai_post_json(self._cfg(), {'model': 'm'}, 8)
                 self.assertEqual(ctx.exception.category, 'invalid')
 
-    def test_exam_judge_malformed_returns_pending_not_500(self):
+    def test_exam_judge_malformed_returns_wrong_not_500(self):
         session = self.client.session
         session['exam_questions'] = [{'id': self.word.id, 'type': 'meaning'}]
         session.save()
@@ -2317,8 +2313,7 @@ class AIApiCallReviewTests(TestCase):
         self.assertEqual(res.status_code, 200)
         body = res.json()
         self.assertTrue(body['success'])
-        self.assertEqual(body['verdict'], 'pending_review')
-        self.assertEqual(body['reason_code'], 'ai_invalid_output')
+        self.assertEqual(body['verdict'], 'wrong')
 
     # --- P1-1：探活畸形响应返回可读 502（不是 500） ---
     def test_ai_test_malformed_response_returns_502(self):
@@ -2392,7 +2387,8 @@ class AIApiCallReviewTests(TestCase):
             with patch('words.views.urllib.request.urlopen',
                        return_value=_FakeHTTPResponse(b'not json')):
                 policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
-            self.assertEqual(policy['reason_code'], 'ai_invalid_output')
+            self.assertEqual(policy['verdict'], 'wrong')
+            self.assertEqual(policy['source'], 'local_fallback')
         health = AIModelHealth.objects.get(model=self.model)
         self.assertIsNone(health.circuit_open_until)
         self.assertEqual(health.fail_streak, 0)
@@ -2406,6 +2402,7 @@ class AIApiCallReviewTests(TestCase):
                        self._ok_body('{"verdict": "wrong", "comment": "释义不符"}'))):
             policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
         self.assertEqual(policy['verdict'], 'wrong')
+        self.assertEqual(policy['source'], 'ai')
         self.assertEqual(self._health_status()['state'], 'available')
 
     def test_network_failures_still_open_circuit(self):
@@ -2430,38 +2427,269 @@ class AIApiCallReviewTests(TestCase):
         self.assertEqual(PendingJudgment.objects.filter(resolved=False).count(), 1)
 
     def test_resolved_row_frees_dedupe_key(self):
-        payload = {'answer': '坚持', 'source': 'learn', 'mode': 'meaning'}
-        with patch('words.views._ai_post_json',
-                   side_effect=_AIRequestError('network', '断网')):
-            first = self._post('words:api_meaning_check', payload, word_id=self.word.id)
-        self.assertEqual(first.json()['verdict'], 'pending_review')
-        pj = PendingJudgment.objects.get()
-        self.assertTrue(pj.dedupe_key)  # 会落到稳定去重键（非答案文本）
+        # 直接测试待复核去重机制：resolved 后同 key 可新建
+        key = 'meaning:learn:meaning:%d:abcdef0123456789' % self.word.id
+        pj = PendingJudgment.objects.create(
+            word=self.word, kind='meaning', dedupe_key=key, user_answer='第一次')
+        self.assertTrue(pj.dedupe_key)
 
-        # 人工改判 → 该记录关闭；再次不可用时允许新建一条独立审计记录
+        # 人工改判 → 该记录关闭
         manual = self._post('words:api_pending_judgment_manual',
                             {'verdict': 'wrong'}, pj_id=pj.id)
         self.assertTrue(manual.json()['success'])
         pj.refresh_from_db()
         self.assertTrue(pj.resolved)
 
-        with patch('words.views._ai_post_json',
-                   side_effect=_AIRequestError('network', '断网')):
-            second = self._post('words:api_meaning_check', payload, word_id=self.word.id)
-        self.assertEqual(second.json()['verdict'], 'pending_review')
+        # resolved 后再次同 key 创建不会被唯一约束挡住
+        PendingJudgment.objects.create(
+            word=self.word, kind='meaning', dedupe_key=key, user_answer='第二次')
         self.assertEqual(PendingJudgment.objects.filter(resolved=False).count(), 1)
         self.assertEqual(PendingJudgment.objects.count(), 2)
 
     def test_duplicate_resend_reuses_same_open_record(self):
-        payload = {'answer': '坚持', 'source': 'learn', 'mode': 'meaning'}
-        with patch('words.views._ai_post_json',
-                   side_effect=_AIRequestError('network', '断网')):
-            first = self._post('words:api_meaning_check', payload, word_id=self.word.id)
-            second = self._post('words:api_meaning_check', payload, word_id=self.word.id)
-        self.assertEqual(first.json()['pending_id'], second.json()['pending_id'])
+        # 直接测试 _get_or_create_pending_judgment 的幂等去重
+        key = 'meaning:learn:meaning:%d:abcdef0123456789' % self.word.id
+        first = _get_or_create_pending_judgment(
+            self.word, 'meaning', '坚持', mode='meaning', source='learn',
+            reason_code='ai_network_error', dedupe_key=key)
+        second = _get_or_create_pending_judgment(
+            self.word, 'meaning', '坚持', mode='meaning', source='learn',
+            reason_code='ai_network_error', dedupe_key=key)
+        self.assertEqual(first.id, second.id)
         self.assertEqual(PendingJudgment.objects.count(), 1)
+
         # 最终只写一次学习记录
-        pj = PendingJudgment.objects.get()
-        self._post('words:api_pending_judgment_manual', {'verdict': 'wrong'}, pj_id=pj.id)
-        self._post('words:api_pending_judgment_manual', {'verdict': 'wrong'}, pj_id=pj.id)
+        self._post('words:api_pending_judgment_manual', {'verdict': 'wrong'}, pj_id=first.id)
+        self._post('words:api_pending_judgment_manual', {'verdict': 'wrong'}, pj_id=first.id)
         self.assertEqual(StudyRecord.objects.filter(action='meaning_wrong').count(), 1)
+
+
+class UpdaterCoreTests(SimpleTestCase):
+    """自动更新核心逻辑（不触网、不启动真实进程）"""
+
+    def test_version_compare(self):
+        import updater
+        self.assertEqual(updater.parse_version('v3.4.5'), (3, 4, 5))
+        self.assertEqual(updater.parse_version('3.4'), None)
+        self.assertEqual(updater.compare_versions('v3.4.5', '3.4.1'), 1)
+        self.assertEqual(updater.compare_versions('v3.4.1', 'v3.4.5'), -1)
+        self.assertEqual(updater.compare_versions('v3.4.5', '3.4.5'), 0)
+        self.assertEqual(updater.compare_versions('unknown', '3.4.5'), 0)
+
+    def test_tag_validation_blocks_url_injection(self):
+        import updater
+        self.assertEqual(updater.normalize_tag(' v3.4.5 '), 'v3.4.5')
+        for bad in ('', 'latest', 'v3.4', '../../evil', 'v3.4.5/../../x'):
+            with self.assertRaises(updater.UpdateError):
+                updater.normalize_tag(bad)
+
+    def test_asset_urls_only_official_repo(self):
+        import updater
+        exe_url, sha_url = updater.asset_urls('v3.4.5')
+        self.assertEqual(
+            exe_url,
+            'https://github.com/1826548016-cloud/Lexizx/releases/download/v3.4.5/word.exe')
+        self.assertTrue(sha_url.endswith('/word.exe.sha256'))
+
+    def test_sha_parsing_and_verify(self):
+        import hashlib
+        import os
+        import tempfile
+        import updater
+        digest = hashlib.sha256(b'abc').hexdigest()
+        self.assertEqual(updater.parse_sha_text(digest + '  word.exe'), digest)
+        self.assertIsNone(updater.parse_sha_text('not-a-hash'))
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b'abc')
+            name = f.name
+        try:
+            self.assertTrue(updater.verify_sha256(name, digest))
+            self.assertFalse(updater.verify_sha256(name, '0' * 64))
+            self.assertFalse(updater.verify_sha256(name, ''))
+        finally:
+            os.unlink(name)
+
+    def test_status_roundtrip(self):
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            p = f'{d}/last_update.json'
+            updater.write_status(p, {'state': 'done', 'message': 'ok'})
+            data = updater.read_status(p)
+            self.assertEqual(data['state'], 'done')
+            self.assertTrue(data.get('at'))
+
+    def test_run_updater_replaces_and_reports(self):
+        import os
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, 'word.exe')
+            new = os.path.join(d, 'new.exe')
+            status = os.path.join(d, 'last_update.json')
+            open(target, 'wb').write(b'OLD')
+            open(new, 'wb').write(b'NEW-BUILD')
+
+            with patch.object(updater, 'MIN_EXE_BYTES', 1), \
+                 patch.object(updater, '_start_detached'), \
+                 patch.object(updater, 'wait_for_boot', return_value=True):
+                code = updater.run_updater([
+                    'word.exe', '--apply-update', '--pid', '0',
+                    '--target', target, '--new', new,
+                    '--backup', os.path.join(d, 'word.exe.bak'),
+                    '--status', status, '--to-version', 'v3.4.6',
+                ])
+
+            self.assertEqual(code, 0)
+            with open(target, 'rb') as f:
+                self.assertEqual(f.read(), b'NEW-BUILD')
+            with open(os.path.join(d, 'word.exe.bak'), 'rb') as f:
+                self.assertEqual(f.read(), b'OLD')
+            data = updater.read_status(status)
+            self.assertEqual(data['state'], 'done')
+            self.assertEqual(data['to_version'], 'v3.4.6')
+            self.assertTrue(os.path.exists(os.path.join(d, 'updater.log')))
+
+    def test_run_updater_keeps_installed_until_boot_confirmed(self):
+        import os
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, 'word.exe')
+            new = os.path.join(d, 'new.exe')
+            status = os.path.join(d, 'last_update.json')
+            open(target, 'wb').write(b'OLD')
+            open(new, 'wb').write(b'NEW-BUILD')
+
+            with patch.object(updater, 'MIN_EXE_BYTES', 1), \
+                 patch.object(updater, '_start_detached'), \
+                 patch.object(updater, 'wait_for_boot', return_value=False):
+                code = updater.run_updater([
+                    'word.exe', '--apply-update', '--pid', '0',
+                    '--target', target, '--new', new,
+                    '--status', status, '--to-version', 'v3.4.6',
+                ])
+
+            self.assertEqual(code, 0)
+            # 未收到启动确认时不得宣称更新成功
+            self.assertEqual(updater.read_status(status)['state'], 'installed')
+
+    def test_confirm_boot_promotes_installed_to_done(self):
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            updater.write_status(
+                f'{d}/last_update.json',
+                {'state': 'installed', 'to_version': 'v3.4.6'})
+            updater.confirm_boot(d, 'v3.4.6')
+            data = updater.read_status(f'{d}/last_update.json')
+            self.assertEqual(data['state'], 'done')
+            self.assertTrue(updater.wait_for_boot(d, 'v3.4.6', timeout=0.1))
+
+    def test_confirm_boot_ignores_version_mismatch(self):
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            updater.write_status(
+                f'{d}/last_update.json',
+                {'state': 'installed', 'to_version': 'v3.4.6'})
+            updater.confirm_boot(d, '3.4.5')
+            data = updater.read_status(f'{d}/last_update.json')
+            self.assertEqual(data['state'], 'installed')
+
+    def test_run_updater_rejects_small_file(self):
+        import os
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, 'word.exe')
+            new = os.path.join(d, 'new.exe')
+            status = os.path.join(d, 'last_update.json')
+            open(target, 'wb').write(b'OLD')
+            open(new, 'wb').write(b'x')
+
+            code = updater.run_updater([
+                'word.exe', '--apply-update', '--pid', '0',
+                '--target', target, '--new', new, '--status', status,
+            ])
+            self.assertEqual(code, 2)
+            with open(target, 'rb') as f:
+                self.assertEqual(f.read(), b'OLD')
+            self.assertEqual(updater.read_status(status)['state'], 'failed')
+
+    def test_run_updater_rolls_back_when_launch_fails(self):
+        import os
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, 'word.exe')
+            new = os.path.join(d, 'new.exe')
+            status = os.path.join(d, 'last_update.json')
+            open(target, 'wb').write(b'OLD')
+            open(new, 'wb').write(b'NEW-BUILD')
+
+            # 替换成功但启动新版失败 -> 回滚到旧版本
+            with patch.object(updater, 'MIN_EXE_BYTES', 1), \
+                 patch.object(updater, '_start_detached', side_effect=[RuntimeError('boom'), None]):
+                code = updater.run_updater([
+                    'word.exe', '--apply-update', '--pid', '0',
+                    '--target', target, '--new', new,
+                    '--backup', os.path.join(d, 'word.exe.bak'), '--status', status,
+                ])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(updater.read_status(status)['state'], 'rolled_back')
+            with open(target, 'rb') as f:
+                self.assertEqual(f.read(), b'OLD')
+
+    def test_run_updater_rollback_restores_file_even_if_relaunch_fails(self):
+        """回滚文件成功但旧版拉不起来时，仍应报 rolled_back 而不是回滚失败"""
+        import os
+        import tempfile
+        import updater
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, 'word.exe')
+            new = os.path.join(d, 'new.exe')
+            status = os.path.join(d, 'last_update.json')
+            open(target, 'wb').write(b'OLD')
+            open(new, 'wb').write(b'NEW-BUILD')
+
+            with patch.object(updater, 'MIN_EXE_BYTES', 1), \
+                 patch.object(updater, '_start_detached',
+                              side_effect=[RuntimeError('bad exe'), OSError('denied')]):
+                code = updater.run_updater([
+                    'word.exe', '--apply-update', '--pid', '0',
+                    '--target', target, '--new', new,
+                    '--backup', os.path.join(d, 'word.exe.bak'), '--status', status,
+                ])
+
+            self.assertEqual(code, 1)
+            data = updater.read_status(status)
+            self.assertEqual(data['state'], 'rolled_back')
+            self.assertIn('手动打开', data['message'])
+            with open(target, 'rb') as f:
+                self.assertEqual(f.read(), b'OLD')
+
+
+class UpdateApiTests(TestCase):
+    """更新接口：必须 POST-only，且拒绝非法标签"""
+
+    def test_download_requires_post(self):
+        self.assertEqual(self.client.get('/api/update/download/').status_code, 405)
+
+    def test_cancel_requires_post(self):
+        self.assertEqual(self.client.get('/api/update/download/cancel/').status_code, 405)
+
+    def test_status_is_get(self):
+        self.assertEqual(self.client.post('/api/update/download/status/').status_code, 405)
+
+    def test_result_ack_requires_post(self):
+        self.assertEqual(self.client.get('/api/update/result/ack/').status_code, 405)
+
+    def test_download_rejects_bad_tag(self):
+        resp = self.client.post(
+            '/api/update/download/',
+            data=json.dumps({'tag': '../../evil'}),
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['success'])

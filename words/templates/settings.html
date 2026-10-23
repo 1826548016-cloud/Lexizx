@@ -332,7 +332,7 @@
             <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
             <span class="about-stat-title">最后更新</span>
           </div>
-          <div class="stat-value">2026-10-20</div>
+          <div class="stat-value">2026-10-23</div>
         </div>
       </div>
 
@@ -410,7 +410,19 @@
       当前版本 <span id="upCurrent"></span> · 发布于 <span id="upDate"></span>
     </div>
     <pre id="upNotes" class="update-notes"></pre>
+    <div id="upProgressWrap" style="display:none; margin: 2px 0 14px;">
+      <div style="height:8px; border-radius:999px; background:var(--c-border); overflow:hidden;">
+        <div id="upProgressBar" style="height:100%; width:0%; background:var(--c-blue); transition:width .25s;"></div>
+      </div>
+      <div id="upProgressText" class="text-sm text-secondary" style="text-align:center; margin-top:6px;"></div>
+    </div>
     <div class="donate-footer">
+      <button type="button" id="upInstallBtn" class="btn btn-primary btn-sm" onclick="startUpdateDownload()" style="display:none;">
+        <i class="ph ph-download-simple"></i> 下载并安装
+      </button>
+      <button type="button" id="upCancelBtn" class="btn btn-secondary btn-sm" onclick="cancelUpdateDownload()" style="display:none;">
+        取消下载
+      </button>
       <a id="upLink" href="#" target="_blank" rel="noopener" class="btn btn-primary btn-sm">
         <i class="ph ph-download-simple"></i> 前往下载页面
       </a>
@@ -484,6 +496,7 @@ function checkUpdate() {
         document.getElementById('upNotes').textContent = d.release_notes || '暂无更新说明';
         document.getElementById('upLink').href = d.html_url || '#';
         _openMask('update-mask');
+        resetUpdateUI(d.latest);
       } else {
         appAlert('当前已是最新版本（' + d.current + '）');
       }
@@ -493,6 +506,201 @@ function checkUpdate() {
       btn.disabled = false;
       btn.innerHTML = oldHtml;
     });
+}
+
+// ===== 自动更新：下载 / 校验 / 安装 =====
+var _updateTag = '';
+var _updatePath = '';
+var _updatePoll = null;
+var _updateInstalling = false;
+
+function desktopUpdateApi() {
+  return (window.pywebview && window.pywebview.api &&
+          typeof window.pywebview.api.install_update === 'function')
+    ? window.pywebview.api : null;
+}
+
+function setUpdateProgress(percent, text, warn) {
+  var wrap = document.getElementById('upProgressWrap');
+  var bar = document.getElementById('upProgressBar');
+  var label = document.getElementById('upProgressText');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+  bar.style.width = Math.max(0, Math.min(100, percent || 0)) + '%';
+  label.textContent = text || '';
+  label.style.color = warn ? 'var(--c-amber, #b5722a)' : '';
+}
+
+function stopUpdatePolling() {
+  if (_updatePoll) { clearInterval(_updatePoll); _updatePoll = null; }
+}
+
+function resetUpdateUI(tag) {
+  _updateTag = tag || '';
+  _updatePath = '';
+  _updateInstalling = false;
+  stopUpdatePolling();
+  var needReset = document.getElementById('upCancelBtn');
+  if (needReset) needReset.style.display = 'none';
+  var api = desktopUpdateApi();
+  var btn = document.getElementById('upInstallBtn');
+  var link = document.getElementById('upLink');
+  if (btn) {
+    btn.style.display = api ? 'inline-flex' : 'none';
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ph ph-download-simple"></i> 下载并安装';
+    btn.onclick = startUpdateDownload;
+  }
+  if (link) link.style.display = api ? 'none' : 'inline-flex';
+  if (api) setUpdateProgress(0, '点击「下载并安装」：程序会自动下载、校验并重启完成更新。');
+  else setUpdateProgress(0, '当前为浏览器版，自动安装仅在 Windows 桌面版可用。');
+}
+
+function startUpdateDownload() {
+  if (!_updateTag) return;
+  var btn = document.getElementById('upInstallBtn');
+  var cancel = document.getElementById('upCancelBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ph ph-circle-notch"></i> 正在下载…';
+  }
+  if (cancel) cancel.style.display = 'inline-flex';
+  setUpdateProgress(0, '正在连接 GitHub…');
+  fetch('{% url "words:api_update_download" %}', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+    body: JSON.stringify({ tag: _updateTag })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.success) {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ph ph-download-simple"></i> 重试下载';
+      }
+      if (cancel) cancel.style.display = 'none';
+      setUpdateProgress(0, d.error || '下载启动失败', true);
+      return;
+    }
+    _updatePoll = setInterval(pollUpdateStatus, 800);
+    pollUpdateStatus();
+  }).catch(function () {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ph ph-download-simple"></i> 重试下载';
+    }
+    if (cancel) cancel.style.display = 'none';
+    setUpdateProgress(0, '下载启动失败，请检查网络后重试', true);
+  });
+}
+
+function pollUpdateStatus() {
+  var btn = document.getElementById('upInstallBtn');
+  var cancel = document.getElementById('upCancelBtn');
+  var link = document.getElementById('upLink');
+  fetch('{% url "words:api_update_download_status" %}')
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var mb = function (n) { return ((n || 0) / 1048576).toFixed(1); };
+      if (d.state === 'starting' || d.state === 'downloading') {
+        var text = d.total
+          ? ('已下载 ' + mb(d.downloaded) + ' / ' + mb(d.total) + ' MB')
+          : ('已下载 ' + mb(d.downloaded) + ' MB');
+        setUpdateProgress(d.percent || 0, text);
+      } else if (d.state === 'verifying') {
+        setUpdateProgress(100, '正在校验 SHA-256…');
+      } else if (d.state === 'ready') {
+        stopUpdatePolling();
+        _updatePath = d.path || '';
+        if (cancel) cancel.style.display = 'none';
+        if (btn) {
+          btn.disabled = false;
+          btn.style.display = 'inline-flex';
+          btn.innerHTML = '<i class="ph ph-rocket"></i> 立即安装并重启';
+          btn.onclick = installUpdate;
+        }
+        setUpdateProgress(100, '下载完成，SHA-256 校验通过');
+      } else if (d.state === 'ready_unverified') {
+        stopUpdatePolling();
+        _updatePath = d.path || '';
+        if (cancel) cancel.style.display = 'none';
+        if (btn) {
+          btn.disabled = false;
+          btn.style.display = 'inline-flex';
+          btn.innerHTML = '<i class="ph ph-warning"></i> 仍要安装（未校验）';
+          btn.onclick = installUpdateUnverified;
+        }
+        if (link) link.style.display = 'inline-flex';
+        setUpdateProgress(100, '下载完成，但该版本未提供 SHA-256 校验文件，无法验证安装包是否被篡改', true);
+      } else if (d.state === 'cancelled') {
+        stopUpdatePolling();
+        if (cancel) cancel.style.display = 'none';
+        if (btn) {
+          btn.disabled = false;
+          btn.style.display = 'inline-flex';
+          btn.innerHTML = '<i class="ph ph-download-simple"></i> 重新下载';
+          btn.onclick = startUpdateDownload;
+        }
+        setUpdateProgress(0, '已取消下载');
+      } else if (d.state === 'error') {
+        stopUpdatePolling();
+        if (cancel) cancel.style.display = 'none';
+        if (btn) {
+          btn.disabled = false;
+          btn.style.display = 'inline-flex';
+          btn.innerHTML = '<i class="ph ph-download-simple"></i> 重试下载';
+          btn.onclick = startUpdateDownload;
+        }
+        setUpdateProgress(0, d.error || '下载失败，请稍后重试', true);
+      }
+    }).catch(function () { /* 轮询失败不打断，下次继续 */ });
+}
+
+function cancelUpdateDownload() {
+  fetch('{% url "words:api_update_download_cancel" %}', {
+    method: 'POST',
+    headers: { 'X-CSRFToken': '{{ csrf_token }}' }
+  }).then(function () {
+    showToast('正在取消下载…', 'success');
+  }).catch(function () {});
+}
+
+function installUpdateUnverified() {
+  appConfirm('该版本未提供 SHA-256 校验文件，无法验证安装包是否被篡改。确定仍要安装吗？')
+    .then(function (ok) { if (ok) installUpdate(); });
+}
+
+function installUpdate() {
+  var api = desktopUpdateApi();
+  if (!api) { appAlert('自动安装仅在 Windows 桌面版可用，请点击「前往下载页面」手动下载。'); return; }
+  if (!_updatePath) { appAlert('下载尚未完成，请稍后再试。'); return; }
+  if (_updateInstalling) return;
+  _updateInstalling = true;
+  var btn = document.getElementById('upInstallBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ph ph-circle-notch"></i> 正在启动更新器…';
+  }
+  api.install_update(_updatePath, _updateTag).then(function (r) {
+    if (!r || !r.success) {
+      _updateInstalling = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ph ph-rocket"></i> 立即安装并重启';
+      }
+      appAlert('启动更新器失败：' + ((r && r.error) || '未知错误'));
+      return;
+    }
+    showToast('程序将关闭并自动完成更新，请稍候…', 'success', 5000);
+    setTimeout(function () {
+      if (api.exit_app) api.exit_app();
+    }, 900);
+  }).catch(function (e) {
+    _updateInstalling = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ph ph-rocket"></i> 立即安装并重启';
+    }
+    appAlert('启动更新器失败：' + e);
+  });
 }
 
 document.addEventListener('keydown', function (e) {

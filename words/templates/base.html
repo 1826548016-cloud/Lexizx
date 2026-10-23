@@ -195,6 +195,28 @@
   {% block extra_scripts %}{% endblock %}
 
   <script>
+  // 上次自动更新结果提示（安装成功 / 已自动回滚），确认一次后不再重复
+  (function () {
+    fetch('/api/update/result/')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.has_result) return;
+        var ok = d.state === 'done';
+        var text = ok ? '新版本已成功安装'
+          : (d.message || (d.state === 'rolled_back'
+            ? '更新失败，已自动恢复到旧版本'
+            : '更新失败，原版本未受影响'));
+        if (typeof showToast === 'function') showToast(text, ok ? 'success' : 'error', 6000);
+        fetch('/api/update/result/ack/', {
+          method: 'POST',
+          headers: { 'X-CSRFToken': '{{ csrf_token }}' }
+        });
+      })
+      .catch(function () {});
+  })();
+  </script>
+
+  <script>
   // 5 套主题 + 自定义壁纸模式循环切换
   var THEMES = ['light', 'blue', 'pureblue', 'sepia', 'dark', 'nightblue', 'custom'];
   var THEME_ICONS = {

@@ -41,6 +41,13 @@ if str(BASE_DIR) not in sys.path:
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'vocab_project.settings')
 
+# ===== 隐藏模式：作为独立更新器运行 =====
+# 必须在 django.setup() 和 webview 初始化之前拦截：更新器只做文件操作，
+# 不启动服务、不打开窗口，避免占用文件句柄导致替换失败。
+if '--apply-update' in sys.argv:
+    from updater import run_updater
+    sys.exit(run_updater(sys.argv))
+
 # ===== 打包模式下无控制台：把 stdout/stderr 同时写入 data/launch.log =====
 if FROZEN:
     _log_dir = Path(sys.executable).resolve().parent / 'data'
@@ -102,6 +109,112 @@ def wait_server_ready(port, timeout=60):
     return False
 
 
+def backup_before_migrate():
+    """存在未应用迁移时，先用 SQLite 在线备份 API 备份数据库。
+
+    返回备份路径；无需迁移或备份失败返回 None（备份失败时不阻断启动，
+    但会写日志，迁移本身仍受 safe_migrate 保护）。
+    """
+    if not DB_PATH.exists():
+        return None
+    try:
+        import sqlite3
+        from django.db import connections
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connections['default'])
+        if not executor.migration_plan(executor.loader.graph.leaf_nodes()):
+            return None  # 没有待应用迁移，纯 bug 修复不产生无意义备份
+
+        backup_dir = DATA_DIR / 'backups'
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        dest = backup_dir / ('db_before_migrate_%s.sqlite3' % time.strftime('%Y%m%d_%H%M%S'))
+        src = sqlite3.connect(str(DB_PATH))
+        try:
+            dst = sqlite3.connect(str(dest))
+            try:
+                src.backup(dst)  # 在线备份，避免直接复制正在写入的数据库文件
+                result = dst.execute('PRAGMA integrity_check').fetchone()
+                if not result or result[0] != 'ok':
+                    raise RuntimeError('备份文件完整性检查未通过')
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        print(f'迁移前备份完成：{dest}')
+        return dest
+    except Exception as e:
+        print(f'迁移前备份失败（继续尝试迁移）：{e}')
+        return None
+
+
+def safe_migrate():
+    """迁移前备份 + 迁移 + 迁移后完整性检查。
+
+    失败时抛出异常，由调用方中止启动：绝不删除数据库或重建空库。
+    """
+    import sqlite3
+
+    backup = backup_before_migrate()
+    try:
+        call_command('migrate', interactive=False, verbosity=0)
+    except Exception:
+        print(f'数据库迁移失败，原库已保留；备份：{backup or "无"}')
+        raise
+    try:
+        con = sqlite3.connect(str(DB_PATH))
+        try:
+            result = con.execute('PRAGMA quick_check').fetchone()
+        finally:
+            con.close()
+        if not result or result[0] != 'ok':
+            raise RuntimeError('迁移后数据库完整性检查未通过')
+    except Exception:
+        print(f'迁移后完整性检查失败，已停止启动；备份：{backup or "无"}')
+        raise
+
+
+def _read_update_result():
+    """读取上次更新结果，供启动加载页提示（仅看 10 分钟内的记录）"""
+    from updater import read_status
+    data = read_status(DATA_DIR / 'update' / 'last_update.json')
+    if not data or data.get('state') not in ('done', 'rolled_back', 'failed'):
+        return None
+    try:
+        at = time.mktime(time.strptime(str(data.get('at') or ''), '%Y-%m-%d %H:%M:%S'))
+    except Exception:
+        return None
+    if time.time() - at > 600:
+        return None
+    return {
+        'done': '新版本已安装，正在启动…',
+        'rolled_back': '本次更新失败，已自动恢复到旧版本',
+        'failed': '本次更新失败，原版本未受影响',
+    }.get(data.get('state'))
+
+
+def cleanup_update_dir():
+    """清理上次更新遗留的临时文件。
+
+    保留 last_update.json（启动时展示更新结果）与 .bak（回滚备份）；
+    只删除 1 小时前的 .part、更新器副本和已下载但未安装的 EXE。
+    """
+    update_dir = DATA_DIR / 'update'
+    if not update_dir.exists():
+        return
+    cutoff = time.time() - 3600
+    for p in update_dir.iterdir():
+        try:
+            if not p.is_file() or p.name == 'last_update.json' or p.name.endswith('.bak'):
+                continue
+            if (p.name.endswith('.part') or p.name.startswith('updater_')
+                    or p.suffix.lower() == '.exe'):
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+        except OSError:
+            pass
+
+
 def first_run_init(progress=None):
     """首次启动自动初始化数据（不含 API key，用户自行配置）
 
@@ -117,7 +230,7 @@ def first_run_init(progress=None):
 
     say('正在初始化数据库，首次启动约需 1~2 分钟…')
 
-    call_command('migrate', interactive=False, verbosity=0)
+    safe_migrate()
     say('数据库结构已就绪，正在导入考研真题…')
     try:
         call_command('import_exam_questions', verbosity=0)
@@ -265,6 +378,52 @@ def main_gui():
             threading.Timer(0.3, lambda: os._exit(0)).start()
             return {'success': True}
 
+        def install_update(self, download_path, tag=''):
+            """启动独立更新器安装已下载并校验的新 EXE。
+
+            前端在返回成功后调用 exit_app 退出主进程；更新器会等待本进程
+            真正结束，再备份、替换、启动新版。只接受 data/update 下的文件。
+            返回后不立即退出，保证结果能送达前端。
+            """
+            if not FROZEN:
+                return {'success': False, 'error': '仅 Windows 桌面版支持自动安装'}
+            if getattr(self, '_updater_started', False):
+                return {'success': False, 'error': '更新器已在运行，请勿重复操作'}
+            try:
+                update_dir = (DATA_DIR / 'update').resolve()
+                src = Path(str(download_path)).resolve()
+                if update_dir not in src.parents:
+                    return {'success': False, 'error': '更新文件路径不合法'}
+                if not src.exists():
+                    return {'success': False, 'error': '更新文件不存在，请重新下载'}
+
+                from updater import MIN_EXE_BYTES
+                if src.stat().st_size < MIN_EXE_BYTES:
+                    return {'success': False, 'error': '更新文件大小异常，已拒绝安装'}
+
+                target = Path(sys.executable).resolve()
+                updater_copy = update_dir / ('updater_%d.exe' % os.getpid())
+                shutil.copy2(str(target), str(updater_copy))
+                status_file = update_dir / 'last_update.json'
+                backup_file = update_dir / 'word.exe.bak'
+
+                flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                subprocess.Popen(
+                    [str(updater_copy), '--apply-update',
+                     '--pid', str(os.getpid()),
+                     '--target', str(target),
+                     '--new', str(src),
+                     '--backup', str(backup_file),
+                     '--status', str(status_file),
+                     '--to-version', str(tag or '')],
+                    cwd=str(update_dir), close_fds=True, creationflags=flags,
+                )
+                self._updater_started = True
+                return {'success': True}
+            except Exception as e:
+                print(f'install_update 失败: {e}')
+                return {'success': False, 'error': str(e)}
+
     api = AppApi()
 
     # 先弹加载窗（尤其首启初始化耗时较长，不能让用户对着空气等）
@@ -275,13 +434,31 @@ def main_gui():
     )
 
     def boot():
-        if first_run:
-            first_run_init(progress=lambda m: window.evaluate_js('setMsg(%s)' % json.dumps(m, ensure_ascii=False)))
-        else:
-            # 即便 db 已存在，也确保 migrations 已应用（防止跨版本升级）
-            call_command('migrate', interactive=False, verbosity=0)
+        try:
+            cleanup_update_dir()
+            update_result = _read_update_result()
+            if update_result:
+                window.evaluate_js('setMsg(%s)' % json.dumps(
+                    update_result, ensure_ascii=False))
+            if first_run:
+                first_run_init(progress=lambda m: window.evaluate_js('setMsg(%s)' % json.dumps(m, ensure_ascii=False)))
+            else:
+                # 即便 db 已存在，也确保 migrations 已应用（防止跨版本升级）
+                safe_migrate()
+        except Exception as e:
+            print(f'启动前数据库准备失败：{e}')
+            window.evaluate_js('setMsg(%s)' % json.dumps(
+                f'数据库准备失败：{e}。原数据库与备份已保留在 data 目录，请查看 data/launch.log',
+                ensure_ascii=False))
+            return
         threading.Thread(target=run_django, args=(port,), daemon=True).start()
         if wait_server_ready(port):
+            # 服务已就绪说明新版本确实启动起来了；回写启动确认，更新器/界面据此显示"更新成功"
+            try:
+                from updater import confirm_boot
+                confirm_boot(DATA_DIR / 'update', settings.APP_VERSION)
+            except Exception as e:
+                print(f'写入更新启动确认失败：{e}')
             window.load_url(f'http://127.0.0.1:{port}/')
         else:
             window.evaluate_js("setMsg('服务启动超时，请查看 data/launch.log')")
@@ -299,7 +476,7 @@ def main_console():
     if not DB_PATH.exists():
         first_run_init()
     else:
-        call_command('migrate', interactive=False, verbosity=0)
+        safe_migrate()
 
     def open_browser():
         time.sleep(2)
