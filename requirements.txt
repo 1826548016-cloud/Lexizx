@@ -1,4 +1,4 @@
-Django>=4.2,<5.0
+Django>=5.2,<5.3
 reportlab>=4.0,<6.0
 cryptography>=42.0  
 pywebview>=5.0 

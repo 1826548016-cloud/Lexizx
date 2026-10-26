@@ -47,7 +47,27 @@ from .views import (
     _ai_post_json, _ai_chat_once, builtin_ai_exam_call, _ai_health_status,
     compute_risk_score, RISK_TIER_LOW, RISK_TIER_MEDIUM, RISK_ERROR_ACTIONS,
     _get_or_create_pending_judgment,
+    _model_plain_key, _store_model_key,
 )
+
+
+class ApiKeyVaultTests(TestCase):
+    """模型密钥只能在 Windows 当前用户上下文中解密，数据库不保留明文。"""
+
+    def test_store_key_uses_dpapi_and_migrates_legacy_plaintext(self):
+        model = AIModel.objects.create(model_id='test-model', api_key='legacy-secret')
+        self.assertEqual(_model_plain_key(model), 'legacy-secret')
+        model.refresh_from_db()
+        self.assertEqual(model.api_key, '')
+        self.assertTrue(model.api_key_encrypted.startswith('dpapi:v1:'))
+        self.assertEqual(_model_plain_key(model), 'legacy-secret')
+
+        _store_model_key(model, 'replacement-secret')
+        model.save()
+        model.refresh_from_db()
+        self.assertEqual(model.api_key, '')
+        self.assertNotIn('replacement-secret', model.api_key_encrypted)
+        self.assertEqual(_model_plain_key(model), 'replacement-secret')
 
 
 class TranslationGradeValidationTests(SimpleTestCase):

@@ -1,23 +1,20 @@
 # Lexizx 交接文档
 
-> 面向接手开发的技术人员。读完本文件（约 5 分钟）即可动工。
-> 更新日期：2026-10-23｜仓库：<https://github.com/1826548016-cloud/Lexizx>
+> 面向接手开发的技术人员。更新日期：2026-10-24
 
-## 一、项目概览
+## 1. 项目概览
 
-考研英语学习 Windows 桌面应用：Django + SQLite + pywebview，PyInstaller 打包为单文件 exe。单机单用户、无需注册，学习数据全部保存在本机。
+Lexizx 是本机优先的 Windows 考研英语学习应用，使用 Django、SQLite、pywebview 和 PyInstaller。无需账号，学习数据保存在本机。主要功能包括词汇背诵与复习、真题模拟、英语一长难句翻译、六级汉译英、AI 组卷与学习助手。
 
-主要功能：词汇背诵与复习（掌握状态机 + 间隔复习）、真题模拟考、英语一长难句翻译、六级汉译英、AI 组卷与学习助手。AI 功能由用户自行配置 OpenAI 兼容接口（内置 18 家服务商预设）。
-
-## 二、快速开始
+## 2. 开发与验证
 
 ```powershell
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py runserver          # http://127.0.0.1:8000/
+python manage.py runserver
 ```
 
-测试（内存数据库，不碰开发库）：
+运行测试和检查：
 
 ```powershell
 python manage.py test words.tests --settings=vocab_project.test_settings
@@ -25,89 +22,88 @@ python manage.py check
 python manage.py makemigrations --check --dry-run
 ```
 
-打包（产物 `product/dist/word.exe`，中间文件 `product/build/`）：
+打包命令：
 
 ```powershell
 python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath product/build product/word.spec
 ```
 
-开发提示：使用 `runserver --noreload` 时，修改 Python 或模板后必须重启服务才生效。
+## 3. 代码地图
 
-## 三、架构地图
-
-| 位置 | 内容 |
+| 路径 | 内容 |
 | --- | --- |
-| `vocab_project/` | Django 配置（settings.py、urls、wsgi）、test_settings.py |
-| `words/models.py` | 全部数据模型（单文件） |
-| `words/views.py` | 页面/API 视图与大部分业务逻辑（文件很大，先定位专题再改，勿无关重构） |
+| `vocab_project/` | Django 配置、URL、WSGI 与测试设置 |
+| `words/models.py` | 数据模型 |
+| `words/views.py` | 页面/API 视图及主要业务逻辑；修改前先定位相关功能 |
 | `words/ai_prompts.py`、`words/ai_exam_prompts.py` | AI 提示词 |
-| `words/templates/`、`words/static/` | 模板与前端资源（静态引用带 `?v=` 版本戳防缓存） |
-| `words/migrations/` | 迁移，当前最新 `0059_pendingjudgment_dedupe_key_and_more` |
-| `updater.py` | 自动更新核心逻辑（纯标准库） |
-| `product/launch.py`、`product/word.spec` | 桌面版入口与 PyInstaller 配置 |
-| `docs/USER_GUIDE.md` | 用户使用说明 |
+| `words/templates/`、`words/static/` | 页面模板和前端资源；静态资源引用使用版本戳 |
+| `words/migrations/` | 数据库迁移 |
+| `updater.py` | 自动更新逻辑 |
+| `product/launch.py`、`product/word.spec` | 桌面入口与打包配置 |
+| `docs/USER_GUIDE.md` | 用户指南 |
 
-核心模型（均在 `words/models.py`）：
+主要模型包括词库（`Unit`、`Word`）、学习记录（`StudyProgress`、`StudyRecord`）、错误知识关系（`KnowledgeFeedback`、`WordFamily*`、`WordRelation`）、考试与翻译、AI 配置及调用记录。完整字段和关系以 `words/models.py` 为准。
 
-- **词库**：`Unit`、`Word`（`get_meanings()` 返回 list）
-- **学习**：`StudyProgress`（掌握状态机 new/learning/mastered + 排期）、`StudyRecord`（每次作答明细，掌握状态的可信证据源）、`DailyCheckIn`、`DailyPick`、`PickRecord/PickRecordWord`
-- **错误知识库**：`KnowledgeFeedback`、`WordFamily/WordFamilyMember/WordFormationPattern/WordRelation`、`StudyProgress.risk_override`（手动风险档 -1/0/1/2）
-- **考试/翻译**：`ExamPaper/ExamQuestion`、`TranslationSentence/TranslationPractice`（英语一）、`Cet6TranslationPassage/Cet6TranslationPractice/GeneratedCet6Paper/GeneratedCet6Question`（六级，与英语一独立）
-- **AI**：`AIModel`（密钥本机明文存储）、`AICallLog`、`UserSettings`（各功能模型选择）
+## 4. 必须遵守的约束
 
-## 四、关键约束（违反即事故）
+1. 本地服务只绑定 `127.0.0.1`，不得绑定 `0.0.0.0`；启用 CSRF，改变状态的接口使用 POST，不得添加 `@csrf_exempt`。
+2. `DATA_UPLOAD_MAX_MEMORY_SIZE` 保持 200MB。备份恢复只增不改；按单词字符串映射目标库 ID，缺失记录跳过并提示；恢复学习记录时保留原始时间戳，旧记录无时间戳则跳过并提示；恢复流程正确关闭并重新启用 SQLite 外键检查。
+3. 任何接口都不得向前端返回 API 密钥。
+4. 考试过程中不得向用户泄露对错，结果在成绩页统一公布；未作答或答错不得降级已掌握词。考试判分遵守现有批量判定、等待在途任务及评分与写库分离流程。
+5. AI 生成题目必须标注为训练题/AI 生成，不得伪装真题；组卷目标词由后端从本地词库选择，生成结果须经本地校验。
+6. 长难句先独立翻译再展示解析，解析默认折叠；六级翻译保留完整段落语境。
+7. pywebview 使用持久化模式和固定存储目录（exe 同目录 `data/webview2`）；桌面外链交由系统浏览器打开。
+8. 不得引入外网 CDN；图标及其他静态依赖使用本地资源。「分批复习/每批数量/继续下一批」已移除，不得恢复。
 
-1. 服务器只绑 `127.0.0.1`，禁止 `0.0.0.0`。
-2. 必须启用 `CsrfViewMiddleware`；所有改状态的接口 POST-only，禁止 `@csrf_exempt`。
-3. `DATA_UPLOAD_MAX_MEMORY_SIZE = 200MB`（备份以 JSON 请求体恢复，不得降回默认值）。
-4. 备份恢复：`StudyRecord.created_at` 必须写回原始时间（缺时间戳的旧记录跳过并提示）；跨库映射用 word 字符串查目标库 `Word.id`，查不到就跳过；恢复前 `PRAGMA foreign_keys = OFF`、完成后重新开启；只增不改，自动补齐缺失单元/单词。
-5. 任何接口不得向前端回传 API 密钥。
-6. 考试答题阶段判定结果保密，对错在成绩页统一公布；考试不得因未作答/答错把已掌握词降级（未作答只计卷面分；mastered 答错仅 `error_count+1`、排期明天）。
-7. 释义判定以最后一次作答为准；交卷先等在途判定（≤25 秒），未判题目 10 题一组、`temperature=0.1` 批量补判；评分与写库分离，全部判完统一写库。
-8. AI 生成题目（组卷、六级翻译、词族）必须永久标注「AI 训练题/AI 生成」，禁止伪装真题；组卷目标词只能由后端从本地词库选取；输出须过本地校验（数量、长度、目标词命中率、相似度）。
-9. 长难句必须「先独立翻译、再查看解析」，解析默认折叠；六级汉译英保留完整段落语境，不拆独立句。
-10. pywebview：`private_mode=False` + 固定 `storage_path`（exe 同目录 `data/webview2`）；桌面版外链一律 `webbrowser.open` 调系统浏览器。
-11. 不得引入任何外网 CDN（Phosphor 图标等已本地化到 `words/static/vendor/`）。
-12. 「分批复习/每批数量/继续下一批」已彻底移除，不得恢复。
+## 5. 自动更新与发布
 
-## 五、自动更新与数据库兼容
+`updater.py` 负责版本检查、下载、SHA-256 校验、取消及状态管理；`product/launch.py` 负责应用更新与迁移前 SQLite 在线备份。更新接口包括：
 
-`updater.py` 负责版本比较、标签校验、流式下载（`.part` + 进度 + 取消）、SHA-256 校验、状态文件与独立更新器；`product/launch.py` 提供 `--apply-update` 隐藏模式、`install_update` API 与迁移前 SQLite 在线备份。
+| 方法 | 路径 |
+| --- | --- |
+| POST | `/api/update/download/` |
+| GET | `/api/update/download/status/` |
+| POST | `/api/update/download/cancel/` |
+| GET | `/api/update/result/` |
+| POST | `/api/update/result/ack/` |
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/update/download/` | body `{"tag":"v3.4.6"}`；已有任务 409，标签非法 400 |
-| GET | `/api/update/download/status/` | state / percent / path / sha_ok / desktop |
-| POST | `/api/update/download/cancel/` | 置取消标志并删除 `.part` |
-| GET | `/api/update/result/` | 上次安装结果（done/rolled_back/failed），每会话提示一次 |
-| POST | `/api/update/result/ack/` | 确认已读 |
+发布前更新 `APP_VERSION` 和 `APP_VERSION_NOTE`；Release 标签使用 `vX.Y.Z`，并上传 `word.exe` 与对应的 `word.exe.sha256`。未经维护者明确指令，不得打包、提交、推送或发布。
 
-流程：下载并校验 → 复制自身为独立更新器 → 主程序退出 → 更新器等待 PID、备份旧 exe、`os.replace` 替换并启动新版 → 新版启动就绪写 `boot_ok.json` 后状态升级为 `done`；失败自动回滚，回滚失败保留 `data/update/word.exe.bak`。日志位于 `data/update/updater.log`。
+## 6. 开发规范
 
-发布要求（否则自动更新不可用）：
+- 改动完成后，将 `words/templates/settings.html`「关于」卡片中的最后更新日期改为当天。
+- 清理本次改动产生的可再生构建产物和 Python 缓存；保留 `product/dist/word.exe`。
+- 开工前检查代码现状及本文件变更记录，避免依赖过时文档；接口和数据格式视为契约。
+- 完成后在变更记录追加日期、摘要、测试结果及是否提交/打包；保留最近 5–10 条。
 
-1. 提升 `vocab_project/settings.py` 中的 `APP_VERSION` 与 `APP_VERSION_NOTE`。
-2. 打包后同时上传 `word.exe` 与 `word.exe.sha256`（`Get-FileHash -Algorithm SHA256`）。
-3. Release 标签必须是 `vX.Y.Z`，正文写明更新说明。
+## 7. 前端改版（已终止）
 
-## 六、开发规范
+2026-10-25 起，前端改版整体撤销：设计样品目录（`design-prototypes/`）、首页 Study Index 改造（`words/templates/dashboard.html` + `words/static/css/study-index-dashboard.css`）、改版前模板快照（`docs/ui-legacy/`）及 `PRODUCT.md` 均已删除，`words/templates/` 与 `words/static/css/style.css` 还原至改版前状态，现有界面保持原样。
 
-1. 改动完成后，同步把 `words/templates/settings.html`「关于」卡片 `stat-value` 的「最后更新」日期改为当天（硬编码 YYYY-MM-DD）。
-2. 清理可再生文件：`product/build/`、根目录 `build/`、`dist/`、各级 `__pycache__/`、`*.pyc`；保留 `product/dist/word.exe`。
-3. commit / push / 打包 / 发 Release 均需维护者明确指令，不擅自执行。
-4. 多 Agent 协作：动工前先读本文件末尾变更记录与代码真实现状（文档可能滞后）；接口即契约，不擅自扩大范围。
-5. 任何改动完成后在末尾「变更记录」追加一条（日期、改动摘要、测试结果、是否提交打包），保留最近 5–10 条。
+除非维护者明确提出新方向，不得再自行启动视觉改版、样稿制作或页面重排；新增功能一律在现有视觉体系内实现，不新增设计产物目录。
 
-## 七、变更记录
+## 8. 变更记录
 
-#### 2026-10-23 ｜ 应用内自动更新与迁移前备份
+#### 2026-10-26 ｜ 本机密钥保险箱与依赖安全维护
 
-新增 `updater.py` 与 5 个更新接口（改状态接口均 POST-only）；`launch.py` 增加 `--apply-update` 隐藏模式、`install_update` API、`safe_migrate`（有未应用迁移才备份，备份走 SQLite 在线 API）；`settings.html` 增加下载进度 UI，`base.html` 增加一次性更新结果提示。新增 16 项测试，155/155 通过。未打包、未提交。注意：发布新版本时必须同时上传 `word.exe` 与 `word.exe.sha256`。
+安全审查确认本程序的安全边界是单机单用户：Django 服务只能监听 `127.0.0.1`，不得改为局域网或公网监听。AI 模型密钥现在使用 Windows 当前用户的 DPAPI 加密后写入 SQLite；密钥明文读取接口已经移除，旧版明文密钥在应用读取或打开模型列表时迁移为密文。桌面 Cookie 使用 `HttpOnly`、`SameSite=Strict`，保持 HTTP 回环访问兼容，不能启用 `Secure` 标志（本机服务没有 TLS）。Django `SECRET_KEY` 改为本机首次启动生成或由 `DJANGO_SECRET_KEY` 注入，密钥文件不纳入版本控制。依赖升级至 Django 5.2.18。AI 上游错误文本在写入页面前统一转义。已应用 `words.0060`，`manage.py check`、迁移检查和密钥保险箱定向测试通过；完整测试运行 156 项，其中 8 项更新器测试受沙箱临时目录权限限制而无法创建测试文件。未提交、未打包。
 
-#### 2026-10-23 ｜ 考试页拆分本地兜底判定统计
+#### 2026-10-25 ｜ 撤销前端改版并清理相关产物
 
-`source_stats` 单独统计 `local_fallback`，成绩页新增琥珀色「本地兜底 N 题（AI 暂不可用，判定偏严）」提示。138/138 测试通过。
+按维护者要求整体撤销前端改版：删除 `design-prototypes/`（含 01–05 样稿与启动页演示）、`docs/ui-legacy/`（改版前模板快照）、`PRODUCT.md` 与新增的 `words/static/css/study-index-dashboard.css`；`words/templates/` 全部模板与 `words/static/css/style.css` 经 `git restore` 还原至改版前状态，首页回到原今日任务卡 / 统计 / 计划 / 热力图布局，同时清除了 30 余个文件仅因行尾（CRLF）产生的改动噪声。交接文档第 7 节改为「前端改版（已终止）」并记述撤销范围，未改动任何后端逻辑、接口与数据格式。Django 系统检查、迁移检查与 155 项测试通过，首页渲染验证正常。未提交、未打包。
 
-#### 2026-10-13 ｜ 错误知识库、词族与待复核
+#### 2026-10-24 ｜ 精简并统一交接文档
 
-错误学习引擎改为按真实错误事件时间衰减（半衰期 21 天），复习排序为「人工重点 > 手动风险档 > 自动风险分 > 到期紧迫度」；新增词族变式与待复核页面，所有接口 POST-only，备份格式双向兼容旧版。
+删除了互相冲突的历史方案正文、重复规则和失效执行指令，保留项目开发、安全、发布规范与功能约定；启动页样品明确为独立演示，尚未接入生产应用。此次仅整理文档，未修改业务代码、未运行测试、未提交或打包。
+
+#### 2026-10-23 ｜ 应用内自动更新
+
+新增自动更新流程及相关接口，并在安装更新前进行 SQLite 在线备份；发布时需同时提供 exe 与 SHA-256 文件。未打包、未提交。
+
+#### 2026-10-23 ｜ 考试本地兜底判定提示
+
+成绩页区分统计本地兜底判定，并提示用户其判定可能偏严；当时记录的测试结果为 138/138。
+
+#### 2026-10-13 ｜ 错误知识库与待复核
+
+记录了错误知识库、词族变式和待复核功能及相关排序规则；具体实现以当前代码为准。

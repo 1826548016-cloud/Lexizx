@@ -3,6 +3,7 @@ Django settings for vocab_project project.
 """
 
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -30,11 +31,38 @@ else:
     BASE_DIR = Path(__file__).resolve().parent.parent
     DATA_DIR = BASE_DIR
 
-SECRET_KEY = 'django-insecure-%3#v_5wpj1rord)qcqs*s0v0@hfb-y#8=q6k=(oy7ho=4vdxk'
+# 每次安装各自生成一把稳定密钥，优先允许发布环境通过环境变量注入。
+# 密钥文件与 SQLite 数据库同属本机用户数据，不进入源码或备份导出。
+_secret_key_path = DATA_DIR / '.django_secret'
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '').strip()
+if not SECRET_KEY:
+    try:
+        if _secret_key_path.exists():
+            SECRET_KEY = _secret_key_path.read_text(encoding='utf-8').strip()
+        if len(SECRET_KEY) < 50:
+            SECRET_KEY = secrets.token_urlsafe(50)
+            _secret_key_path.write_text(SECRET_KEY, encoding='utf-8')
+            try:
+                os.chmod(_secret_key_path, 0o600)
+            except OSError:
+                pass
+    except OSError as exc:
+        raise RuntimeError('无法创建本机 Django 密钥文件') from exc
 
 DEBUG = True
 
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '::1']
+
+# 桌面应用仅通过回环 HTTP 提供页面；没有 TLS 时不能设置 Secure，否则会让
+# Cookie 完全失效。HttpOnly 与 Strict SameSite 仍可防止脚本读取会话并阻断
+# 跨站请求携带 Cookie。
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Strict'
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SAMESITE = 'Strict'
+CSRF_COOKIE_SECURE = False
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
 
 INSTALLED_APPS = [
     'django.contrib.admin',

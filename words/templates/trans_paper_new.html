@@ -238,7 +238,7 @@ function generatePaper() {
     if (res && res.redirect) {
       window.location.href = res.redirect;
     } else {
-      box.innerHTML = '<div style="color:var(--c-red);"><i class="ph ph-warning-circle"></i> ' + (res.error || '组卷失败') + '</div>'
+      box.innerHTML = '<div style="color:var(--c-red);"><i class="ph ph-warning-circle"></i> ' + escapeHtml(res.error || '组卷失败') + '</div>'
         + '<div class="mt-2"><a class="btn btn-secondary btn-sm" href="{% url 'words:trans_home' %}">改用真题练习</a></div>';
       btns.forEach(function (b) { b.disabled = false; });
     }

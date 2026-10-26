@@ -166,7 +166,7 @@ function submitTranslation() {
       box.innerHTML = renderUngraded(res);
       showToast(res.error || '本次未批改', 'error');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '提交失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '提交失败') + '</div>';
       showToast(res.error || '提交失败', 'error');
     }
   }).catch(function () {

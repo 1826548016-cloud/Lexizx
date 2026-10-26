@@ -556,7 +556,7 @@ class AIModel(models.Model):
     display_name = models.CharField(max_length=100, blank=True, verbose_name='展示名称')
     base_url = models.CharField(max_length=300, default='https://api.openai.com/v1', verbose_name='接口基础地址')
     endpoint = models.CharField(max_length=400, blank=True, verbose_name='完整请求地址')
-    api_key = models.CharField(max_length=300, blank=True, verbose_name='API 密钥（旧版明文，新数据使用加密字段）')
+    api_key = models.CharField(max_length=300, blank=True, verbose_name='API 密钥（仅用于迁移旧版明文）')
     api_key_encrypted = models.TextField(blank=True, default='', verbose_name='加密后的 API 密钥')
     context = models.CharField(max_length=10, blank=True, default='128K', verbose_name='上下文')
     vision = models.BooleanField(default=True, verbose_name='支持图片识别')

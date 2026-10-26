@@ -251,11 +251,11 @@ async function runAMConnectionTest(f) {
     box.className = 'ai-test-result ai-test-fail';
     var hint = res && res.key_invalid ? '（密钥无效，请检查后重试）'
       : (res && res.model_invalid ? '（模型或接口地址错误）' : '');
-    box.innerHTML = '<i class="ph ph-x-circle"></i> ' + ((res && res.error) || '验证失败') + hint;
+    box.innerHTML = '<i class="ph ph-x-circle"></i> ' + escapeHtml((res && res.error) || '验证失败') + hint;
     return false;
   } catch (e) {
     box.className = 'ai-test-result ai-test-fail';
-    box.innerHTML = '<i class="ph ph-x-circle"></i> ' + ((e && e.error) || '验证请求失败，请检查网络或接口地址');
+    box.innerHTML = '<i class="ph ph-x-circle"></i> ' + escapeHtml((e && e.error) || '验证请求失败，请检查网络或接口地址');
     return false;
   }
 }
@@ -310,7 +310,7 @@ async function submitAddModel() {
     var box = document.getElementById('amTestResult');
     if (!saveRes.success) {
       box.className = 'ai-test-result ai-test-fail';
-      box.innerHTML = '<i class="ph ph-x-circle"></i> ' + (saveRes.error || '保存失败');
+      box.innerHTML = '<i class="ph ph-x-circle"></i> ' + escapeHtml(saveRes.error || '保存失败');
       return;
     }
     box.className = 'ai-test-result ai-test-ok';

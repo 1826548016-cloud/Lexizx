@@ -134,7 +134,6 @@ urlpatterns = [
     path('api/ai/export-pdf/', views.api_ai_export_pdf, name='api_ai_export_pdf'),
     path('api/ai/test/', views.api_ai_test, name='api_ai_test'),
     path('api/ai-models/', views.api_ai_models, name='api_ai_models'),
-    path('api/ai-models/key/', views.api_ai_model_key, name='api_ai_model_key'),
     path('api/assistant/', views.api_assistant, name='api_assistant'),
     path('api/assistant/model/', views.api_assistant_model, name='api_assistant_model'),
     path('api/ai/chat/', views.api_ai_chat, name='api_ai_chat'),

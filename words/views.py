@@ -31,6 +31,8 @@ from django.utils.dateparse import parse_datetime
 from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
+from .secret_vault import VaultError, decrypt as decrypt_secret, encrypt as encrypt_secret
+
 from .models import (Unit, Word, StudyProgress, StudyPlan,
                      DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, PickRecord, PickRecordWord, AIModel, AIModelHealth, PendingJudgment, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog, TranslationSentence, TranslationPractice, TranslationFavorite, GeneratedPaper, GeneratedQuestion,
                      Cet6TranslationPassage, Cet6TranslationPractice,
@@ -6324,18 +6326,25 @@ def resolve_ai_endpoint(base_url, endpoint):
 
 
 def _model_has_key(m):
-    return bool(m.api_key)
+    return bool(m.api_key_encrypted or m.api_key)
 
 
 def _model_plain_key(m):
-    """供 AI 调用取明文密钥：密钥以明文保存在本机数据库，直接读取。"""
-    return m.api_key or ''
+    """按需解密密钥，并把旧版明文记录升级为 DPAPI 密文。"""
+    if m.api_key_encrypted:
+        return decrypt_secret(m.api_key_encrypted)
+    if not m.api_key:
+        return ''
+    plain = m.api_key
+    _store_model_key(m, plain)
+    m.save(update_fields=['api_key', 'api_key_encrypted', 'updated_at'])
+    return plain
 
 
 def _store_model_key(m, plain):
-    """密钥以明文保存在本机数据库（不加密、不上传服务器）。"""
-    m.api_key = plain or ''
-    m.api_key_encrypted = ''
+    """密钥仅以 Windows 当前用户可解密的 DPAPI 密文写入本地数据库。"""
+    m.api_key = ''
+    m.api_key_encrypted = encrypt_secret(plain) if plain else ''
 
 
 def build_ai_headers(api_key):
@@ -6353,8 +6362,7 @@ def build_ai_headers(api_key):
 
 
 def serialize_ai_model(m):
-    """AIModel 数据库记录 → 前端 JSON。密钥明文不回传列表，
-    只给 has_key 供前端展示状态；查看明文走 /api/ai-models/key/。"""
+    """AIModel 数据库记录 → 前端 JSON；密钥内容永不回传。"""
     return {
         'id': m.id,
         'provider': m.provider,
@@ -6415,6 +6423,10 @@ def api_ai_models(request):
     """AI 模型管理：GET 列表 / POST 新增或更新 / DELETE 删除（配置统一存数据库，设置页管理）"""
     if request.method == 'GET':
         models = AIModel.objects.select_related('health').all().order_by('-enabled', 'id')
+        # 设置页是每次启动都会访问的入口，顺带一次性迁移旧版明文配置。
+        for m in models:
+            if m.api_key and not m.api_key_encrypted:
+                _model_plain_key(m)
         return JsonResponse({'models': [
             dict(serialize_ai_model(m), health=_ai_health_status(m)) for m in models
         ]})
@@ -6465,20 +6477,6 @@ def api_ai_models(request):
         return JsonResponse({'error': '请填写模型 ID'}, status=400)
     m.save()
     return JsonResponse({'success': True, 'model': serialize_ai_model(m)})
-
-
-@require_http_methods(['POST'])
-def api_ai_model_key(request):
-    """查看某个模型的 API 密钥明文（密钥仅保存在本机，编辑模型时回填用）。"""
-    try:
-        data = json.loads(request.body)
-    except Exception:
-        return JsonResponse({'error': '请求格式错误'}, status=400)
-    try:
-        m = AIModel.objects.get(id=int(data.get('id') or 0))
-    except (AIModel.DoesNotExist, ValueError, TypeError):
-        return JsonResponse({'error': '模型不存在'}, status=404)
-    return JsonResponse({'success': True, 'api_key': _model_plain_key(m)})
 
 
 @require_http_methods(['POST'])

@@ -94,7 +94,7 @@ function analyzeCet6Paragraph() {
       box.innerHTML = renderMarkdown(res.content);
       showToast('解析完成', 'success');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '解析失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '解析失败') + '</div>';
       showToast(res.error || '解析失败', 'error');
     }
   }).catch(function () {
@@ -113,7 +113,7 @@ function gradeCet6Translation() {
       box.innerHTML = renderCet6GradeResult(res.result);
       showToast('批改完成', 'success');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '批改失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '批改失败') + '</div>';
       showToast(res.error || '批改失败', 'error');
     }
   }).catch(function () {
@@ -198,7 +198,7 @@ function analyzeSentence() {
     if (res.success) {
       box.innerHTML = renderMarkdown(res.content);
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '分析失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '分析失败') + '</div>';
       showToast(res.error || '分析失败', 'error');
     }
   }).catch(function () {
@@ -217,7 +217,7 @@ function gradeTranslation() {
       box.innerHTML = renderGradeResult(res.result);
       showToast('批改完成', 'success');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '批改失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '批改失败') + '</div>';
       showToast(res.error || '批改失败', 'error');
     }
   }).catch(function () {
@@ -346,7 +346,7 @@ function gradeEssay() {
       box.innerHTML = renderEssayGrade(res.result);
       showToast('批改完成，已沉淀好句与错题', 'success');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '批改失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '批改失败') + '</div>';
       showToast(res.error || '批改失败', 'error');
     }
   }).catch(function () {

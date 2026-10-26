@@ -204,7 +204,7 @@ function genPersonalTemplate() {
       document.getElementById('tmplExportBtn').style.display = 'inline-flex';
       showToast('专属模板已生成', 'success');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '生成失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '生成失败') + '</div>';
       document.getElementById('tmplExportBtn').style.display = 'none';
       showToast(res.error || '生成失败，请检查模型配置', 'error');
     }
@@ -254,7 +254,7 @@ function genThemesReport(examType) {
       box.innerHTML = renderMarkdown(res.content);
       showToast('命题规律分析已完成', 'success');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '分析失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '分析失败') + '</div>';
       showToast(res.error || '分析失败', 'error');
     }
   }).catch(function (e) {
