@@ -1031,6 +1031,51 @@ def favorites_list(request):
     return render(request, 'favorites.html', {'favorites': favs})
 
 
+# 词云最多展示的单词数：词量过大时按掌握等级优先随机抽样，保证清晰可读
+WORD_CLOUD_LIMIT = 150
+
+
+def mastered_word_cloud(request):
+    """用用户标记为已掌握的单词组成词云。"""
+    categories = [
+        ('required', '必考词'),
+        ('basic', '基础词'),
+        ('advanced', '超纲词'),
+    ]
+    selected_category = request.GET.get('category', '')
+    if selected_category not in {code for code, _ in categories}:
+        selected_category = ''
+
+    progress = StudyProgress.objects.filter(status='mastered').select_related('word')
+    total_mastered = progress.count()
+    if selected_category:
+        progress = progress.filter(word__category=selected_category)
+    category_count = progress.count()
+
+    palette = ['red', 'green', 'blue', 'amber', 'purple']
+    cloud_words = []
+    sampled = progress.order_by('-mastery_level', '?')[:WORD_CLOUD_LIMIT]
+    for index, item in enumerate(sampled):
+        level = max(0, min(item.mastery_level, 8))
+        cloud_words.append({
+            'id': item.word_id,
+            'word': item.word.word,
+            'meaning': item.word.meanings_display(),
+            'url': reverse('words:word_detail', args=[item.word_id]),
+            'weight': level + 1,
+            'color': palette[index % len(palette)],
+        })
+
+    return render(request, 'word_cloud.html', {
+        'words': cloud_words,
+        'total_mastered': total_mastered,
+        'category_count': category_count,
+        'selected_count': len(cloud_words),
+        'selected_category': selected_category,
+        'categories': categories,
+    })
+
+
 def weak_words(request):
     """薄弱词（错误知识库）：从全部薄弱词中精选最需要巩固的 50 个。
     使用统一风险引擎 compute_risk_score 计算风险档位：
@@ -2831,9 +2876,13 @@ def api_learning_report(request):
         return JsonResponse({'error': f'生成失败：{e}'}, status=500)
 
 
-@require_http_methods(['POST'])
+@require_http_methods(['GET', 'POST'])
 def api_study_duration(request):
     """累加当前学习页的有效前台时长（秒）。"""
+    if request.method == 'GET':
+        checkin = DailyCheckIn.objects.filter(date=timezone.localdate()).only('study_duration').first()
+        return JsonResponse({'success': True, 'seconds': checkin.study_duration if checkin else 0})
+
     try:
         data = json.loads(request.body or '{}')
         seconds = int(data.get('seconds', 0))

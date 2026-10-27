@@ -101,7 +101,7 @@
       <div class="card-header">今日时长</div>
     </div>
     <div class="stat-value" id="todayDuration" data-seconds="{{ today_duration }}">-</div>
-    <div class="stat-label" id="todayDurationLabel">学习页可见时计时</div>
+    <div class="stat-label" id="todayDurationLabel">学习页面位于前台时累计</div>
   </div>
 </div>
 </section>
@@ -501,9 +501,13 @@
   document.addEventListener('DOMContentLoaded', function () {
     renderCheckinHeatmap();
     updateTodayDuration();
-    // 每 30 秒刷新一次今日时长显示
+    // 前台轮询服务端累计值；离开仪表盘时不估算时间。
     setInterval(updateTodayDuration, 30000);
   });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) updateTodayDuration();
+  });
+  window.addEventListener('focus', updateTodayDuration);
 
   // 格式化学习时长
   function formatDuration(seconds) {
@@ -516,19 +520,22 @@
     return s + ' 秒';
   }
 
-  // 更新今日学习时长显示（本地秒级累加，每 30 秒向后端拉取校准）
-  var durationBaseSeconds = 0;
-  var durationStartTs = 0;
+  // 今日时长只显示服务端记录，不用仪表盘停留时间做本地估算。
+  var durationRequestPending = false;
   function updateTodayDuration() {
     var el = document.getElementById('todayDuration');
-    if (!el) return;
-    if (!durationBaseSeconds) {
-      durationBaseSeconds = parseInt(el.dataset.seconds, 10) || 0;
-      durationStartTs = Date.now();
-    }
-    // 本地估算：基准 + 页面可见时间（粗略，仅展示用）
-    var elapsed = document.hidden ? 0 : Math.floor((Date.now() - durationStartTs) / 1000);
-    el.textContent = formatDuration(durationBaseSeconds + elapsed);
+    if (!el || document.hidden || durationRequestPending) return;
+    durationRequestPending = true;
+    fetch('/api/study-duration/', { cache: 'no-store' })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (!data || !data.success) return;
+        var seconds = Math.max(0, Number(data.seconds) || 0);
+        el.dataset.seconds = seconds;
+        el.textContent = formatDuration(seconds);
+      })
+      .catch(function () {})
+      .then(function () { durationRequestPending = false; });
   }
 </script>
 {% endblock %}

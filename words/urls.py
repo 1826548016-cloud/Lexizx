@@ -21,6 +21,7 @@ urlpatterns = [
     path('plan/create/', views.plan_create, name='plan_create'),
     path('settings/', views.settings_page, name='settings_page'),
     path('favorites/', views.favorites_list, name='favorites_list'),
+    path('word-cloud/', views.mastered_word_cloud, name='word_cloud'),
     path('weak-words/', views.weak_words, name='weak_words'),
     # 待复核队列（HANDOVER 第八节相位 3）：AI 不可用期间的判定暂存与补判/人工改判
     path('pending-reviews/', views.pending_reviews_page, name='pending_reviews'),

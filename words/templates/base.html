@@ -77,6 +77,9 @@
           <a href="{% url 'words:word_list' %}" data-nav="words">
             <i class="ph ph-books"></i> <span>词汇本</span>
           </a>
+          <a href="{% url 'words:word_cloud' %}" data-nav="word-cloud">
+            <i class="ph ph-cloud"></i> <span>我的词云</span>
+          </a>
           <a href="{% url 'words:weak_words' %}" data-nav="weak">
             <i class="ph ph-warning-circle"></i> <span>薄弱词</span>
           </a>
@@ -179,6 +182,7 @@
       <a href="{% url 'words:daily_pick' %}" data-mnav="daily"><i class="ph ph-calendar-check"></i><span>今日自选</span></a>
       <a href="{% url 'words:review_start' %}" data-mnav="review"><i class="ph ph-arrows-clockwise"></i><span>复习</span></a>
       <a href="{% url 'words:weak_words' %}" data-mnav="weak"><i class="ph ph-warning-circle"></i><span>薄弱词</span></a>
+      <a href="{% url 'words:word_cloud' %}" data-mnav="word-cloud"><i class="ph ph-cloud"></i><span>我的词云</span></a>
       <a href="{% url 'words:favorites_list' %}" data-mnav="favorites"><i class="ph ph-star"></i><span>收藏词汇</span></a>
       <a href="{% url 'words:study_plan' %}" data-mnav="plan"><i class="ph ph-calendar-blank"></i><span>计划</span></a>
       <a href="{% url 'words:exam' %}" data-mnav="exam"><i class="ph ph-note-pencil"></i><span>模拟考试</span></a>

@@ -222,6 +222,10 @@ window.VocabStudyTimer = (function () {
   var channel = null;
   try { channel = new BroadcastChannel('vocab_study_timer'); } catch (e) {}
 
+  function pageIsActive() {
+    return !document.hidden && (typeof document.hasFocus !== 'function' || document.hasFocus());
+  }
+
   // 尝试获取主标签页锁
   function acquireLock() {
     if (isMaster) return true;
@@ -251,15 +255,17 @@ window.VocabStudyTimer = (function () {
     if (channel) channel.postMessage({ type: 'master_changed', tab: null });
   }
 
-  function collect() {
-    if (!active || !isMaster || document.hidden || !lastActiveAt) return;
-    var seconds = Math.floor((Date.now() - lastActiveAt) / 1000);
+  function collect(forceUntilBoundary) {
+    if (!active || !isMaster || document.hidden || (!forceUntilBoundary && !pageIsActive()) || !lastActiveAt) return;
+    // The heartbeat runs every 20 seconds. Cap delayed callbacks so a suspended
+    // window cannot turn a long sleep/background gap into study time.
+    var seconds = Math.min(25, Math.floor((Date.now() - lastActiveAt) / 1000));
     if (seconds > 0) pendingSeconds += seconds;
     lastActiveAt = Date.now();
   }
 
-  function flush() {
-    collect();
+  function flush(forceUntilBoundary) {
+    collect(forceUntilBoundary);
     var seconds = Math.min(pendingSeconds, 90);
     if (!seconds) return;
     pendingSeconds -= seconds;
@@ -280,18 +286,23 @@ window.VocabStudyTimer = (function () {
     active = true;
     intervalId = setInterval(function () {
       // 每个周期：尝试获取锁、续租锁、如果可见则计时
+      if (!pageIsActive()) {
+        if (isMaster) {
+          releaseLock();
+          lastActiveAt = 0;
+        }
+        return;
+      }
       if (!isMaster) acquireLock();
       if (isMaster) {
         renewLock();
-        if (!document.hidden) {
-          if (!lastActiveAt) lastActiveAt = Date.now();
-          flush();
-        }
+        if (!lastActiveAt) lastActiveAt = Date.now();
+        flush();
       }
     }, 20000);
     // 立即尝试获取锁
-    if (!document.hidden) acquireLock();
-    lastActiveAt = document.hidden ? 0 : Date.now();
+    if (pageIsActive()) acquireLock();
+    lastActiveAt = pageIsActive() ? Date.now() : 0;
   }
 
   function stop() {
@@ -310,17 +321,30 @@ window.VocabStudyTimer = (function () {
       flush();
       releaseLock();
       lastActiveAt = 0;
-    } else {
+    } else if (pageIsActive()) {
       acquireLock();
-      lastActiveAt = Date.now();
+      lastActiveAt = isMaster ? Date.now() : 0;
     }
+  });
+
+  window.addEventListener('blur', function () {
+    if (!active) return;
+    flush(true);
+    releaseLock();
+    lastActiveAt = 0;
+  });
+  window.addEventListener('focus', function () {
+    if (!active || !pageIsActive()) return;
+    acquireLock();
+    lastActiveAt = isMaster ? Date.now() : 0;
   });
 
   // 监听其他标签页释放锁的消息，尝试接管
   if (channel) {
     channel.onmessage = function (e) {
-      if (e.data && e.data.type === 'master_changed' && !e.data.tab && active && !document.hidden) {
+      if (e.data && e.data.type === 'master_changed' && !e.data.tab && active && pageIsActive()) {
         acquireLock();
+        if (isMaster && !lastActiveAt) lastActiveAt = Date.now();
       }
     };
   }
@@ -339,22 +363,33 @@ window.VocabActiveClock = function (initialSeconds) {
   var elapsed = Math.max(0, Number(initialSeconds) || 0) * 1000;
   var running = false;
   var lastAt = 0;
-  function collect() {
-    if (!running || document.hidden || !lastAt) return;
-    elapsed += Math.max(0, Date.now() - lastAt);
+  function pageIsActive() {
+    return !document.hidden && (typeof document.hasFocus !== 'function' || document.hasFocus());
+  }
+  function collect(forceUntilBoundary) {
+    if (!running || document.hidden || (!forceUntilBoundary && !pageIsActive()) || !lastAt) return;
+    elapsed += Math.min(1500, Math.max(0, Date.now() - lastAt));
     lastAt = Date.now();
   }
-  function pause() { collect(); if (running) lastAt = 0; }
-  function resume() { if (running && !document.hidden && !lastAt) lastAt = Date.now(); }
-  function start() { running = true; lastAt = document.hidden ? 0 : Date.now(); }
+  function pause(forceUntilBoundary) { collect(forceUntilBoundary); if (running) lastAt = 0; }
+  function resume() { if (running && pageIsActive() && !lastAt) lastAt = Date.now(); }
+  function start() { running = true; lastAt = pageIsActive() ? Date.now() : 0; }
   function stop() { collect(); running = false; lastAt = 0; return seconds(); }
   function seconds() { collect(); return Math.floor(elapsed / 1000); }
   function onVisibility() { if (document.hidden) pause(); else if (running) resume(); }
+  function onBlur() { pause(true); }
+  function onFocus() { resume(); }
   document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('blur', onBlur);
+  window.addEventListener('focus', onFocus);
   return {
     start: start, pause: pause, resume: resume, stop: stop,
     seconds: seconds,
-    destroy: function () { document.removeEventListener('visibilitychange', onVisibility); }
+    destroy: function () {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+    }
   };
 };
 

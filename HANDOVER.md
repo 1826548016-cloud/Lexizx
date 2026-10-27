@@ -84,6 +84,10 @@ python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath pro
 
 ## 8. 变更记录
 
+#### 2026-10-27 ｜ 词云功能修复与效果优化
+
+修复「我的词云」两个阻断性 bug：模板中 `orbit.textContent` 引用了不存在的变量导致首次渲染即抛 ReferenceError 整页空白；颜色回调对游离 DOM 节点取计算样式恒为黑色，内联色覆盖五色 class。优化：词量超限时后端按掌握等级优先随机抽样 150 个（常量 `WORD_CLOUD_LIMIT`）；字号改为纯幂函数 `13 * weight^0.7`（无常数项，保证 shrinkToFit 递归缩权重时字号能跌破 minSize，否则无限递归爆栈 RangeError，这是 wordcloud2 的已知陷阱）；椭圆率按容器宽高比动态计算；单词逐个淡入（prefers-reduced-motion 下禁用）；悬浮/聚焦显示释义浮层；移除量测字号（600）与渲染字重（650 !important）不一致导致的潜在重叠；按维护者要求删除页头功能说明句与底部图例行（含不再使用的 CSS 规则）。`manage.py check` 与 156 项测试通过；浏览器自动化不可用，视觉效果未实机截图验证。未提交、未打包。
+
 #### 2026-10-26 ｜ 本机密钥保险箱与依赖安全维护
 
 安全审查确认本程序的安全边界是单机单用户：Django 服务只能监听 `127.0.0.1`，不得改为局域网或公网监听。AI 模型密钥现在使用 Windows 当前用户的 DPAPI 加密后写入 SQLite；密钥明文读取接口已经移除，旧版明文密钥在应用读取或打开模型列表时迁移为密文。桌面 Cookie 使用 `HttpOnly`、`SameSite=Strict`，保持 HTTP 回环访问兼容，不能启用 `Secure` 标志（本机服务没有 TLS）。Django `SECRET_KEY` 改为本机首次启动生成或由 `DJANGO_SECRET_KEY` 注入，密钥文件不纳入版本控制。依赖升级至 Django 5.2.18。AI 上游错误文本在写入页面前统一转义。已应用 `words.0060`，`manage.py check`、迁移检查和密钥保险箱定向测试通过；完整测试运行 156 项，其中 8 项更新器测试受沙箱临时目录权限限制而无法创建测试文件。未提交、未打包。
