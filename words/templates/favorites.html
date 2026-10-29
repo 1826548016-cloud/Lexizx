@@ -40,7 +40,7 @@
     {% if fav.word.phonetic_us %}
     <div class="text-secondary" style="margin-bottom: 8px;">
       {{ fav.word.phonetic_us }}
-      <button class="btn btn-secondary btn-sm" onclick="speak('{{ fav.word.word }}')" title="发音" style="margin-left: 4px; padding: 2px 6px;"><i class="ph ph-speaker-high"></i></button>
+      <button class="btn btn-secondary btn-sm" onclick="speak('{{ fav.word.word|escapejs }}')" title="发音" style="margin-left: 4px; padding: 2px 6px;"><i class="ph ph-speaker-high"></i></button>
     </div>
     {% endif %}
 

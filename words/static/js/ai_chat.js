@@ -172,7 +172,27 @@ window.AIChat = (function () {
 
   // ===== 文件处理 =====
   function handleFiles(fileList) {
+    var room = Math.max(0, 8 - pendingFiles.length);
     var files = Array.prototype.slice.call(fileList);
+    if (files.length > room) {
+      showToast('每次最多保留 8 个附件', 'error');
+      files = files.slice(0, room);
+    }
+    var existingBytes = pendingFiles.reduce(function (sum, item) {
+      return sum + (item.size || 0);
+    }, 0);
+    files = files.filter(function (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        showToast('单个附件不能超过 10 MB：' + file.name, 'error');
+        return false;
+      }
+      if (existingBytes + file.size > 30 * 1024 * 1024) {
+        showToast('附件总大小不能超过 30 MB：' + file.name, 'error');
+        return false;
+      }
+      existingBytes += file.size;
+      return true;
+    });
     var tasks = files.map(function (file) {
       return readFile(file).then(function (item) {
         pendingFiles.push(item);
@@ -182,26 +202,27 @@ window.AIChat = (function () {
       });
     });
     Promise.all(tasks).then(function () {
-      el('aiChatInput').focus();
+      var input = el('aiChatInput');
+      if (input) input.focus();
     });
   }
 
   function readFile(file) {
     return new Promise(function (resolve, reject) {
       var mime = file.type || '';
-      var isImage = mime.startsWith('image/');
+      var isImage = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].indexOf(mime.toLowerCase()) !== -1;
       var reader = new FileReader();
       reader.onerror = function () { reject(new Error('read error')); };
       if (isImage) {
         reader.onload = function () {
           // FileReader 的 dataURL 自带 data:image/xxx;base64, 前缀，剥掉只留 base64 部分
           var base64 = String(reader.result).split(',')[1] || '';
-          resolve({ name: file.name, mime: mime, content: base64, type: 'image' });
+          resolve({ name: file.name, mime: mime, content: base64, type: 'image', size: file.size });
         };
         reader.readAsDataURL(file);
       } else {
         reader.onload = function () {
-          resolve({ name: file.name, mime: mime || 'text/plain', content: String(reader.result), type: 'text' });
+          resolve({ name: file.name, mime: mime || 'text/plain', content: String(reader.result), type: 'text', size: file.size });
         };
         reader.readAsText(file, 'utf-8');
       }

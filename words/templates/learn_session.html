@@ -167,9 +167,10 @@
 <script src="{% static 'js/word_ext.js' %}?v=2"></script>
 <script src="{% static 'js/word_fav.js' %}?v=1"></script>
 <script src="{% static 'js/assistant.js' %}"></script>
+{{ words_data|json_script:"learn-words-data" }}
 <script>
 (function() {
-  var wordsData = {{ words_json|safe }};
+  var wordsData = JSON.parse(document.getElementById('learn-words-data').textContent);
   var wordCount = wordsData.length;
   var mode = '{{ mode|escapejs }}';
   var checkMode = '{{ check|escapejs }}';

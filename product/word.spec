@@ -2,7 +2,7 @@
 """PyInstaller 打包配置：把 Django 项目打成单 exe（原生窗口版，无控制台、无浏览器）。
 用法：在项目根目录执行
     python -m PyInstaller --noconfirm --clean --distpath product/dist --workpath product/build product/word.spec
-产物：product/dist/word.exe（中间文件与旧产物为可再生垃圾，日常清理，见 HANDOVER.md）
+产物：product/dist/word.exe（中间文件与旧产物为可再生垃圾，日常清理）
 """
 import sys
 from pathlib import Path

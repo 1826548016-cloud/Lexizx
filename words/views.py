@@ -13,6 +13,7 @@ import urllib.error
 import base64
 import math
 import socket
+import logging
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta, datetime
 from html import unescape
@@ -32,6 +33,8 @@ from django.db import IntegrityError
 from django.views.decorators.http import require_http_methods
 
 from .secret_vault import VaultError, decrypt as decrypt_secret, encrypt as encrypt_secret
+
+logger = logging.getLogger(__name__)
 
 from .models import (Unit, Word, StudyProgress, StudyPlan,
                      DailyCheckIn, Favorite, Note, QuickMemory, DailyPick, PickRecord, PickRecordWord, AIModel, AIModelHealth, PendingJudgment, StudySession, UserSettings, ChatMessage, ImportLog, Conversation, LearningReport, StudyRecord, StudyPreset, ExamQuestion, WritingPractice, WritingPhrase, AICallLog, TranslationSentence, TranslationPractice, TranslationFavorite, GeneratedPaper, GeneratedQuestion,
@@ -355,6 +358,7 @@ def today_words(request):
     settings_obj = UserSettings.get_settings()
     return render(request, 'today_words.html', {
         'words_json': json.dumps(word_items, ensure_ascii=False),
+        'words_data': word_items,
         'word_count': len(word_items),
         'batch_size': settings_obj.batch_size,
         'today': timezone.localdate(),
@@ -567,6 +571,7 @@ def learn_session(request):
         'gate_repeats': gate_repeats,
         'gate_interleave': gate_interleave,
         'words_json': json.dumps(word_data, ensure_ascii=False),
+        'words_data': word_data,
         'practice_only': practice_only,
     })
 
@@ -611,11 +616,14 @@ def daily_pick_page(request):
     return render(request, 'daily_pick.html', {
         'units': units,
         'picked_ids_json': json.dumps(picked_ids, ensure_ascii=False),
+        'picked_ids_data': picked_ids,
         'words_json': json.dumps(word_items, ensure_ascii=False),
+        'words_data': word_items,
         'picked_count': len(picked_ids),
         'batch_size': settings_obj.batch_size,
         'pick_records': pick_records,
         'pick_records_json': json.dumps(pick_records, ensure_ascii=False),
+        'pick_records_data': pick_records,
     })
 
 
@@ -812,6 +820,44 @@ def review_start(request):
     })
 
 
+def _order_review_progress(progress_items, today):
+    """按复习紧迫度分组，再用近期错误风险安排每组内部顺序。"""
+    yesterday = today - timedelta(days=1)
+
+    def is_due(progress):
+        return progress.next_review is None or progress.next_review <= today
+
+    def priority(progress):
+        if progress.learned_date == yesterday and progress.error_count > 0:
+            return 0
+        if progress.learned_date == yesterday:
+            return 1
+        if is_due(progress):
+            return 2
+        return 3
+
+    due_count = sum(1 for progress in progress_items if is_due(progress))
+    buckets = [[], [], [], []]
+    for progress in progress_items:
+        buckets[priority(progress)].append(progress)
+
+    events_by_word = _batch_error_events([progress.word_id for progress in progress_items])
+
+    def risk_key(progress):
+        risk = _progress_risk_summary(
+            progress, today, events=events_by_word.get(progress.word_id, []))
+        score = risk['risk_score'] if risk['risk_score'] is not None else 0.0
+        # 先按有效风险档排序；同档内再保留手动覆盖、自动分、熟悉度和逾期顺序。
+        override_rank = 0 if risk['risk_overridden'] else 1
+        manual_rank = {3: 0, 2: 1, 1: 2}.get(progress.manual_level, 1)
+        overdue_days = (today - (progress.next_review or today)).days
+        return (-risk['risk_tier'], override_rank, -score, manual_rank, -overdue_days)
+
+    for index, bucket in enumerate(buckets):
+        buckets[index] = _sort_bucket_with_risk_jitter(bucket, risk_key)
+    return buckets[0] + buckets[1] + buckets[2] + buckets[3], due_count
+
+
 def review_session(request):
     """复习：从选定范围（单元/掌握状态）的已学词汇中抽取。
     抽取优先级（每天固定复习，直到完全掌握）：
@@ -826,6 +872,7 @@ def review_session(request):
     - count=N 指定本轮抽取数量（默认使用每日复习目标）
     """
     today = timezone.localdate()
+    yesterday = today - timedelta(days=1)
     settings_obj = UserSettings.get_settings()
 
     # 范围参数：units 多选单元编号；scope 掌握状态
@@ -877,40 +924,15 @@ def review_session(request):
 
     all_progress = list(query)
 
-    # —— 自动复习调度（每天固定复习，直到完全掌握）——
-    # 优先级：① 昨天背错 → ② 昨天新学 → ③ 今日到期 → ④ 更早已学按最久优先。
-    # 今天刚学会的词安排在明天，不混入今天的复习队列。
-    def _is_due(p):
-        return p.next_review is None or p.next_review <= today
-
-    yesterday = today - timedelta(days=1)
-
-    def _priority(p):
-        if p.learned_date == yesterday and p.error_count > 0:
-            return 0
-        if p.learned_date == yesterday:
-            return 1
-        if _is_due(p):
-            return 2
-        return 3
-
-    # 今日真正到期的词数量（不参与补足统计）
-    due_total = sum(1 for p in all_progress if _is_due(p))
+    # 固定保留“昨日错词 → 昨日新词 → 今日到期 → 较早已学”的组间优先级；
+    # 每组内再按近期错误风险和遗忘紧迫度排序。
+    ordered, due_total = _order_review_progress(all_progress, today)
 
     # 随机复习：跳过本轮已复习过的词（session 记录）
     done_ids = request.session.get('random_review_done', []) or []
     if random_mode and done_ids:
         done_set = set(done_ids)
-        all_progress = [p for p in all_progress if p.id not in done_set]
-
-    # 分组调度：高优先级在前；①②③组内乱序，④按学习日期最久优先
-    buckets = ([], [], [], [])
-    for p in all_progress:
-        buckets[_priority(p)].append(p)
-    for i in (0, 1, 2):
-        random.shuffle(buckets[i])
-    buckets[3].sort(key=lambda p: (p.learned_date or today))
-    ordered = buckets[0] + buckets[1] + buckets[2] + buckets[3]
+        ordered = [p for p in ordered if p.id not in done_set]
 
     total_candidate = len(ordered)  # 本次能复习的全部词
     batch = ordered[:target]
@@ -967,6 +989,7 @@ def review_session(request):
     return render(request, 'review_session.html', {
         'review_count': len(word_data),
         'words_json': json.dumps(word_data, ensure_ascii=False),
+        'words_data': word_data,
         'total_due': due_total,  # 范围内「今日到期」的已学词数（昨天学的今天自动到期）
         'remaining_due': max(0, total_candidate - len(batch)),
         'daily_review_target': settings_obj.daily_review_target,
@@ -1373,6 +1396,7 @@ RISK_UNMASTERED_W = 0.5      # 未掌握修正
 RISK_OVERDUE_W = 0.3         # 逾期修正
 RISK_CORRECT_W = 0.2         # 连续答对修正（每项扣减）
 RISK_SCORE_CAP = 10.0        # 风险分封顶，避免高频无限抬分
+RISK_EVENT_LOOKBACK_DAYS = 365  # 衰减证据只读近一年；长期错误仍由 error_count 反映
 RISK_TIER_LOW = 1.5
 RISK_TIER_MEDIUM = 4.0
 # 错误动作全集：真实答错才会写这些 action
@@ -1407,7 +1431,9 @@ def compute_risk_score(progress, today=None, events=None):
     # 1) 真实错误事件时间衰减
     if events is None:
         events = StudyRecord.objects.filter(
-            word=progress.word, action__in=RISK_ERROR_ACTIONS).order_by('created_at')
+            word=progress.word, action__in=RISK_ERROR_ACTIONS,
+            created_at__gte=timezone.now() - timedelta(days=RISK_EVENT_LOOKBACK_DAYS)
+        ).order_by('created_at')
     decay_score = 0.0
     for rec in events:
         days = (today - timezone.localdate(rec.created_at)).days
@@ -1466,12 +1492,14 @@ def _progress_risk_summary(p, today=None, events=None):
 
 
 def _batch_error_events(word_ids):
-    """按词批量取出真实错误事件（RISK_ERROR_ACTIONS），按 word_id 分桶返回。
-    供 weak_words、_get_today_task 等列表视图一次性拉取，避免 N+1。"""
+    """按词批量取近一年真实错误事件并分桶，避免 N+1 和无界历史扫描。
+    更早错误仍由 progress.error_count 参与平滑风险修正。"""
     if not word_ids:
         return {}
+    cutoff = timezone.now() - timedelta(days=RISK_EVENT_LOOKBACK_DAYS)
     events = (StudyRecord.objects
-              .filter(word_id__in=word_ids, action__in=RISK_ERROR_ACTIONS)
+              .filter(word_id__in=word_ids, action__in=RISK_ERROR_ACTIONS,
+                      created_at__gte=cutoff)
               .only('word_id', 'action', 'mistake_type', 'created_at')
               .order_by('created_at'))
     buckets = {}
@@ -1481,18 +1509,19 @@ def _batch_error_events(word_ids):
 
 
 def _sort_bucket_with_risk_jitter(bucket, key_fn):
-    """桶内排序 + 同优先级区间随机。
+    """桶内排序 + 同优先级区间随机；每个项目只计算一次排序键。
     先按 key_fn 升序，再按「相邻 key 相同」切分成组打乱；
     避免早期按固定位置每3个一切、把不同优先级的词混进同一随机组。
     """
-    ordered = sorted(bucket, key=key_fn)
+    ordered = [(key_fn(item), item) for item in bucket]
+    ordered.sort(key=lambda pair: pair[0])
     if len(ordered) <= 1:
-        return ordered
+        return [item for _, item in ordered]
     groups = []
     start = 0
-    prev_key = key_fn(ordered[0])
+    prev_key = ordered[0][0]
     for idx in range(1, len(ordered) + 1):
-        cur = key_fn(ordered[idx]) if idx < len(ordered) else None
+        cur = ordered[idx][0] if idx < len(ordered) else None
         if cur != prev_key:
             groups.append(ordered[start:idx])
             start = idx
@@ -1501,7 +1530,7 @@ def _sort_bucket_with_risk_jitter(bucket, key_fn):
     for g in groups:
         if len(g) > 1:
             random.shuffle(g)
-        result.extend(g)
+        result.extend(item for _, item in g)
     return result
 
 
@@ -1580,10 +1609,13 @@ def api_mark_word(request, action, word_id):
             progress.status = 'mastered'
             auto_excluded = _track_consecutive(progress, True)
         elif action in ('fuzzy', 'unknown'):
-            progress.mastery_level = 0
-            progress.status = 'learning'
             progress.error_count += 1
-            _track_consecutive(progress, False)
+            if progress.status == 'mastered':
+                progress.consecutive_correct = 0
+            else:
+                progress.mastery_level = 0
+                progress.status = 'learning'
+                _track_consecutive(progress, False)
             auto_excluded = False
         else:
             return JsonResponse({'error': '无效操作'}, status=400)
@@ -1780,7 +1812,7 @@ def _policy_pending(reason_code, comment=None):
 def judge_with_policy(word, answer, data, kind='meaning'):
     """统一判定服务：
     空答/拼写等确定性题 → 本地立即判定；释义等语义题 → 本地高置信规则先筛，
-    其余交 AI 仲裁；AI 超时/失败/输出非法时**本地兜底判错**（恢复先本地后AI的旧逻辑）。
+    其余交 AI 仲裁；AI 不可用或输出非法时保留待复核，不改变掌握状态。
     只判定、不写库。返回 policy dict：
     verdict ∈ correct/partial/wrong；
     source ∈ local_exact/local_confident/ai/ai_consensus/manual/local_fallback。"""
@@ -1805,22 +1837,17 @@ def judge_with_policy(word, answer, data, kind='meaning'):
     try:
         cfg = resolve_ai_model(data)
     except ValueError:
-        return _policy_local('wrong', '本地兜底判定：AI 模型未配置，与标准释义不一致',
-                             source='local_fallback', confidence='low')
+        return _policy_pending('ai_no_model', 'AI 模型未配置，已保存待复核')
 
     prompt = MEANING_JUDGE_PROMPT.format(
         word=word.word, meanings='；'.join(meaning_parts), answer=answer)
     content, _error, reason = _ai_judge_call(cfg, prompt, max_tokens=500, temperature=0.1)
     if not content:
-        # AI 不可用：本地兜底判错
-        return _policy_local('wrong', '本地兜底判定：AI 判定失败，与标准释义不一致',
-                             source='local_fallback', confidence='low')
+        return _policy_pending(reason or 'ai_unavailable')
     parsed = _extract_json_object(content) or {}
     v = parsed.get('verdict')
     if v not in ('correct', 'partial', 'wrong'):
-        # AI 输出非法：本地兜底判错
-        return _policy_local('wrong', '本地兜底判定：AI 输出异常，与标准释义不一致',
-                             source='local_fallback', confidence='low')
+        return _policy_pending('ai_invalid_output')
     return {'verdict': v, 'source': 'ai', 'is_final': True,
             'reason_code': '', 'confidence': 'medium',
             'comment': (parsed.get('comment') or '').strip()}
@@ -1910,10 +1937,12 @@ def judge_meaning_batch_with_policy(pairs, data, chunk_size=10):
                     'reason_code': '', 'confidence': 'medium',
                     'comment': got[w.id][1]}
             else:
-                # AI 失败/缺项/冲突：本地兜底判错
-                results[w.id] = _policy_local(
-                    'wrong', '本地兜底判定：AI 判定失败，与标准释义不一致',
-                    source='local_fallback', confidence='low')
+                if reason == 'ai_disabled':
+                    results[w.id] = _policy_local(
+                        'wrong', '本地判定：与标准释义不一致',
+                        source='local_fallback', confidence='low')
+                else:
+                    results[w.id] = _policy_pending(reason or 'ai_unavailable')
     return results
 
 
@@ -2081,9 +2110,15 @@ def api_spelling_check(request, word_id):
             progress.status = 'mastered'
         else:
             progress.error_count += 1
-            progress.mastery_level = 0
-            progress.status = 'learning'
-        auto_excluded = _track_consecutive(progress, correct)
+            if progress.status == 'mastered':
+                progress.consecutive_correct = 0
+                auto_excluded = False
+            else:
+                progress.mastery_level = 0
+                progress.status = 'learning'
+                auto_excluded = _track_consecutive(progress, False)
+        if correct:
+            auto_excluded = _track_consecutive(progress, True)
         progress.review_count += 1
         progress.last_review = now
         # 自动复习调度：今天默写过的词 → 明天自动进入复习栏目
@@ -2480,42 +2515,11 @@ def _get_today_task(today=None):
     # 新词候选：范围内尚无学习进度的词
     new_candidates = _in_range(Word.objects.all(), via_word=True).filter(progress__isnull=True)
 
-    # 复习候选：范围内已学、未排除的词，按固定优先级排序
-    # ① 昨天答错 → ② 昨天新学 → ③ 今日到期 → ④ 较早已学补足(学习日期最久优先)
+    # 复习候选：范围内已学、未排除的词，复用会话页的统一风险排序。
     all_progress = list(_in_range(
         StudyProgress.objects.exclude(status='new').exclude(is_excluded=True)
     ).select_related('word'))
-    yesterday = today - timedelta(days=1)
-
-    def _is_due(p):
-        return p.next_review is None or p.next_review <= today
-
-    def _priority(p):
-        if p.learned_date == yesterday and p.error_count > 0:
-            return 0
-        if p.learned_date == yesterday:
-            return 1
-        if _is_due(p):
-            return 2
-        return 3
-
-    buckets = [[], [], [], []]
-    for p in all_progress:
-        buckets[_priority(p)].append(p)
-    # 批量预取错误事件，避免桶内排序时逐词查库（列表大时是明显 N+1）
-    events_map = _batch_error_events([p.word_id for p in all_progress])
-    # 桶内排序：人工重点(手动等级1=熟练优先) > 手动风险档 > 自动风险分 > 到期紧迫度，再有限随机
-    def _bucket_key(p):
-        rs = _progress_risk_summary(p, today, events=events_map.get(p.word_id, []))
-        score = rs['risk_score'] if rs['risk_score'] is not None else 0.0
-        manual_rank = {1: 0, 2: 1, 3: 2}.get(p.manual_level, 2)
-        override = -1 if p.risk_override is None else p.risk_override
-        over = (today - (p.next_review or today)).days
-        # key 越小优先级越高；_sort_bucket_with_risk_jitter 按升序取词
-        return (manual_rank, -override, -score, over)
-    for i in range(4):
-        buckets[i] = _sort_bucket_with_risk_jitter(buckets[i], _bucket_key)
-    review_ordered = buckets[0] + buckets[1] + buckets[2] + buckets[3]
+    review_ordered, _ = _order_review_progress(all_progress, today)
 
     return {
         'plan': plan,
@@ -2753,8 +2757,11 @@ def _collect_report_summary(week_start, week_end):
     total_duration = sum(c.study_duration for c in checkins)
     today_total = sum(c.today_correct + c.today_wrong for c in checkins)
     today_correct = sum(c.today_correct for c in checkins)
-    correct_rate = round(today_correct / today_total * 100, 1) if today_total else 0
+    correct_rate = round(today_correct / today_total * 100, 1) if today_total else None
     active_days = sum(1 for c in checkins if c.new_words_learned > 0 or c.words_reviewed > 0 or c.study_duration > 0)
+    comparison = _collect_week_comparison(
+        week_start, min(week_end, today),
+        current_totals={'correct': today_correct, 'wrong': today_total - today_correct})
 
     # 学习最多的一天
     best_day = None
@@ -2801,6 +2808,8 @@ def _collect_report_summary(week_start, week_end):
         'reviewed_words': reviewed_words,
         'study_duration': total_duration,
         'correct_rate': correct_rate,
+        'correct_attempts': today_total,
+        'comparison': comparison,
         'streak': get_streak(),
         'active_days': active_days,
         'best_day': best_day,
@@ -2818,6 +2827,48 @@ def _collect_report_summary(week_start, week_end):
     }
 
 
+def _collect_week_comparison(week_start, actual_end, current_totals=None):
+    """取上周相同天数的数据，避免把本周未结束的数据与整周比较。"""
+    elapsed_days = max(1, (actual_end - week_start).days + 1)
+    previous_start = week_start - timedelta(days=7)
+    previous_end = previous_start + timedelta(days=elapsed_days - 1)
+
+    new_words = StudyProgress.objects.filter(
+        learned_date__gte=previous_start, learned_date__lte=previous_end
+    ).count()
+    reviewed_words = StudyProgress.objects.filter(
+        last_review__date__gte=previous_start,
+        last_review__date__lte=previous_end,
+        review_count__gt=0,
+    ).exclude(learned_date__gte=F('last_review__date')).count()
+    checkins = DailyCheckIn.objects.filter(date__gte=previous_start, date__lte=previous_end)
+    totals = checkins.aggregate(
+        duration=Sum('study_duration'),
+        correct=Sum('today_correct'),
+        wrong=Sum('today_wrong'),
+    )
+    attempts = (totals['correct'] or 0) + (totals['wrong'] or 0)
+    correct_rate = round((totals['correct'] or 0) / attempts * 100, 1) if attempts else None
+    if current_totals is None:
+        current_totals = DailyCheckIn.objects.filter(
+            date__gte=week_start, date__lte=actual_end
+        ).aggregate(correct=Sum('today_correct'), wrong=Sum('today_wrong'))
+    current_attempts = (current_totals['correct'] or 0) + (current_totals['wrong'] or 0)
+    current_correct_rate = round(
+        (current_totals['correct'] or 0) / current_attempts * 100, 1
+    ) if current_attempts else None
+    return {
+        'period_label': f'{previous_start.isoformat()} ~ {previous_end.isoformat()}',
+        'days': elapsed_days,
+        'new_words': new_words,
+        'reviewed_words': reviewed_words,
+        'study_duration': totals['duration'] or 0,
+        'correct_rate': correct_rate,
+        'current_attempts': current_attempts,
+        'current_correct_rate': current_correct_rate,
+    }
+
+
 @require_http_methods(['GET', 'POST'])
 def api_learning_report(request):
     """周学习报告：GET 查当前周报告与历史 / POST 生成（或重新生成）本周报告"""
@@ -2825,6 +2876,10 @@ def api_learning_report(request):
 
     if request.method == 'GET':
         current = LearningReport.objects.filter(week_start=week_start).first()
+        current_summary = current.get_summary() if current else None
+        if current_summary is not None:
+            current_summary['comparison'] = _collect_week_comparison(
+                week_start, min(week_end, timezone.localdate()))
         history = [{
             'id': r.id,
             'week_start': r.week_start.isoformat(),
@@ -2841,7 +2896,7 @@ def api_learning_report(request):
                 'id': current.id,
                 'week_start': current.week_start.isoformat(),
                 'week_end': current.week_end.isoformat(),
-                'summary': current.get_summary(),
+                'summary': current_summary,
                 'ai_comment': current.ai_comment,
                 'created_at': current.created_at.strftime('%Y-%m-%d %H:%M'),
             } if current else None,
@@ -3149,7 +3204,7 @@ def _http_get_json(url, timeout=6):
         },
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode('utf-8'))
+        return json.loads(resp.read(5 * 1024 * 1024 + 1).decode('utf-8'))
 
 
 def _http_get_text(url, timeout=8):
@@ -3162,7 +3217,7 @@ def _http_get_text(url, timeout=8):
         },
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode('utf-8', 'ignore')
+        return resp.read(512 * 1024 + 1).decode('utf-8', 'ignore')
 
 
 def _release_html_to_text(raw):
@@ -3259,7 +3314,7 @@ def api_check_update(request):
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_CANCEL = threading.Event()
 _UPDATE_STATE = {
-    'state': 'idle',          # idle/starting/downloading/verifying/ready/ready_unverified/cancelled/error
+    'state': 'idle',          # idle/starting/downloading/verifying/ready/cancelled/error
     'tag': '',
     'downloaded': 0,
     'total': 0,
@@ -3319,24 +3374,14 @@ def _download_update_worker(tag):
         _set_update_state(state='verifying', message='正在校验文件…',
                           downloaded=size, total=size, percent=100)
 
-        expected = None
         try:
             expected = updater_core.fetch_expected_sha(tag)
-        except Exception:
-            expected = None
-        if expected:
-            if not updater_core.verify_sha256(dest, expected):
-                try:
-                    dest.unlink()
-                except OSError:
-                    pass
-                raise updater_core.UpdateError('SHA-256 校验未通过，已拒绝安装')
-            _set_update_state(state='ready', message='校验通过，可以安装',
-                              path=str(dest), sha_expected=expected, sha_ok=True)
-        else:
-            _set_update_state(state='ready_unverified',
-                              message='该版本未提供校验文件，无法自动校验',
-                              path=str(dest), sha_ok=None)
+        except Exception as e:
+            raise updater_core.UpdateError('无法取得 SHA-256 校验值，已拒绝安装') from e
+        if not updater_core.verify_sha256(dest, expected):
+            raise updater_core.UpdateError('SHA-256 校验未通过，已拒绝安装')
+        _set_update_state(state='ready', message='校验通过，可以安装',
+                          path=str(dest), sha_expected=expected, sha_ok=True)
     except updater_core.UpdateCancelled:
         try:
             dest.unlink()
@@ -3901,10 +3946,10 @@ def api_restore(request):
                 return qs.values_list('id', flat=True).first()
             return None
 
-        with transaction.atomic():
-            with connection.cursor() as cur:
-                cur.execute('PRAGMA foreign_keys = OFF')
-            try:
+        with connection.cursor() as cur:
+            cur.execute('PRAGMA foreign_keys = OFF')
+        try:
+            with transaction.atomic():
                 # --- 0) 补齐词库：v2.1 备份携带 units+words，只增不改 ---
                 units_added = 0
                 words_added = 0
@@ -4098,7 +4143,7 @@ def api_restore(request):
                         )
 
                 # --- 8) 速记 ---
-                if data.get('quick_memories'):
+                if 'quick_memories' in data:
                     QuickMemory.objects.all().delete()
                     for qm in data['quick_memories']:
                         new_wid = _resolve_word_id(qm, 'quick_memories')
@@ -4109,7 +4154,7 @@ def api_restore(request):
                         )
 
                 # --- 8.5) 今日自选（按单词字符串映射，查不到跳过）---
-                if data.get('daily_picks'):
+                if 'daily_picks' in data:
                     DailyPick.objects.all().delete()
                     for dp in data['daily_picks']:
                         new_wid = _resolve_word_id(dp, 'daily_picks')
@@ -4126,7 +4171,7 @@ def api_restore(request):
                             continue
 
                 # --- 8.6) 选词记录（第十八节，按单词字符串映射，保留顺序）---
-                if data.get('pick_records'):
+                if 'pick_records' in data:
                     PickRecord.objects.all().delete()
                     for pr in data['pick_records']:
                         rec = PickRecord.objects.create(name=pr.get('name', '')[:100])
@@ -4361,9 +4406,9 @@ def api_restore(request):
                             continue
                         KnowledgeFeedback.objects.create(
                             target_type=tt, target_id=tid, action=fb.get('action', 'focus'))
-            finally:
-                with connection.cursor() as cur2:
-                    cur2.execute('PRAGMA foreign_keys = ON')
+        finally:
+            with connection.cursor() as cur2:
+                cur2.execute('PRAGMA foreign_keys = ON')
 
         msg = '恢复完成'
         if words_added or units_added:
@@ -4379,8 +4424,8 @@ def api_restore(request):
                         '请在新版程序中重新备份，或先在本机导入对应词库后再恢复')
         return JsonResponse({'success': True, 'message': msg})
     except Exception as e:
-        import traceback
-        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()[:2000]}, status=400)
+        logger.exception('Backup restore failed')
+        return JsonResponse({'error': '恢复失败，请检查备份文件格式或内容'}, status=400)
 
 
 @require_http_methods(['GET', 'POST'])
@@ -4400,22 +4445,45 @@ def api_settings(request):
             'use_ai_meaning_check': settings_obj.use_ai_meaning_check,
         })
     try:
-        data = json.loads(request.body)
+        data = json.loads(request.body or b'{}')
+        if not isinstance(data, dict):
+            return JsonResponse({'error': '设置内容格式无效'}, status=400)
         settings_obj = UserSettings.get_settings()
+        allowed = {
+            'font_size', 'theme', 'pronunciation_on', 'auto_read', 'speech_rate',
+            'voice_type', 'daily_new_target', 'daily_review_target', 'batch_size',
+            'gate_answer_show', 'use_ai_meaning_check', 'assistant_model',
+            'recognize_model', 'review_model', 'quick_memory_model',
+            'meaning_check_model', 'exam_model', 'cet6_translation_model',
+            'pos_learning_model',
+        }
         for k, v in data.items():
-            if not hasattr(settings_obj, k):
-                continue
+            if k not in allowed:
+                return JsonResponse({'error': '包含不允许修改的设置项'}, status=400)
             field = settings_obj._meta.get_field(k)
             if field.is_relation and field.many_to_one:
                 if v is None or v == '':
                     setattr(settings_obj, k, None)
                 else:
                     try:
-                        setattr(settings_obj, k, field.related_model.objects.get(pk=int(v)))
+                        model_id = int(v)
+                        if model_id <= 0:
+                            raise ValueError
+                        setattr(settings_obj, k, field.related_model.objects.get(pk=model_id))
                     except (field.related_model.DoesNotExist, ValueError, TypeError):
                         return JsonResponse({'error': '指定的模型不存在'}, status=400)
             else:
-                setattr(settings_obj, k, v)
+                try:
+                    cleaned = field.clean(v, settings_obj)
+                except Exception:
+                    return JsonResponse({'error': '设置值无效：' + k}, status=400)
+                if k in ('daily_new_target', 'daily_review_target', 'batch_size'):
+                    lower, upper = (1, 100) if k == 'batch_size' else (0, 5000)
+                    if not lower <= cleaned <= upper:
+                        return JsonResponse({'error': '设置值超出允许范围：' + k}, status=400)
+                if k == 'speech_rate' and (not math.isfinite(cleaned) or not 0.5 <= cleaned <= 2.0):
+                    return JsonResponse({'error': '语速必须在 0.5 到 2.0 之间'}, status=400)
+                setattr(settings_obj, k, cleaned)
         settings_obj.save()
         return JsonResponse({'success': True})
     except Exception as e:
@@ -4546,9 +4614,9 @@ def api_quick_memory_generate(request, word_id):
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            raw = resp.read()
+            raw = resp.read(5 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', 'ignore')
+        body = e.read(4096).decode('utf-8', 'ignore')
         return JsonResponse({'error': 'AI 接口错误 (HTTP %s): %s' % (e.code, body[:400])}, status=502)
     except urllib.error.URLError as e:
         return JsonResponse({'error': '无法连接 %s: %s' % (resolve_ai_endpoint(base_url, endpoint), e.reason)}, status=502)
@@ -4650,9 +4718,9 @@ def api_assistant(request):
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            raw = resp.read()
+            raw = resp.read(5 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', 'ignore')
+        body = e.read(4096).decode('utf-8', 'ignore')
         user_msg.delete()
         return JsonResponse({'error': 'AI 接口错误 (HTTP %s): %s' % (e.code, body[:400])}, status=502)
     except urllib.error.URLError as e:
@@ -4759,11 +4827,53 @@ def api_ai_chat(request):
 
     # ---- POST：对话 ----
     try:
-        data = json.loads(request.body)
+        content_length = int(request.META.get('CONTENT_LENGTH') or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    if content_length > 50 * 1024 * 1024:
+        return JsonResponse({'error': '请求过大，单次上传上限为 50 MB'}, status=413)
+    try:
+        raw_body = request.body
+        if len(raw_body) > 50 * 1024 * 1024:
+            return JsonResponse({'error': '请求过大，单次上传上限为 50 MB'}, status=413)
+        try:
+            data = json.loads(raw_body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JsonResponse({'error': '请求格式错误'}, status=400)
     except Exception:
-        data = {}
-    user_text = (data.get('message') or '').strip()
-    if not user_text and not data.get('files'):
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({'error': '请求格式错误'}, status=400)
+    user_text = data.get('message') if isinstance(data.get('message'), str) else ''
+    user_text = user_text.strip()
+    if len(user_text) > 50000:
+        return JsonResponse({'error': '消息过长，请控制在 50000 字符以内'}, status=400)
+    files = data.get('files') or []
+    if not isinstance(files, list) or len(files) > 8:
+        return JsonResponse({'error': '每次最多上传 8 个附件'}, status=400)
+    total_file_bytes = 0
+    for file_item in files:
+        if not isinstance(file_item, dict):
+            return JsonResponse({'error': '附件格式无效'}, status=400)
+        mime = str(file_item.get('mime') or '').lower()
+        raw = file_item.get('content') or ''
+        if not isinstance(raw, str):
+            return JsonResponse({'error': '附件内容格式无效'}, status=400)
+        if mime.startswith('image/'):
+            if mime not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif'):
+                return JsonResponse({'error': '图片仅支持 JPG、PNG、WebP 或 GIF'}, status=400)
+            try:
+                image_bytes = base64.b64decode(raw, validate=True)
+            except (ValueError, base64.binascii.Error):
+                return JsonResponse({'error': '图片附件编码无效'}, status=400)
+            if len(image_bytes) > 10 * 1024 * 1024:
+                return JsonResponse({'error': '单张图片不能超过 10 MB'}, status=400)
+            total_file_bytes += len(image_bytes)
+        else:
+            total_file_bytes += len(raw.encode('utf-8'))
+        if total_file_bytes > 30 * 1024 * 1024:
+            return JsonResponse({'error': '附件总大小不能超过 30 MB'}, status=400)
+    if not user_text and not files:
         return JsonResponse({'error': '消息不能为空'}, status=400)
 
     # 会话：指定 ID 则复用，否则新建
@@ -4790,10 +4900,9 @@ def api_ai_chat(request):
         return JsonResponse({'error': str(e)}, status=400)
 
     # 解析文件附件：图片 → data URI（视觉模型）；文本/其它 → 截断文本
-    files = data.get('files') or []
     content_parts = []
     file_notes = []
-    for f in files[:8]:  # 最多 8 个附件
+    for f in files:
         name = (f.get('name') or '附件').strip()[:120]
         mime = (f.get('mime') or '').lower()
         raw = f.get('content') or ''
@@ -4845,9 +4954,9 @@ def api_ai_chat(request):
 
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
-            raw = resp.read()
+            raw = resp.read(5 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', 'ignore')
+        body = e.read(4096).decode('utf-8', 'ignore')
         user_msg.delete()
         if not ChatMessage.objects.filter(conversation_id=conv.id).exists():
             conv.delete()  # 新建会话无消息 → 回滚
@@ -5035,6 +5144,7 @@ def api_exam_words(request):
         count = int(request.GET.get('count', 20))
     except (TypeError, ValueError):
         count = 20
+    count = max(1, min(count, 200))
 
     query = Word.objects.all()
     if unit_ids:
@@ -5052,16 +5162,14 @@ def api_exam_words(request):
         query = query.filter(progress__error_count__gt=0)
     # 'all'：全部单词
 
-    words = list(query)
-    random.shuffle(words)
-    if count > 0 and len(words) > count:
-        words = words[:count]
+    words = list(query.order_by('?')[:count])
 
-    # 干扰项候选池
-    all_words = list(Word.objects.all())
-    en_pool = [w.word for w in all_words]
+    # 限定干扰项候选池，避免每次出题都将整本词库实体化到内存。
+    candidate_words = list(Word.objects.order_by('?').only(
+        'word', 'meanings', 'meanings_by_pos', 'pos')[:500])
+    en_pool = [w.word for w in candidate_words]
     zh_pool = []
-    for w in all_words:
+    for w in candidate_words:
         for m in w.get_meanings():
             zh_pool.append(m)
 
@@ -6061,9 +6169,9 @@ def _ai_post_json(cfg, payload, timeout):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
+            raw = resp.read(5 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', 'ignore')
+        body = e.read(4096).decode('utf-8', 'ignore')
         code = e.code
         if code in (401, 403):
             raise _AIRequestError('config', '密钥或权限无效 (HTTP %s)' % code)
@@ -6534,11 +6642,27 @@ def api_ai_recognize(request):
     支持三种输入源：图片(image) / 纯文本(text_content) / 文本文件(file_content)
     """
     try:
-        data = json.loads(request.body)
+        try:
+            content_length = int(request.META.get('CONTENT_LENGTH') or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length > 20 * 1024 * 1024:
+            return JsonResponse({'error': '请求过大，单次识别上限为 20 MB'}, status=413)
+        raw_body = request.body
+        if len(raw_body) > 20 * 1024 * 1024:
+            return JsonResponse({'error': '请求过大，单次识别上限为 20 MB'}, status=413)
+        try:
+            data = json.loads(raw_body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JsonResponse({'error': '请求格式错误'}, status=400)
+        if not isinstance(data, dict):
+            return JsonResponse({'error': '请求格式错误'}, status=400)
         image_b64 = data.get('image', '')
         text_content = data.get('text_content', '')
         file_content = data.get('file_content', '')
         file_name = data.get('file_name', '')
+        if not all(isinstance(value, str) for value in (image_b64, text_content, file_content, file_name)):
+            return JsonResponse({'error': '识别内容格式无效'}, status=400)
 
         settings_obj = UserSettings.get_settings()
         if settings_obj.recognize_model and not data.get('model_id'):
@@ -6554,6 +6678,12 @@ def api_ai_recognize(request):
         model = cfg['model_id']
 
         if image_b64:
+            try:
+                decoded_image = base64.b64decode(image_b64, validate=True)
+            except (ValueError, base64.binascii.Error):
+                return JsonResponse({'error': '图片附件编码无效'}, status=400)
+            if len(decoded_image) > 10 * 1024 * 1024:
+                return JsonResponse({'error': '图片不能超过 10 MB'}, status=400)
             prompt = recognize_image_prompt()
             payload = {
                 'model': model,
@@ -6598,9 +6728,9 @@ def api_ai_recognize(request):
 
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                raw = resp.read()
+                raw = resp.read(5 * 1024 * 1024 + 1)
         except urllib.error.HTTPError as e:
-            body = e.read().decode('utf-8', 'ignore')
+            body = e.read(4096).decode('utf-8', 'ignore')
             return JsonResponse({'error': 'AI 接口错误 (HTTP %s): %s' % (e.code, body[:400])}, status=502)
         except urllib.error.URLError as e:
             url = resolve_ai_endpoint(base_url, endpoint)
@@ -6623,8 +6753,16 @@ def api_ai_recognize(request):
 def api_ai_review(request):
     """AI 复审：对识别结果进行二次校验，返回问题与修正建议"""
     try:
+        if len(request.body) > 5 * 1024 * 1024:
+            return JsonResponse({'error': '复审内容过大'}, status=413)
         data = json.loads(request.body)
+        if not isinstance(data, dict):
+            return JsonResponse({'error': '请求格式错误'}, status=400)
         words = data.get('words', [])
+        if not isinstance(words, list) or len(words) > 500:
+            return JsonResponse({'error': '复审单词数量无效（最多 500 个）'}, status=400)
+        if any(not isinstance(w, dict) or not isinstance(w.get('word'), str) for w in words):
+            return JsonResponse({'error': '复审单词数据格式无效'}, status=400)
 
         settings_obj = UserSettings.get_settings()
         if settings_obj.review_model and not data.get('model_id'):
@@ -6660,9 +6798,9 @@ def api_ai_review(request):
 
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                raw = resp.read()
+                raw = resp.read(5 * 1024 * 1024 + 1)
         except urllib.error.HTTPError as e:
-            body = e.read().decode('utf-8', 'ignore')
+            body = e.read(4096).decode('utf-8', 'ignore')
             return JsonResponse({'error': 'AI 接口错误 (HTTP %s): %s' % (e.code, body[:400])}, status=502)
         except urllib.error.URLError as e:
             url = resolve_ai_endpoint(base_url, endpoint)
@@ -6674,10 +6812,15 @@ def api_ai_review(request):
             return JsonResponse({'error': 'AI 返回内容不合法：%s' % e.message}, status=502)
         review = extract_json_array(content)
 
-        # 规范化：保证数量与输入一致，缺失项按"正确"处理
+        # 不完整或结构不合法的 AI 结果不得默认当作正确。
+        if len(review) != len(words) or any(not isinstance(item, dict)
+                                             or not isinstance(item.get('correct'), bool)
+                                             for item in review):
+            return JsonResponse({'error': 'AI 复审结果不完整或格式无效，请重试'}, status=502)
+
         normalized = []
         for i, w in enumerate(words):
-            item = review[i] if i < len(review) and isinstance(review[i], dict) else {}
+            item = review[i]
             norm = {
                 'word': str(w.get('word', '')),
                 'correct': bool(item.get('correct', True)),
@@ -6846,9 +6989,9 @@ def api_ai_test(request):
 
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read()
+                raw = resp.read(5 * 1024 * 1024 + 1)
         except urllib.error.HTTPError as e:
-            body = e.read().decode('utf-8', 'ignore')
+            body = e.read(4096).decode('utf-8', 'ignore')
             err = '连接失败 (HTTP %s): %s' % (e.code, body[:200])
             _ai_health_record_failure(model_pk, _ai_category_from_code(e.code), err)
             # 401/403 = 密钥无效；404 = 模型或地址错误；其余透出
@@ -6928,12 +7071,12 @@ def builtin_ai_exam_call(prompt, temperature=0.7, data=None, action='exam_genera
     )
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
-            raw = resp.read()
+            raw = resp.read(5 * 1024 * 1024 + 1)
         # 在 HTTP 请求完成后计算真实耗时（包含网络 + AI 生成时间）
         duration_ms = int((_time.monotonic() - t0) * 1000)
     except urllib.error.HTTPError as e:
         duration_ms = int((_time.monotonic() - t0) * 1000)
-        body = e.read().decode('utf-8', 'ignore')
+        body = e.read(4096).decode('utf-8', 'ignore')
         err = f'AI 接口错误 (HTTP {e.code}): {body[:300]}'
         _log_ai_call(action, practice, cfg['model_id'], False, err, prompt, t0, duration_ms)
         _ai_health_record_failure(model_pk, _ai_category_from_code(e.code), err)
@@ -7215,7 +7358,11 @@ def api_exam_logs(request):
     action = request.GET.get('action', '')
     if action:
         qs = qs.filter(action=action)
-    limit = int(request.GET.get('limit', 50) or 50)
+    try:
+        limit = int(request.GET.get('limit', 50) or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
     logs = qs[:limit]
     data = []
     for log in logs:

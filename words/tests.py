@@ -983,21 +983,21 @@ class RiskEngineTests(TestCase):
         self.assertEqual(rec.mistake_type, 'meaning')
         self.assertEqual(rec.error_detail['correct'], self.w1.get_meanings())
 
-    def test_meaning_check_local_fallback_writes_error_sample(self):
-        # AI 不可用（断网）→ 本地兜底判错，写错误样本、改掌握状态
-        with patch('words.views._ai_post_json',
-                   side_effect=_AIRequestError('network', '无法连接')):
-            res = self.client.post(
-                reverse('words:api_meaning_check', args=[self.w1.id]),
-                data=json.dumps({'answer': '完全不对', 'source': 'learn'}),
-                content_type='application/json',
-            )
+    def test_meaning_check_ai_unavailable_goes_pending(self):
+        # AI 不可用（未配置模型）→ 落待复核，不写错误样本、不改掌握状态
+        res = self.client.post(
+            reverse('words:api_meaning_check', args=[self.w1.id]),
+            data=json.dumps({'answer': '完全不对', 'source': 'learn'}),
+            content_type='application/json',
+        )
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()['verdict'], 'wrong')
-        self.assertTrue(StudyRecord.objects.filter(word=self.w1).exists())
+        self.assertEqual(res.json()['verdict'], 'pending_review')
+        self.assertFalse(StudyRecord.objects.filter(word=self.w1).exists())
         p = StudyProgress.objects.get(word=self.w1)
-        self.assertEqual(p.error_count, 1)
-        self.assertEqual(p.status, 'learning')
+        self.assertEqual(p.error_count, 0)
+        self.assertEqual(p.status, 'new')
+        self.assertTrue(PendingJudgment.objects.filter(
+            word=self.w1, kind='meaning', resolved=False).exists())
 
     # --- 复习融合：高风险提前 ---
     def test_high_risk_reviewed_early_in_bucket(self):
@@ -1929,10 +1929,10 @@ class PosExpandTests(TestCase):
 
 
 class AIJudgePolicyTests(TestCase):
-    """统一判定策略（本地确定层 → AI 仲裁 → 本地兜底判错）。
+    """统一判定策略（本地确定层 → AI 仲裁 → 待复核保留）。
 
     覆盖：断网/DNS、8 秒超时、401/403/404、429、5xx、非法 JSON、verdict 越界、
-    连续 3 次熔断 + 冷却后半开探测成功。AI 失败时一律本地兜底判错。"""
+    连续 3 次熔断 + 冷却后半开探测成功。AI 失败时一律落待复核，不判错、不改掌握状态。"""
 
     def setUp(self):
         self.unit = Unit.objects.create(number=1, name='测试单元', category='required')
@@ -1951,11 +1951,11 @@ class AIJudgePolicyTests(TestCase):
             raise _AIRequestError(category, message)
         return patch('words.views._ai_post_json', side_effect=_fake)
 
-    def _assert_local_fallback(self, policy):
-        self.assertEqual(policy['verdict'], 'wrong')
-        self.assertTrue(policy['is_final'])
-        self.assertEqual(policy['source'], 'local_fallback')
-        self.assertEqual(policy['confidence'], 'low')
+    def _assert_pending(self, policy, reason_code):
+        self.assertEqual(policy['verdict'], 'pending_review')
+        self.assertFalse(policy['is_final'])
+        self.assertEqual(policy['source'], 'pending')
+        self.assertEqual(policy['reason_code'], reason_code)
 
     def _assert_no_error_side_effects(self):
         self.assertFalse(StudyRecord.objects.filter(word=self.word).exists())
@@ -1971,20 +1971,20 @@ class AIJudgePolicyTests(TestCase):
         self.assertEqual(policy['source'], 'local_exact')
         self.assertTrue(policy['is_final'])
 
-    # --- 2. 断网 / DNS 失败 → 本地兜底判错 ---
-    def test_network_failure_local_fallback(self):
+    # --- 2. 断网 / DNS 失败 → 待复核，不判错 ---
+    def test_network_failure_pending(self):
         with self._raising('network', '无法连接 AI 服务'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_local_fallback(policy)
+        self._assert_pending(policy, 'ai_network_error')
         self._assert_no_error_side_effects()
 
-    # --- 3. 8 秒超时 → 本地兜底判错 ---
-    def test_timeout_local_fallback(self):
+    # --- 3. 8 秒超时 → 待复核，不判错 ---
+    def test_timeout_pending(self):
         with self._raising('timeout', 'AI 请求超时'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_local_fallback(policy)
+        self._assert_pending(policy, 'ai_timeout')
 
-    # --- 4. 401/403/404 配置错误：不重试，本地兜底判错 ---
+    # --- 4. 401/403/404 配置错误：不重试，落待复核 ---
     def test_config_error_no_retry(self):
         calls = []
 
@@ -1994,11 +1994,11 @@ class AIJudgePolicyTests(TestCase):
 
         with patch('words.views._ai_post_json', side_effect=_fake):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_local_fallback(policy)
+        self._assert_pending(policy, 'ai_config_error')
         self.assertEqual(len(calls), 1)  # 配置错误不重试
         self.assertEqual(calls[0], 8)    # 判定专用 8 秒短超时
 
-    # --- 5. 429/5xx 可用性失败：最多快速重试一次 ---
+    # --- 5. 429/5xx 可用性失败：最多快速重试一次，仍失败落待复核 ---
     def test_server_error_retries_once(self):
         calls = []
 
@@ -2008,21 +2008,21 @@ class AIJudgePolicyTests(TestCase):
 
         with patch('words.views._ai_post_json', side_effect=_fake):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_local_fallback(policy)
+        self._assert_pending(policy, 'ai_server_error')
         self.assertEqual(len(calls), 2)
 
-    # --- 6. 返回非 JSON / verdict 越界 → 本地兜底判错 ---
-    def test_invalid_output_local_fallback(self):
+    # --- 6. 返回非 JSON / verdict 越界 → 待复核，不判错 ---
+    def test_invalid_output_pending(self):
         with patch('words.views._ai_post_json', return_value='这不是 JSON'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_local_fallback(policy)
+        self._assert_pending(policy, 'ai_invalid_output')
 
         with patch('words.views._ai_post_json',
                    return_value='{"verdict": "great", "comment": "x"}'):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_local_fallback(policy)
+        self._assert_pending(policy, 'ai_invalid_output')
 
-    # --- 7. 连续 3 次可用性失败 → 熔断；熔断期不出网，本地兜底判错 ---
+    # --- 7. 连续 3 次可用性失败 → 熔断；熔断期不出网，落待复核 ---
     def test_circuit_opens_after_three_failures(self):
         with self._raising('network'):
             for _ in range(AI_HEALTH_FAIL_THRESHOLD):
@@ -2033,7 +2033,7 @@ class AIJudgePolicyTests(TestCase):
 
         with patch('words.views._ai_post_json', side_effect=AssertionError('熔断期不应出网')):
             policy = judge_with_policy(self.word, '坚持', self._data())
-        self._assert_local_fallback(policy)
+        self._assert_pending(policy, 'ai_circuit_open')
 
     # --- 8. 冷却结束后的半开探测成功 → 熔断关闭、计数清零 ---
     def test_half_open_probe_success_closes_circuit(self):
@@ -2072,7 +2072,7 @@ class PendingJudgmentTests(TestCase):
         return patch('words.views._ai_post_json', side_effect=_fake)
 
     def _make_pending(self, answer='坚持'):
-        """直接造一条待复核记录（释义判定已恢复本地兜底，不再自动产生 pending）。"""
+        """直接造一条待复核记录（避开判定路径，专注测试队列本身的补判与幂等）。"""
         key = 'meaning:learn:meaning:%d:abcdef0123456789' % self.word.id
         return _get_or_create_pending_judgment(
             self.word, 'meaning', answer, mode='meaning', source='learn',
@@ -2142,19 +2142,20 @@ class PendingJudgmentTests(TestCase):
             word=self.word, action='meaning_ok').count(), 1)
         self.assertEqual(PendingJudgment.objects.filter(resolved=False).count(), 0)
 
-    # --- 5. 熔断期间补判：本地兜底判错，不再保持待复核 ---
-    def test_rejudge_local_fallback_when_circuit_open(self):
+    # --- 5. 熔断期间补判：不出网、不落库，保持待复核 ---
+    def test_rejudge_keeps_pending_when_circuit_open(self):
+        # 熔断中补判不出网、不落库，保持待复核
         self._make_pending()
         pj = PendingJudgment.objects.get(word=self.word)
         with patch('words.views._ai_judge_call',
                    return_value=(None, '', 'ai_circuit_open')):
             res = self._post('words:api_pending_judgment_rejudge', {}, pj_id=pj.id)
         body = res.json()
-        self.assertTrue(body['success'])
-        self.assertEqual(body['result'], 'wrong')
+        self.assertFalse(body['success'])
+        self.assertEqual(body['result'], 'pending_review')
+        self.assertEqual(body['reason_code'], 'ai_circuit_open')
         pj.refresh_from_db()
-        self.assertTrue(pj.resolved)
-        self.assertEqual(pj.final_verdict, 'wrong')
+        self.assertFalse(pj.resolved)
 
     # --- 6. 列表接口 + 批量补判 ---
     def test_list_and_rejudge_all(self):
@@ -2246,8 +2247,10 @@ class _FakeHTTPResponse:
     def __init__(self, body):
         self._body = body
 
-    def read(self):
-        return self._body
+    def read(self, size=-1):
+        if size is None or size < 0:
+            return self._body
+        return self._body[:size]
 
     def __enter__(self):
         return self
@@ -2289,7 +2292,7 @@ class AIApiCallReviewTests(TestCase):
         """按主键重新取模型再取健康状态：避免实例上的 related 对象缓存读到旧值。"""
         return _ai_health_status(AIModel.objects.get(pk=self.model.pk))
 
-    # --- P1-1：畸形 2xx 不得冲出判定策略，也不得 500（本地兜底判错）---
+    # --- P1-1：畸形 2xx 不得冲出判定策略，也不得 500（落待复核、不判错）---
     def test_malformed_2xx_body_classified_invalid_without_500(self):
         bad_bodies = [
             ('html', b'<html><body>502 Bad Gateway</body></html>'),
@@ -2307,9 +2310,9 @@ class AIApiCallReviewTests(TestCase):
                 with patch('words.views.urllib.request.urlopen',
                            return_value=_FakeHTTPResponse(body)):
                     policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
-                self.assertEqual(policy['verdict'], 'wrong')
-                self.assertEqual(policy['source'], 'local_fallback')
-                self.assertTrue(policy['is_final'])
+                self.assertEqual(policy['verdict'], 'pending_review')
+                self.assertEqual(policy['source'], 'pending')
+                self.assertFalse(policy['is_final'])
         self.assertFalse(StudyRecord.objects.exists())
         self.assertFalse(StudyProgress.objects.filter(error_count__gt=0).exists())
 
@@ -2322,7 +2325,7 @@ class AIApiCallReviewTests(TestCase):
                         _ai_post_json(self._cfg(), {'model': 'm'}, 8)
                 self.assertEqual(ctx.exception.category, 'invalid')
 
-    def test_exam_judge_malformed_returns_wrong_not_500(self):
+    def test_exam_judge_malformed_returns_pending_not_500(self):
         session = self.client.session
         session['exam_questions'] = [{'id': self.word.id, 'type': 'meaning'}]
         session.save()
@@ -2333,7 +2336,7 @@ class AIApiCallReviewTests(TestCase):
         self.assertEqual(res.status_code, 200)
         body = res.json()
         self.assertTrue(body['success'])
-        self.assertEqual(body['verdict'], 'wrong')
+        self.assertEqual(body['verdict'], 'pending_review')
 
     # --- P1-1：探活畸形响应返回可读 502（不是 500） ---
     def test_ai_test_malformed_response_returns_502(self):
@@ -2407,8 +2410,8 @@ class AIApiCallReviewTests(TestCase):
             with patch('words.views.urllib.request.urlopen',
                        return_value=_FakeHTTPResponse(b'not json')):
                 policy = judge_with_policy(self.word, '坚持', {'model_id': self.model.id})
-            self.assertEqual(policy['verdict'], 'wrong')
-            self.assertEqual(policy['source'], 'local_fallback')
+            self.assertEqual(policy['verdict'], 'pending_review')
+            self.assertEqual(policy['source'], 'pending')
         health = AIModelHealth.objects.get(model=self.model)
         self.assertIsNone(health.circuit_open_until)
         self.assertEqual(health.fail_streak, 0)

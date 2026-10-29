@@ -230,10 +230,13 @@
 {% endblock %}
 
 {% block extra_scripts %}
+{{ words_data|json_script:"daily-pick-words-data" }}
+{{ picked_ids_data|json_script:"daily-pick-ids-data" }}
+{{ pick_records_data|json_script:"daily-pick-records-data" }}
 <script>
 (function () {
-  var WORDS = {{ words_json|safe }};
-  var picked = new Set({{ picked_ids_json|safe }});
+  var WORDS = JSON.parse(document.getElementById('daily-pick-words-data').textContent);
+  var picked = new Set(JSON.parse(document.getElementById('daily-pick-ids-data').textContent));
   var currentUnit = 'all';
   var RENDER_LIMIT = 300;
 
@@ -461,7 +464,7 @@
   });
 
   // —— 选词记录：快照保存 / 载入续作 / 改名 / 删除 ——
-  var pickRecords = {{ pick_records_json|safe }};
+  var pickRecords = JSON.parse(document.getElementById('daily-pick-records-data').textContent);
   var recordListEl = document.getElementById('pickRecordList');
 
   function renderRecords() {

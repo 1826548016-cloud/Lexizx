@@ -15,6 +15,9 @@ media/
 *.log
 .DS_Store
 
+# 交接文档（仅本机维护，不上传公开仓库）
+HANDOVER.md
+
 # 打包产物（中间 build 与产物均为可再生，日常清理）
 dist/
 build/

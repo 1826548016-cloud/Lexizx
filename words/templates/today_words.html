@@ -107,9 +107,10 @@
 
 {% block extra_scripts %}
 {% if word_count > 0 %}
+{{ words_data|json_script:"today-words-data" }}
 <script>
 (function () {
-  var allWords = {{ words_json|safe }};
+  var allWords = JSON.parse(document.getElementById('today-words-data').textContent);
   var selected = {};
   allWords.forEach(function (w) { selected[w.id] = true; }); // 默认全选，方便直接开练
 

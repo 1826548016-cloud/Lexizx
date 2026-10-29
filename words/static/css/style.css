@@ -2170,7 +2170,22 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 .update-check-btn { background: none; border: none; padding: 0; cursor: pointer; color: var(--c-blue); font-size: .8rem; font-family: inherit; }
 .update-check-btn:hover { text-decoration: underline; }
 .update-check-btn:disabled { color: var(--c-text-2); cursor: default; text-decoration: none; }
+.update-check-status { display: block; min-height: 1.2em; margin-top: 4px; color: var(--c-text-2); font-size: .74rem; }
+.update-check-status[data-state="available"] { color: var(--c-blue); }
+.update-check-status[data-state="current"] { color: var(--c-green); }
+.update-check-status[data-state="error"] { color: var(--c-amber); }
+.update-box { width: min(520px, calc(100vw - 36px)); }
+.update-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: -6px 0 16px; }
+.update-summary > div { min-width: 0; padding: 10px 12px; border: 1px solid var(--c-border-light); border-radius: 9px; background: var(--c-surface-2); }
+.update-summary-label { display: block; margin-bottom: 3px; color: var(--c-text-2); font-size: .74rem; }
+.update-summary strong { display: block; overflow-wrap: anywhere; color: var(--c-text); font-size: .9rem; font-weight: 650; }
+.update-section-title { margin: 0 0 7px; color: var(--c-text); font-size: .86rem; font-weight: 650; }
+.update-integrity-note { margin: 10px 0 14px; padding: 9px 11px; border-left: 3px solid var(--c-blue); border-radius: 0 7px 7px 0; background: var(--c-surface-2); color: var(--c-text-2); font-size: .78rem; line-height: 1.55; }
+.update-progress-track { height: 8px; border-radius: 999px; background: var(--c-border); overflow: hidden; }
+.update-progress-bar { height: 100%; width: 0; background: var(--c-blue); transition: width .25s; }
+#upProgressText { margin-top: 7px; text-align: center; }
 .update-notes { white-space: pre-wrap; word-break: break-word; max-height: 42vh; overflow: auto; background: var(--c-surface-2); border-radius: 8px; padding: 12px 14px; font-family: inherit; font-size: .88rem; line-height: 1.7; color: var(--c-text); margin: 0 0 6px; }
+@media (max-width: 420px) { .update-summary { grid-template-columns: 1fr; gap: 7px; } }
 .dl-done-path { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--c-surface-2); border: 1px solid var(--c-border-light); border-radius: 8px; margin: 12px 0 4px; font-size: .85rem; }
 .vault-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-radius: 10px; padding: 10px 14px; font-size: .88rem; line-height: 1.5; }
 .vault-warn { background: #fdf3e3; color: #9a6208; border: 1px solid #e9c27c; }

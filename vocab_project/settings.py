@@ -14,7 +14,7 @@ APP_VERSION = '3.4.7'
 APP_VERSION_NOTE = '优化更新步骤'
 
 # 软件使用、隐私、知识产权及二次创作声明版本（用发布日期标识）：首次使用需同意，声明修订后老用户需重新确认
-PRIVACY_VERSION = '2026-10-04'
+PRIVACY_VERSION = '2026-10-28'
 
 # ===== 运行模式检测 =====
 # PyInstaller 打包后：sys.frozen=True，sys._MEIPASS 指向解压的只读资源目录
@@ -49,7 +49,8 @@ if not SECRET_KEY:
     except OSError as exc:
         raise RuntimeError('无法创建本机 Django 密钥文件') from exc
 
-DEBUG = True
+# 调试页面仅供源码开发使用；冻结版 exe 必须关闭，避免错误页暴露配置和路径。
+DEBUG = not FROZEN
 
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '::1']
 
@@ -59,8 +60,11 @@ ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '::1']
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Strict'
 SESSION_COOKIE_SECURE = False
+SESSION_COOKIE_AGE = 60 * 60 * 24 * 14  # 本机会话保留 14 天，关闭 exe 后仍有效
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 CSRF_COOKIE_SAMESITE = 'Strict'
 CSRF_COOKIE_SECURE = False
+CSRF_COOKIE_AGE = 60 * 60 * 24 * 365  # CSRF 防护 Cookie 保留一年
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 

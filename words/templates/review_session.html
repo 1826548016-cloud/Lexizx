@@ -154,10 +154,11 @@
 <script src="{% static 'js/word_ext.js' %}?v=2"></script>
 <script src="{% static 'js/word_fav.js' %}?v=1"></script>
 <script src="{% static 'js/assistant.js' %}"></script>
+{{ words_data|json_script:"review-words-data" }}
 <script>
 (function() {
   var reviewCount = {{ review_count }};
-  var wordsData = {{ words_json|safe }};
+  var wordsData = JSON.parse(document.getElementById('review-words-data').textContent);
   var remainingDue = {{ remaining_due }};
   var unmasteredInBatch = {{ unmastered_in_batch }};
   var masteredInBatch = {{ mastered_in_batch }};

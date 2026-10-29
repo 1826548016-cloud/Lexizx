@@ -257,8 +257,13 @@ def first_run_init(progress=None):
 
 
 def run_django(port):
-    """后台线程跑 Django；use_reloader=False 避免 PyInstaller 下双进程"""
-    call_command('runserver', f'127.0.0.1:{port}', use_reloader=False)
+    """后台线程跑 Django；use_reloader=False 避免 PyInstaller 下双进程。
+
+    insecure=True：冻结版 DEBUG=False（安全修复）后 runserver 默认不再提供
+    /static/，需显式开启；仅绑定 127.0.0.1 回环地址且本机单用户使用，
+    静态目录只读，与开发模式由 staticfiles 提供静态资源的行为一致。
+    """
+    call_command('runserver', f'127.0.0.1:{port}', use_reloader=False, insecure=True)
 
 
 # ===== 初始化加载页（内置 HTML，无需网络）=====
@@ -317,7 +322,10 @@ def main_gui():
             """
             import webview
             try:
-                if not isinstance(src_path, str) or not os.path.exists(src_path):
+                backups_dir = (DATA_DIR / 'backups').resolve()
+                src = Path(str(src_path)).resolve()
+                if (not src.is_file() or src.suffix.lower() != '.json'
+                        or backups_dir not in src.parents):
                     return {'error': '备份副本不存在，可能已被清理'}
                 win = webview.active_window()
                 result = win.create_file_dialog(
@@ -332,9 +340,13 @@ def main_gui():
                     return {'cancelled': True}
                 if not dest.lower().endswith('.json'):
                     dest += '.json'
-                shutil.copy2(src_path, dest)
-                return {'cancelled': False, 'path': os.path.abspath(dest),
-                        'size': os.path.getsize(dest)}
+                shutil.copy2(str(src), dest)
+                saved = Path(dest).resolve()
+                approved = getattr(self, '_approved_backup_paths', set())
+                approved.add(os.path.normcase(str(saved)))
+                self._approved_backup_paths = approved
+                return {'cancelled': False, 'path': str(saved),
+                        'size': saved.stat().st_size}
             except Exception as e:
                 print(f'save_backup 失败: {e}')
                 return {'error': str(e)}
@@ -342,9 +354,9 @@ def main_gui():
         def show_in_folder(self, path):
             """在 Windows 资源管理器中定位并选中该文件（Edge 下载项同款行为）。"""
             try:
-                if not isinstance(path, str) or not os.path.exists(path):
+                if not self._is_approved_backup_path(path):
                     return {'success': False, 'error': '文件不存在，可能已被移动或删除'}
-                subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
+                subprocess.Popen(['explorer', '/select,', str(Path(path).resolve())])
                 return {'success': True}
             except Exception as e:
                 return {'success': False, 'error': str(e)}
@@ -352,12 +364,23 @@ def main_gui():
         def open_local_file(self, path):
             """用系统默认程序打开本地文件。"""
             try:
-                if not isinstance(path, str) or not os.path.exists(path):
+                if not self._is_approved_backup_path(path):
                     return {'success': False, 'error': '文件不存在，可能已被移动或删除'}
-                os.startfile(os.path.normpath(path))
+                os.startfile(str(Path(path).resolve()))
                 return {'success': True}
             except Exception as e:
                 return {'success': False, 'error': str(e)}
+
+        def _is_approved_backup_path(self, path):
+            if not isinstance(path, str):
+                return False
+            try:
+                resolved = Path(path).resolve()
+                approved = getattr(self, '_approved_backup_paths', set())
+                return (resolved.is_file() and resolved.suffix.lower() == '.json'
+                        and os.path.normcase(str(resolved)) in approved)
+            except (OSError, ValueError):
+                return False
 
         def exit_app(self):
             """退出整个程序。
@@ -392,10 +415,26 @@ def main_gui():
             try:
                 update_dir = (DATA_DIR / 'update').resolve()
                 src = Path(str(download_path)).resolve()
-                if update_dir not in src.parents:
+                if (update_dir not in src.parents or src.suffix.lower() != '.exe'
+                        or not isinstance(tag, str)):
                     return {'success': False, 'error': '更新文件路径不合法'}
                 if not src.exists():
                     return {'success': False, 'error': '更新文件不存在，请重新下载'}
+
+                import updater as updater_core
+                try:
+                    normalized_tag = updater_core.normalize_tag(tag)
+                    expected_sha = updater_core.fetch_expected_sha(normalized_tag)
+                except Exception:
+                    return {'success': False, 'error': '无法取得该版本的 SHA-256 校验值，已拒绝安装'}
+                if src.name != 'word-' + normalized_tag + '.exe':
+                    return {'success': False, 'error': '更新文件与版本号不匹配'}
+                if not updater_core.verify_sha256(src, expected_sha):
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
+                    return {'success': False, 'error': 'SHA-256 校验未通过，已拒绝安装'}
 
                 from updater import MIN_EXE_BYTES
                 if src.stat().st_size < MIN_EXE_BYTES:
@@ -467,7 +506,9 @@ def main_gui():
     # webview.start() 阻塞到窗口关闭；关窗即退出整个进程
     # private_mode=False + storage_path：让 WebView2 的 cookie / localStorage / IndexedDB
     # 持久化到 data/webview2，否则每次关闭窗口都会丢失会话与本地缓存（壁纸、考试进度等）
-    webview.start(private_mode=False, storage_path=str(DATA_DIR / 'webview2'))
+    webview_storage = DATA_DIR / 'webview2'
+    webview_storage.mkdir(parents=True, exist_ok=True)
+    webview.start(private_mode=False, storage_path=str(webview_storage))
     os._exit(0)
 
 

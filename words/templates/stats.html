@@ -113,7 +113,7 @@
   <!-- 报告内容 -->
   <div id="reportContent" class="hidden">
     <!-- AI 评语 -->
-    <div style="background: var(--c-surface-2); border-left: 3px solid var(--c-green); border-radius: var(--radius-sm); padding: 16px 18px; margin-bottom: 16px;">
+    <div style="background: var(--c-surface-2); border-radius: var(--radius-sm); padding: 16px 18px; margin-bottom: 16px;">
       <div class="flex items-center gap-2" style="margin-bottom: 8px;">
         <i class="ph ph-sparkle" style="color: var(--c-green);"></i>
         <strong>AI 本周评语</strong>
@@ -144,6 +144,12 @@
         <div class="stat-label">掌握率</div>
       </div>
     </div>
+
+    <section id="repComparison" aria-labelledby="repComparisonTitle" style="margin-bottom: 16px; padding: 14px 16px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-surface-2);">
+      <div class="card-header" id="repComparisonTitle" style="margin-bottom: 4px;">和上周同期相比</div>
+      <div id="repComparisonPeriod" class="text-secondary text-sm" style="margin-bottom: 12px;"></div>
+      <div id="repComparisonItems" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;"></div>
+    </section>
 
     <!-- 掌握总览 + 预测 -->
     <div class="card-grid" style="margin-bottom: 16px;">
@@ -458,14 +464,33 @@ function formatStudyDurationSec(seconds) {
   return minutes + ' 分钟';
 }
 
+function reportCurrentCorrectRate(summary) {
+  if (!summary) return null;
+  var comparison = summary && summary.comparison;
+  return comparison && comparison.current_attempts !== undefined
+    ? comparison.current_correct_rate : summary.correct_rate;
+}
+
+function reportCurrentAttemptCount(summary) {
+  if (!summary) return null;
+  var comparison = summary && summary.comparison;
+  return comparison && comparison.current_attempts !== undefined
+    ? comparison.current_attempts : summary.correct_attempts;
+}
+
 function renderReportContent(summary, comment) {
   document.getElementById('reportContent').classList.remove('hidden');
   document.getElementById('reportComment').textContent = comment || '（暂无评语）';
   document.getElementById('repNew').textContent = summary.new_words || 0;
   document.getElementById('repReview').textContent = summary.reviewed_words || 0;
   document.getElementById('repDuration').textContent = formatStudyDurationSec(summary.study_duration);
-  document.getElementById('repRate').textContent = (summary.correct_rate || 0) + '%';
+  var currentRate = reportCurrentCorrectRate(summary);
+  var currentAttempts = reportCurrentAttemptCount(summary);
+  var hasCorrectRate = currentRate !== null && currentRate !== undefined;
+  if (currentAttempts !== undefined && Number(currentAttempts) === 0) hasCorrectRate = false;
+  document.getElementById('repRate').textContent = hasCorrectRate ? currentRate + '%' : '暂无作答';
   document.getElementById('repMastery').textContent = (summary.mastery_rate || 0) + '%';
+  renderReportComparison(summary);
 
   // 掌握总览
   document.getElementById('repMasteryDetail').innerHTML =
@@ -507,6 +532,76 @@ function renderReportContent(summary, comment) {
     posHtml = '<p class="text-secondary">暂无陌生词性记录。</p>';
   }
   document.getElementById('repWeakPos').innerHTML = posHtml;
+}
+
+function renderReportComparison(summary) {
+  var wrap = document.getElementById('repComparison');
+  var periodEl = document.getElementById('repComparisonPeriod');
+  var itemsEl = document.getElementById('repComparisonItems');
+  var previous = summary.comparison;
+  if (!wrap || !previous) {
+    if (wrap) wrap.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+  periodEl.textContent = '本周前 ' + previous.days + ' 天，对比上周同期（' + previous.period_label + '）';
+  itemsEl.textContent = '';
+
+  function addMetric(label, current, prior, unit, formatter, favorableWhenHigher) {
+    var item = document.createElement('div');
+    var title = document.createElement('div');
+    var values = document.createElement('div');
+    var delta = document.createElement('strong');
+    var change = current - prior;
+    title.className = 'text-secondary text-sm';
+    title.textContent = label;
+    values.style.fontWeight = '600';
+    values.style.marginTop = '3px';
+    values.textContent = formatter(current) + ' ' + unit + '（上周 ' + formatter(prior) + '）';
+    delta.style.display = 'block';
+    delta.style.marginTop = '3px';
+    delta.className = change === 0 ? 'text-secondary text-sm' : (favorableWhenHigher && change > 0 ? 'text-green text-sm' : 'text-secondary text-sm');
+    delta.textContent = change > 0 ? '+' + formatter(change) + ' ' + unit : (change < 0 ? '−' + formatter(Math.abs(change)) + ' ' + unit : '与上周持平');
+    item.appendChild(title);
+    item.appendChild(values);
+    item.appendChild(delta);
+    itemsEl.appendChild(item);
+  }
+
+  addMetric('新学词', summary.new_words || 0, previous.new_words || 0, '词', String, true);
+  addMetric('复习词', summary.reviewed_words || 0, previous.reviewed_words || 0, '词', String, true);
+  addMetric('学习时长', summary.study_duration || 0, previous.study_duration || 0, '', formatStudyDurationSec, true);
+
+  var rateItem = document.createElement('div');
+  var rateTitle = document.createElement('div');
+  var rateValue = document.createElement('div');
+  rateTitle.className = 'text-secondary text-sm';
+  rateTitle.textContent = '正确率';
+  rateValue.style.fontWeight = '600';
+  rateValue.style.marginTop = '3px';
+  rateItem.appendChild(rateTitle);
+  rateItem.appendChild(rateValue);
+  var currentRate = reportCurrentCorrectRate(summary);
+  var currentAttempts = reportCurrentAttemptCount(summary);
+  var hasCurrentRate = currentRate !== null && currentRate !== undefined;
+  if (currentAttempts !== undefined && Number(currentAttempts) === 0) hasCurrentRate = false;
+  if (!hasCurrentRate) {
+    rateValue.textContent = previous.correct_rate === null || previous.correct_rate === undefined
+      ? '本周和上周同期均暂无作答'
+      : '本周暂无作答（上周同期 ' + previous.correct_rate + '%）';
+  } else if (previous.correct_rate === null || previous.correct_rate === undefined) {
+    rateValue.textContent = currentRate + '%（上周同期暂无作答）';
+  } else {
+    var rateDelta = Number(currentRate) - Number(previous.correct_rate);
+    rateValue.textContent = currentRate + '%（上周 ' + previous.correct_rate + '%）';
+    var rateChange = document.createElement('strong');
+    rateChange.className = rateDelta > 0 ? 'text-green text-sm' : 'text-secondary text-sm';
+    rateChange.style.display = 'block';
+    rateChange.style.marginTop = '3px';
+    rateChange.textContent = rateDelta > 0 ? '+' + rateDelta.toFixed(1) + ' 个百分点' : (rateDelta < 0 ? '−' + Math.abs(rateDelta).toFixed(1) + ' 个百分点' : '与上周持平');
+    rateItem.appendChild(rateChange);
+  }
+  itemsEl.appendChild(rateItem);
 }
 
 function renderReportHistory(history) {

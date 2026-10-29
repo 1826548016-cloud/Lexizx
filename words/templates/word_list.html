@@ -96,9 +96,9 @@
             <span class="unit-name">{{ unit.name }}</span>
             <div class="unit-actions flex items-center gap-1">
               <span class="unit-count">{{ unit.mastered }} / {{ unit.word_count }}</span>
-              <button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); location.href='{% url 'words:ai_import' %}?unit={{ unit.number }}'" title="AI 导入到此单元"><i class="ph ph-sparkle"></i></button>
-              <button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); showEditUnit({{ unit.number }}, '{{ unit.name }}', '{{ unit.category }}')" title="编辑单元"><i class="ph ph-pencil-simple"></i></button>
-              <button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); deleteUnit({{ unit.number }}, '{{ unit.name }}')" title="删除单元"><i class="ph ph-x"></i></button>
+              <button class="btn btn-sm btn-secondary unit-btn" data-unit-action="import" data-unit-number="{{ unit.number }}" title="AI 导入到此单元"><i class="ph ph-sparkle"></i></button>
+              <button class="btn btn-sm btn-secondary unit-btn" data-unit-action="edit" data-unit-number="{{ unit.number }}" data-unit-name="{{ unit.name }}" data-unit-category="{{ unit.category }}" title="编辑单元"><i class="ph ph-pencil-simple"></i></button>
+              <button class="btn btn-sm btn-secondary unit-btn" data-unit-action="delete" data-unit-number="{{ unit.number }}" data-unit-name="{{ unit.name }}" title="删除单元"><i class="ph ph-x"></i></button>
             </div>
           </div>
           <div class="progress-bar">
@@ -352,10 +352,6 @@
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  function escapeJsString(s) {
-    return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '').replace(/\n/g, ' ');
-  }
-
   function getStatusBadgeClass(status) {
     var map = {
       'mastered': 'badge-mastered'
@@ -479,6 +475,14 @@
 
   function renderWords(data) {
     var tbody = document.getElementById('wordTableBody');
+    if (!tbody.dataset.actionsBound) {
+      tbody.dataset.actionsBound = '1';
+      tbody.addEventListener('click', function (event) {
+        var button = event.target.closest('[data-action="delete-word"]');
+        if (!button || !tbody.contains(button)) return;
+        deleteWord(button.dataset.wordId, button.dataset.wordText || '');
+      });
+    }
     tbody.innerHTML = '';
     var words = data.words || [];
     if (words.length === 0) {
@@ -511,7 +515,7 @@
           ) +
           '<button onclick="openWordModal(\'edit\', ' + w.id + ')">编辑单词</button>' +
           '<button class="favorite-btn" data-id="' + w.id + '" onclick="toggleFavorite(' + w.id + ', this)">' + (w.is_favorite ? '取消收藏' : '收藏单词') + '</button>' +
-          '<button class="danger" onclick="deleteWord(' + w.id + ', \'' + escapeJsString(w.word) + '\')">删除单词</button>' +
+          '<button class="danger" data-action="delete-word" data-word-id="' + w.id + '" data-word-text="' + escapeHtml(w.word) + '">删除单词</button>' +
         '</div></details></td>';
       tbody.appendChild(tr);
     });
@@ -591,7 +595,7 @@
     });
     select.onchange = function () {
       perPage = parseInt(this.value);
-      localStorage.setItem('vocab-pp', perPage);
+      try { localStorage.setItem('vocab-pp', perPage); } catch (e) {}
       loadWords(1);
     };
     container.appendChild(select);
@@ -795,8 +799,9 @@
   var POS_QUICK = ['v.', 'n.', 'adj.', 'adv.', 'prep.', 'pron.', 'conj.', 'num.', 'art.', 'aux.', 'interj.'];
   var wmPosData = {}; // {"v.": ["产生", "生成"]}
 
-  function safeJs(s) {
-    return String(s == null ? '' : s).replace(/'/g, "\\'");
+  function jsAttrArg(s) {
+    return escapeHtml(JSON.stringify(String(s == null ? '' : s))
+      .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
   }
 
   function posColorClass(k) {
@@ -852,16 +857,16 @@
     tagsEl.innerHTML = keys.map(function (k) {
       var n = (wmPosData[k] || []).length;
       return '<span class="pos-tag ' + posColorClass(k) + '">' +
-        '<span class="pos-tag-name" title="双击重命名" ondblclick="renamePos(\'' + safeJs(k) + '\')">' + escapeHtml(k) + '</span>' +
+        '<span class="pos-tag-name" title="双击重命名" ondblclick="renamePos(' + jsAttrArg(k) + ')">' + escapeHtml(k) + '</span>' +
         '<span class="pos-tag-count">' + n + '</span>' +
-        '<button type="button" class="pos-tag-x" onclick="removePos(\'' + safeJs(k) + '\')" title="删除该词性及所有释义">×</button>' +
+        '<button type="button" class="pos-tag-x" onclick="removePos(' + jsAttrArg(k) + ')" title="删除该词性及所有释义">×</button>' +
       '</span>';
     }).join('') || '<span class="text-secondary text-sm">暂无词性，点击下方常用标签添加</span>';
 
     // 常用词性快捷按钮
     quickEl.innerHTML = POS_QUICK.map(function (k) {
       var active = Object.prototype.hasOwnProperty.call(wmPosData, k);
-      return '<button type="button" class="btn btn-sm ' + (active ? 'btn-primary' : 'btn-secondary') + '" onclick="toggleQuickPos(\'' + k + '\')">' + k + '</button>';
+      return '<button type="button" class="btn btn-sm ' + (active ? 'btn-primary' : 'btn-secondary') + '" onclick="toggleQuickPos(' + jsAttrArg(k) + ')">' + k + '</button>';
     }).join('') + '<button type="button" class="btn btn-sm btn-secondary" onclick="addCustomPos()" title="添加自定义词性（如 vt.、phr.）">+ 自定义</button>';
 
     // 按词性释义分区
@@ -872,14 +877,14 @@
           '<span class="pos-tag ' + posColorClass(k) + '">' + escapeHtml(k) + '</span>' +
           '<span class="text-secondary text-sm">' + escapeHtml(POS_NAMES[k] || '自定义') + '</span>' +
           '<span class="pos-section-count">' + ms.length + ' 条释义</span>' +
-          '<button type="button" class="btn btn-sm btn-secondary unit-btn" onclick="renamePos(\'' + safeJs(k) + '\')" title="重命名词性"><i class="ph ph-pencil-simple"></i></button>' +
-          '<button type="button" class="btn btn-sm btn-danger unit-btn" onclick="removePos(\'' + safeJs(k) + '\')" title="删除该词性及所有释义"><i class="ph ph-trash"></i></button>' +
+          '<button type="button" class="btn btn-sm btn-secondary unit-btn" onclick="renamePos(' + jsAttrArg(k) + ')" title="重命名词性"><i class="ph ph-pencil-simple"></i></button>' +
+          '<button type="button" class="btn btn-sm btn-danger unit-btn" onclick="removePos(' + jsAttrArg(k) + ')" title="删除该词性及所有释义"><i class="ph ph-trash"></i></button>' +
         '</div>' +
         '<div class="pos-meanings">' +
           (ms.length ? ms.map(function (m, i) {
             return '<span class="meaning-chip">' +
-              '<span class="meaning-chip-text" title="点击编辑释义" onclick="editMeaning(this, ' + i + ', \'' + safeJs(k) + '\')">' + escapeHtml(m) + '</span>' +
-              '<button type="button" class="meaning-chip-x" onclick="removeMeaning(\'' + safeJs(k) + '\', ' + i + ')" title="删除该释义">×</button>' +
+              '<span class="meaning-chip-text" title="点击编辑释义" onclick="editMeaning(this, ' + i + ', ' + jsAttrArg(k) + ')">' + escapeHtml(m) + '</span>' +
+              '<button type="button" class="meaning-chip-x" onclick="removeMeaning(' + jsAttrArg(k) + ', ' + i + ')" title="删除该释义">×</button>' +
             '</span>';
           }).join('') : '<span class="text-secondary text-sm">暂无释义，在下方输入后按空格添加</span>') +
         '</div>' +
@@ -1091,26 +1096,42 @@
             '<span class="unit-name">' + escapeHtml(u.name) + '</span>' +
             '<div class="unit-actions flex items-center gap-1">' +
               '<span class="unit-count">' + u.mastered_count + ' / ' + u.word_count + '</span>' +
-              '<button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); location.href=AI_IMPORT_URL + \'?unit=\' + ' + u.number + '" title="AI 导入到此单元"><i class="ph ph-sparkle"></i></button>' +
-              '<button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); showEditUnit(' + u.number + ', \'' + escapeHtml(u.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(u.category || '').replace(/'/g, "\\'") + '\')" title="编辑单元"><i class="ph ph-pencil-simple"></i></button>' +
-              '<button class="btn btn-sm btn-secondary unit-btn" onclick="event.stopPropagation(); deleteUnit(' + u.number + ', \'' + escapeHtml(u.name).replace(/'/g, "\\'") + '\')" title="删除单元"><i class="ph ph-x"></i></button>' +
+              '<button class="btn btn-sm btn-secondary unit-btn" data-unit-action="import" data-unit-number="' + u.number + '" title="AI 导入到此单元"><i class="ph ph-sparkle"></i></button>' +
+              '<button class="btn btn-sm btn-secondary unit-btn" data-unit-action="edit" data-unit-number="' + u.number + '" data-unit-name="' + escapeHtml(u.name) + '" data-unit-category="' + escapeHtml(u.category || '') + '" title="编辑单元"><i class="ph ph-pencil-simple"></i></button>' +
+              '<button class="btn btn-sm btn-secondary unit-btn" data-unit-action="delete" data-unit-number="' + u.number + '" data-unit-name="' + escapeHtml(u.name) + '" title="删除单元"><i class="ph ph-x"></i></button>' +
             '</div>' +
           '</div>' +
           '<div class="progress-bar"><div class="progress-bar-fill" style="width: ' + pct + '%;"></div></div>' +
         '</div>';
       }).join('');
-      bindUnitItems();
     }).catch(function () {});
   }
 
-  // 单元项点击 → 按单元过滤
+  // 单元操作与筛选使用固定事件委托，数据本身不进入可执行脚本。
   function bindUnitItems() {
-    document.querySelectorAll('.unit-item').forEach(function (item) {
-      item.addEventListener('click', function () {
-        var unitNumber = this.getAttribute('data-unit');
-        document.getElementById('unitFilter').value = unitNumber;
-        updateFilters();
-      });
+    var list = document.getElementById('unit-list');
+    if (!list || list.dataset.bound === '1') return;
+    list.dataset.bound = '1';
+    list.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-unit-action]');
+      if (button) {
+        event.stopPropagation();
+        var number = parseInt(button.dataset.unitNumber, 10);
+        var name = button.dataset.unitName || '';
+        if (!Number.isFinite(number)) return;
+        if (button.dataset.unitAction === 'import') {
+          location.href = AI_IMPORT_URL + '?unit=' + encodeURIComponent(number);
+        } else if (button.dataset.unitAction === 'edit') {
+          showEditUnit(number, name, button.dataset.unitCategory || '');
+        } else if (button.dataset.unitAction === 'delete') {
+          deleteUnit(number, name);
+        }
+        return;
+      }
+      var item = event.target.closest('.unit-item');
+      if (!item) return;
+      document.getElementById('unitFilter').value = item.getAttribute('data-unit');
+      updateFilters();
     });
   }
 
@@ -1118,7 +1139,8 @@
   bindUnitItems();
 
   // Initial load: restore perPage & filter state, then fetch fresh data
-  var savedPP = parseInt(localStorage.getItem('vocab-pp'));
+  var savedPP = NaN;
+  try { savedPP = parseInt(localStorage.getItem('vocab-pp')); } catch (e) {}
   if (savedPP && [20, 50, 100].indexOf(savedPP) !== -1) { perPage = savedPP; }
   restoreWordListState();
   loadWords(currentPage);

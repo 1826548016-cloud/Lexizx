@@ -1,6 +1,7 @@
 // ===== Font Size =====
 function initFontSize() {
-  var size = localStorage.getItem('vocab-font-size') || 'medium';
+  var size = 'medium';
+  try { size = localStorage.getItem('vocab-font-size') || size; } catch (e) {}
   document.documentElement.setAttribute('data-font-size', size);
 }
 
@@ -169,9 +170,27 @@ function showToast(message, type, duration) {
 
 // ===== API Helper =====
 var VOCAB_API = {
+  parseResponse: async function (response) {
+    var data;
+    try {
+      data = await response.json();
+    } catch (e) {
+      return {
+        success: false,
+        status: response.status,
+        error: '服务器返回了无法识别的响应（HTTP ' + response.status + '）',
+      };
+    }
+    if (!response.ok && data && typeof data === 'object') {
+      data.success = false;
+      data.status = response.status;
+      if (!data.error) data.error = '请求失败（HTTP ' + response.status + '）';
+    }
+    return data;
+  },
   get: async function (url) {
     var r = await fetch(url);
-    return r.json();
+    return VOCAB_API.parseResponse(r);
   },
   post: async function (url, data) {
     data = data || {};
@@ -184,7 +203,7 @@ var VOCAB_API = {
       },
       body: JSON.stringify(data),
     });
-    return r.json();
+    return VOCAB_API.parseResponse(r);
   },
   del: async function (url, data) {
     if (data) {
@@ -197,14 +216,14 @@ var VOCAB_API = {
         },
         body: JSON.stringify(data),
       });
-      return r.json();
+      return VOCAB_API.parseResponse(r);
     }
     var csrf = document.querySelector('[name=csrfmiddlewaretoken]');
     var r = await fetch(url, {
       method: 'DELETE',
       headers: { 'X-CSRFToken': csrf ? csrf.value : '' },
     });
-    return r.json();
+    return VOCAB_API.parseResponse(r);
   },
 };
 
@@ -216,6 +235,8 @@ window.VocabStudyTimer = (function () {
   var lastActiveAt = 0;
   var pendingSeconds = 0;
   var intervalId = null;
+  var retryTimer = null;
+  var retryDelay = 1000;
   var isMaster = false; // 是否为持有计时报的主标签页
   var TAB_ID = 'tab-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   var LOCK_KEY = 'vocab_study_timer_master';
@@ -226,42 +247,79 @@ window.VocabStudyTimer = (function () {
     return !document.hidden && (typeof document.hasFocus !== 'function' || document.hasFocus());
   }
 
+  function ownsLock() {
+    try {
+      var current = localStorage.getItem(LOCK_KEY) || '';
+      return current.indexOf(TAB_ID + '|') === 0;
+    } catch (e) { return false; }
+  }
+
   // 尝试获取主标签页锁
   function acquireLock() {
-    if (isMaster) return true;
-    var current = localStorage.getItem(LOCK_KEY);
-    // 锁超过 8 秒视为过期
-    if (current && Date.now() - parseInt(current.split('|')[1], 10) < 8000) return false;
-    localStorage.setItem(LOCK_KEY, TAB_ID + '|' + Date.now());
-    // 再读一次确认自己抢到了
-    if (localStorage.getItem(LOCK_KEY).indexOf(TAB_ID) === 0) {
-      isMaster = true;
-      if (channel) channel.postMessage({ type: 'master_changed', tab: TAB_ID });
-      return true;
-    }
+    if (isMaster && ownsLock()) return true;
+    isMaster = false;
+    try {
+      var current = localStorage.getItem(LOCK_KEY);
+      var timestamp = current ? parseInt(current.split('|')[1], 10) : NaN;
+      // Renewals run every 20 seconds; allow a 60-second lease for throttling.
+      if (current && Number.isFinite(timestamp) && Date.now() - timestamp < 60000) return false;
+      localStorage.setItem(LOCK_KEY, TAB_ID + '|' + Date.now());
+      if (ownsLock()) {
+        isMaster = true;
+        if (channel) channel.postMessage({ type: 'master_changed', tab: TAB_ID });
+        return true;
+      }
+    } catch (e) {}
     return false;
   }
 
   // 定期续租锁
   function renewLock() {
-    if (!isMaster) return;
-    localStorage.setItem(LOCK_KEY, TAB_ID + '|' + Date.now());
+    if (!isMaster) return false;
+    if (!ownsLock()) {
+      isMaster = false;
+      lastActiveAt = 0;
+      return false;
+    }
+    try { localStorage.setItem(LOCK_KEY, TAB_ID + '|' + Date.now()); }
+    catch (e) { return false; }
+    return true;
   }
 
   function releaseLock() {
     if (!isMaster) return;
+    var released = false;
+    try {
+      if (ownsLock()) {
+        localStorage.removeItem(LOCK_KEY);
+        released = true;
+      }
+    } catch (e) {}
     isMaster = false;
-    localStorage.removeItem(LOCK_KEY);
-    if (channel) channel.postMessage({ type: 'master_changed', tab: null });
+    if (released && channel) channel.postMessage({ type: 'master_changed', tab: null });
   }
 
   function collect(forceUntilBoundary) {
-    if (!active || !isMaster || document.hidden || (!forceUntilBoundary && !pageIsActive()) || !lastActiveAt) return;
+    if (!active || !isMaster || (!forceUntilBoundary && !pageIsActive()) || !lastActiveAt) return;
+    if (!ownsLock()) {
+      isMaster = false;
+      lastActiveAt = 0;
+      return;
+    }
     // The heartbeat runs every 20 seconds. Cap delayed callbacks so a suspended
     // window cannot turn a long sleep/background gap into study time.
     var seconds = Math.min(25, Math.floor((Date.now() - lastActiveAt) / 1000));
     if (seconds > 0) pendingSeconds += seconds;
     lastActiveAt = Date.now();
+  }
+
+  function scheduleFlushRetry() {
+    if (retryTimer || pendingSeconds <= 0) return;
+    retryTimer = setTimeout(function () {
+      retryTimer = null;
+      flush();
+    }, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 30000);
   }
 
   function flush(forceUntilBoundary) {
@@ -270,15 +328,27 @@ window.VocabStudyTimer = (function () {
     if (!seconds) return;
     pendingSeconds -= seconds;
     var csrf = document.querySelector('[name=csrfmiddlewaretoken]');
-    fetch('/api/study-duration/', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRFToken': csrf ? csrf.value : '',
-      },
-      body: JSON.stringify({ seconds: seconds }),
-      keepalive: true,
-    }).catch(function () { pendingSeconds += seconds; });
+    Promise.resolve().then(function () {
+      return fetch('/api/study-duration/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrf ? csrf.value : '',
+        },
+        body: JSON.stringify({ seconds: seconds }),
+        keepalive: true,
+      });
+    }).then(function (response) {
+      if (!response.ok) throw new Error('学习时长上报失败');
+      return response.json();
+    }).then(function (data) {
+      if (!data || data.success !== true) throw new Error('学习时长上报未确认');
+      retryDelay = 1000;
+      if (pendingSeconds > 0) scheduleFlushRetry();
+    }).catch(function () {
+      pendingSeconds += seconds;
+      scheduleFlushRetry();
+    });
   }
 
   function start() {
@@ -294,15 +364,14 @@ window.VocabStudyTimer = (function () {
         return;
       }
       if (!isMaster) acquireLock();
-      if (isMaster) {
-        renewLock();
+      if (isMaster && renewLock()) {
         if (!lastActiveAt) lastActiveAt = Date.now();
         flush();
       }
     }, 20000);
     // 立即尝试获取锁
     if (pageIsActive()) acquireLock();
-    lastActiveAt = pageIsActive() ? Date.now() : 0;
+    lastActiveAt = isMaster ? Date.now() : 0;
   }
 
   function stop() {
@@ -318,7 +387,7 @@ window.VocabStudyTimer = (function () {
   document.addEventListener('visibilitychange', function () {
     if (!active) return;
     if (document.hidden) {
-      flush();
+      flush(true);
       releaseLock();
       lastActiveAt = 0;
     } else if (pageIsActive()) {
@@ -342,6 +411,10 @@ window.VocabStudyTimer = (function () {
   // 监听其他标签页释放锁的消息，尝试接管
   if (channel) {
     channel.onmessage = function (e) {
+      if (e.data && e.data.type === 'master_changed' && e.data.tab && e.data.tab !== TAB_ID && isMaster && !ownsLock()) {
+        isMaster = false;
+        lastActiveAt = 0;
+      }
       if (e.data && e.data.type === 'master_changed' && !e.data.tab && active && pageIsActive()) {
         acquireLock();
         if (isMaster && !lastActiveAt) lastActiveAt = Date.now();
@@ -351,7 +424,7 @@ window.VocabStudyTimer = (function () {
 
   // 页面卸载时释放锁
   window.addEventListener('pagehide', function () {
-    flush();
+    flush(true);
     if (active) releaseLock();
   });
 
@@ -367,7 +440,7 @@ window.VocabActiveClock = function (initialSeconds) {
     return !document.hidden && (typeof document.hasFocus !== 'function' || document.hasFocus());
   }
   function collect(forceUntilBoundary) {
-    if (!running || document.hidden || (!forceUntilBoundary && !pageIsActive()) || !lastAt) return;
+    if (!running || (!forceUntilBoundary && !pageIsActive()) || !lastAt) return;
     elapsed += Math.min(1500, Math.max(0, Date.now() - lastAt));
     lastAt = Date.now();
   }
@@ -376,7 +449,7 @@ window.VocabActiveClock = function (initialSeconds) {
   function start() { running = true; lastAt = pageIsActive() ? Date.now() : 0; }
   function stop() { collect(); running = false; lastAt = 0; return seconds(); }
   function seconds() { collect(); return Math.floor(elapsed / 1000); }
-  function onVisibility() { if (document.hidden) pause(); else if (running) resume(); }
+  function onVisibility() { if (document.hidden) pause(true); else if (running) resume(); }
   function onBlur() { pause(true); }
   function onFocus() { resume(); }
   document.addEventListener('visibilitychange', onVisibility);

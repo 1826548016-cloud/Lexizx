@@ -265,7 +265,7 @@ function loadHint() {
       box.innerHTML = renderMarkdown(res.content);
       showToast('解析完成', 'success');
     } else {
-      box.innerHTML = '<div class="empty-state">' + (res.error || '解析失败') + '</div>';
+      box.innerHTML = '<div class="empty-state">' + escapeHtml(res.error || '解析失败') + '</div>';
       showToast(res.error || '解析失败', 'error');
     }
   }).catch(function () {

@@ -317,6 +317,7 @@
             <button type="button" class="update-check-btn" id="checkUpdateBtn" onclick="checkUpdate()">
               <i class="ph ph-arrows-clockwise"></i> 检查更新
             </button>
+            <span class="update-check-status" id="updateCheckStatus" role="status" aria-live="polite">尚未检查</span>
           </div>
         </div>
         <div class="stat-card">
@@ -332,7 +333,7 @@
             <span class="stat-icon stat-icon--green"><i class="ph ph-calendar-check"></i></span>
             <span class="about-stat-title">最后更新</span>
           </div>
-          <div class="stat-value">2026-10-27</div>
+          <div class="stat-value">2026-10-28</div>
         </div>
       </div>
 
@@ -403,17 +404,20 @@
 
 <!-- 检查更新弹窗 -->
 <div id="update-mask" class="donate-mask" onclick="if(event.target===this) closeUpdate()">
-  <div class="donate-box" role="dialog" aria-modal="true" aria-labelledby="update-title" style="width: min(520px, calc(100vw - 48px));">
+  <div class="donate-box update-box" role="dialog" aria-modal="true" aria-labelledby="update-title">
     <div class="donate-title" id="update-title"><i class="ph ph-gift" style="color: var(--c-red);"></i> 发现新版本 <span id="upLatest"></span></div>
-    <div class="text-sm text-secondary" style="margin: -8px 0 12px; text-align: center;">
-      当前版本 <span id="upCurrent"></span> · 发布于 <span id="upDate"></span>
+    <div class="update-summary">
+      <div><span class="update-summary-label">当前版本</span><strong id="upCurrent"></strong></div>
+      <div><span class="update-summary-label">发布时间</span><strong id="upDate"></strong></div>
     </div>
+    <div class="update-section-title">更新内容</div>
     <pre id="upNotes" class="update-notes"></pre>
+    <div class="update-integrity-note" id="upModeHint" role="note"></div>
     <div id="upProgressWrap" style="display:none; margin: 2px 0 14px;">
-      <div style="height:8px; border-radius:999px; background:var(--c-border); overflow:hidden;">
-        <div id="upProgressBar" style="height:100%; width:0%; background:var(--c-blue); transition:width .25s;"></div>
+      <div class="update-progress-track" role="progressbar" aria-label="更新下载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="upProgressBar" class="update-progress-bar"></div>
       </div>
-      <div id="upProgressText" class="text-sm text-secondary" style="text-align:center; margin-top:6px;"></div>
+      <div id="upProgressText" class="text-sm text-secondary" role="status" aria-live="polite"></div>
     </div>
     <div class="donate-footer">
       <button type="button" id="upInstallBtn" class="btn btn-primary btn-sm" onclick="startUpdateDownload()" style="display:none;">
@@ -477,6 +481,13 @@ function openDonate() { _openMask('donate-mask'); }
 function closeDonate() { _closeMask('donate-mask'); }
 function closeUpdate() { _closeMask('update-mask'); }
 
+function setUpdateCheckStatus(message, state) {
+  var status = document.getElementById('updateCheckStatus');
+  if (!status) return;
+  status.textContent = message || '';
+  status.dataset.state = state || 'idle';
+}
+
 // ===== 检查更新（GitHub Release）=====
 function checkUpdate() {
   var btn = document.getElementById('checkUpdateBtn');
@@ -484,23 +495,33 @@ function checkUpdate() {
   btn.disabled = true;
   var oldHtml = btn.innerHTML;
   btn.innerHTML = '<i class="ph ph-circle-notch"></i> 正在检查…';
+  setUpdateCheckStatus('正在连接更新服务…', 'loading');
   fetch('{% url "words:api_check_update" %}')
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (!d.success) { appAlert(d.error || '检查更新失败'); return; }
+      if (!d.success) {
+        setUpdateCheckStatus('检查失败，请稍后重试', 'error');
+        appAlert(d.error || '检查更新失败');
+        return;
+      }
       if (d.has_update) {
         document.getElementById('upLatest').textContent = d.latest;
         document.getElementById('upCurrent').textContent = d.current;
         document.getElementById('upDate').textContent = d.published_at || '未知';
         document.getElementById('upNotes').textContent = d.release_notes || '暂无更新说明';
         document.getElementById('upLink').href = d.html_url || '#';
+        setUpdateCheckStatus('发现新版本 ' + d.latest, 'available');
         _openMask('update-mask');
         resetUpdateUI(d.latest);
       } else {
+        setUpdateCheckStatus('当前已是最新版本', 'current');
         appAlert('当前已是最新版本（' + d.current + '）');
       }
     })
-    .catch(function () { appAlert('检查更新失败，请检查网络后重试'); })
+    .catch(function () {
+      setUpdateCheckStatus('无法连接更新服务', 'error');
+      appAlert('检查更新失败，请检查网络后重试');
+    })
     .finally(function () {
       btn.disabled = false;
       btn.innerHTML = oldHtml;
@@ -524,8 +545,11 @@ function setUpdateProgress(percent, text, warn) {
   var bar = document.getElementById('upProgressBar');
   var label = document.getElementById('upProgressText');
   if (!wrap) return;
+  var value = Math.max(0, Math.min(100, percent || 0));
   wrap.style.display = 'block';
-  bar.style.width = Math.max(0, Math.min(100, percent || 0)) + '%';
+  bar.style.width = value + '%';
+  var track = bar && bar.parentElement;
+  if (track) track.setAttribute('aria-valuenow', String(value));
   label.textContent = text || '';
   label.style.color = warn ? 'var(--c-amber, #b5722a)' : '';
 }
@@ -544,15 +568,24 @@ function resetUpdateUI(tag) {
   var api = desktopUpdateApi();
   var btn = document.getElementById('upInstallBtn');
   var link = document.getElementById('upLink');
+  var modeHint = document.getElementById('upModeHint');
   if (btn) {
     btn.style.display = api ? 'inline-flex' : 'none';
     btn.disabled = false;
-    btn.innerHTML = '<i class="ph ph-rocket"></i> 立即更新';
+    btn.innerHTML = '<i class="ph ph-download-simple"></i> 下载并安装';
     btn.onclick = startUpdateDownload;
   }
-  if (link) link.style.display = api ? 'none' : 'inline-flex';
-  if (api) setUpdateProgress(0, '点一下「立即更新」：自动下载、校验并重启，全程无需其它操作。');
-  else setUpdateProgress(0, '当前为浏览器版，自动安装仅在 Windows 桌面版可用。');
+  if (link) {
+    link.style.display = api ? 'none' : 'inline-flex';
+    link.innerHTML = '<i class="ph ph-arrow-square-out"></i> 打开 Release 下载';
+  }
+  if (modeHint) {
+    modeHint.textContent = api
+      ? 'Windows 桌面版支持应用内更新。安装前必须通过 SHA-256 校验；版本未提供校验文件或校验失败时会拒绝安装。'
+      : '当前为浏览器版，只能打开 Release 页面手动下载；应用内安装仅适用于 Windows 桌面版。';
+  }
+  if (api) setUpdateProgress(0, '点击「下载并安装」后，下载完成会自动校验并重启应用。');
+  else setUpdateProgress(0, '请在 Release 页面下载对应版本的 word.exe。');
 }
 
 function startUpdateDownload() {
@@ -624,18 +657,6 @@ function pollUpdateStatus() {
             if (!_updateInstalling) installUpdate();
           }, 1000);
         }
-      } else if (d.state === 'ready_unverified') {
-        stopUpdatePolling();
-        _updatePath = d.path || '';
-        if (cancel) cancel.style.display = 'none';
-        if (btn) {
-          btn.disabled = false;
-          btn.style.display = 'inline-flex';
-          btn.innerHTML = '<i class="ph ph-warning"></i> 仍要安装（未校验）';
-          btn.onclick = installUpdateUnverified;
-        }
-        if (link) link.style.display = 'inline-flex';
-        setUpdateProgress(100, '下载完成，但该版本未提供 SHA-256 校验文件，无法验证安装包是否被篡改', true);
       } else if (d.state === 'cancelled') {
         stopUpdatePolling();
         if (cancel) cancel.style.display = 'none';
@@ -667,11 +688,6 @@ function cancelUpdateDownload() {
   }).then(function () {
     showToast('正在取消下载…', 'success');
   }).catch(function () {});
-}
-
-function installUpdateUnverified() {
-  appConfirm('该版本未提供 SHA-256 校验文件，无法验证安装包是否被篡改。确定仍要安装吗？')
-    .then(function (ok) { if (ok) installUpdate(); });
 }
 
 function installUpdate() {
@@ -792,7 +808,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
 // ===== Font Size =====
 function initFontButtons() {
-  var currentSize = localStorage.getItem('vocab-font-size') || '{% if settings.font_size %}{{ settings.font_size }}{% else %}medium{% endif %}';
+  var currentSize = '{% if settings.font_size %}{{ settings.font_size }}{% else %}medium{% endif %}';
+  try { currentSize = localStorage.getItem('vocab-font-size') || currentSize; } catch (e) {}
   document.querySelectorAll('.font-size-btn').forEach(function (btn) {
     btn.className = 'btn btn-secondary btn-sm font-size-btn';
   });
@@ -813,7 +830,7 @@ function applyFontSize() {
   var selected = document.querySelector('.font-size-btn.btn-primary');
   if (!selected) return;
   var size = selected.dataset.size;
-  localStorage.setItem('vocab-font-size', size);
+  try { localStorage.setItem('vocab-font-size', size); } catch (e) {}
   // Save to backend
   VOCAB_API.post('/api/settings/', { font_size: size }).then(function () {
     showToast('字体大小已更新为 ' + size, 'success');
@@ -889,7 +906,7 @@ window.addEventListener('vocab-wallpaper-change', function () {
 function changeTheme(theme) {
   if (!theme) return;
   document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('vocab-theme', theme);
+  try { localStorage.setItem('vocab-theme', theme); } catch (e) {}
   applyThemeWallpaper();
   toggleWallpaperGroup();
   VOCAB_API.post('/api/settings/', { theme: theme }).then(function (res) {
@@ -902,8 +919,10 @@ function changeTheme(theme) {
 function initVoiceButtons() {
   var currentVoice = '{% if settings.voice_type %}{{ settings.voice_type }}{% else %}us{% endif %}';
   // 同步给 TTS 引擎（tts.js 从 localStorage 读取）
-  localStorage.setItem('vocab-voice', currentVoice);
-  localStorage.setItem('vocab-rate', String({{ settings.speech_rate|default:1.0 }}));
+  try {
+    localStorage.setItem('vocab-voice', currentVoice);
+    localStorage.setItem('vocab-rate', String({{ settings.speech_rate|default:1.0 }}));
+  } catch (e) {}
   document.querySelectorAll('.voice-btn').forEach(function (btn) {
     btn.className = 'btn btn-secondary voice-btn';
   });
@@ -928,8 +947,10 @@ async function savePronunciationSettings() {
   var autoRead = document.getElementById('autoReadToggle').checked;
 
   // 本地立即生效，供 tts.js 读取
-  localStorage.setItem('vocab-voice', voice);
-  localStorage.setItem('vocab-rate', String(speechRate));
+  try {
+    localStorage.setItem('vocab-voice', voice);
+    localStorage.setItem('vocab-rate', String(speechRate));
+  } catch (e) {}
 
   try {
     var res = await VOCAB_API.post('/api/settings/', {

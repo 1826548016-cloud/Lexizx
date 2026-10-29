@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}考研单词背诵系统{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=356">
+  <link rel="stylesheet" href="{% static 'css/style.css' %}?v=357">
   <!-- Phosphor 图标字体（随程序打包的本地静态资源，离线可用，不发起任何外网请求） -->
   <link rel="stylesheet" href="{% static 'vendor/phosphor/regular/style.css' %}?v=211">
   <link rel="stylesheet" href="{% static 'vendor/phosphor/fill/style.css' %}?v=211">
@@ -193,7 +193,7 @@
   </div>
 
   <script src="{% static 'js/tts.js' %}"></script>
-  <script src="{% static 'js/app.js' %}?v=334"></script>
+  <script src="{% static 'js/app.js' %}?v=335"></script>
   <script src="{% static 'js/exam_shared.js' %}?v=347"></script>
   <script src="{% static 'js/ai_model_modal.js' %}?v=333"></script>
   {% block extra_scripts %}{% endblock %}
@@ -518,7 +518,8 @@
 
   // Theme init — restore from localStorage
   (function() {
-    var saved = localStorage.getItem('vocab-theme');
+    var saved = null;
+    try { saved = localStorage.getItem('vocab-theme'); } catch (e) {}
     if (THEMES.indexOf(saved) === -1) saved = 'light';
     document.documentElement.setAttribute('data-theme', saved);
     document.getElementById('themeIcon').className = 'ph ' + THEME_ICONS[saved];
@@ -532,7 +533,7 @@
     if (idx === -1) idx = 0;
     var next = THEMES[(idx + 1) % THEMES.length];
     html.setAttribute('data-theme', next);
-    localStorage.setItem('vocab-theme', next);
+    try { localStorage.setItem('vocab-theme', next); } catch (e) {}
     document.getElementById('themeIcon').className = 'ph ' + THEME_ICONS[next];
     applyThemeWallpaper();
     window.dispatchEvent(new CustomEvent('vocab-theme-change', { detail: { theme: next } }));
