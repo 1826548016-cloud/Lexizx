@@ -13,7 +13,7 @@
 
 #define MyAppName "Lexizx"
 #define MyAppFullName "Lexizx 考研英语学习工具"
-#define MyAppVersion "3.4.7"
+#define MyAppVersion "3.5.0"
 #define MyAppPublisher "个人开发者"
 #define MyAppURL "https://github.com/1826548016-cloud/Lexizx"
 
